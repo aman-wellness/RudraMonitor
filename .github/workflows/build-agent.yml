@@ -81,6 +81,9 @@ jobs:
             libgtk-3-dev \
             libx11-dev \
             libxdo-dev \
+            libxss-dev \
+            libxrandr-dev \
+            libxinerama-dev \
             libxcb1-dev \
             libxcb-randr0-dev \
             libxcb-shape0-dev \

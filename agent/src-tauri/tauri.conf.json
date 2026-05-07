@@ -41,12 +41,7 @@
     "resources": ["resources/uninstall.command"],
     "category": "Productivity",
     "shortDescription": "TrackForce employee monitoring agent",
-    "longDescription": "Background agent that reports system metrics, active applications, and screenshots to TrackForce.",
-    "windows": {
-      "wix": {
-        "fragmentPaths": ["wix/cleanup-fragment.wxs"]
-      }
-    }
+    "longDescription": "Background agent that reports system metrics, active applications, and screenshots to TrackForce."
   },
   "plugins": {
     "updater": {
