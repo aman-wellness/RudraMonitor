@@ -1,0 +1,38 @@
+export const testimonials = [
+  {
+    id: 1,
+    name: 'Rajesh Sharma',
+    position: 'IT Head',
+    company: 'TechSolutions Pvt Ltd',
+    rating: 5,
+    text: 'TrackForce ne hamari team ki productivity 40% badha di. Ab hume pata hai kaun kya kar raha hai aur kahan time waste ho raha hai.',
+    avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=100&h=100&fit=crop&crop=face',
+  },
+  {
+    id: 2,
+    name: 'Priya Patel',
+    position: 'HR Manager',
+    company: 'InnovateSoft India',
+    rating: 5,
+    text: 'Best employee monitoring tool hai India mein. Browser tracking aur video recording features bilkul perfect hain. AI alerts bhi bahut helpful hain.',
+    avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=100&h=100&fit=crop&crop=face',
+  },
+  {
+    id: 3,
+    name: 'Amit Gupta',
+    position: 'CEO',
+    company: 'DataWave Systems',
+    rating: 5,
+    text: 'Hamari 200+ employees ko monitor karne ke liye perfect solution. System health monitoring se IT costs bhi kam ho gaye.',
+    avatar: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=100&h=100&fit=crop&crop=face',
+  },
+  {
+    id: 4,
+    name: 'Sneha Reddy',
+    position: 'Operations Manager',
+    company: 'CloudMax Technologies',
+    rating: 5,
+    text: '14-day free trial se start kiya aur ab 2 saal se use kar rahe hain. Idle tracking ne overbilling completely stop kar di.',
+    avatar: 'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=100&h=100&fit=crop&crop=face',
+  },
+];

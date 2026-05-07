@@ -1,0 +1,78 @@
+// Persisted on-disk agent configuration:
+//   - Supabase project URL + anon key (compiled-in defaults can be overridden by env var)
+//   - The agent's enrollment record after first successful /enroll-agent call.
+//
+// Stored as JSON in the OS user data dir under "TrackForceAgent/agent.json".
+
+use anyhow::{anyhow, Context, Result};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentConfig {
+    pub supabase_url: Option<String>,
+    pub supabase_anon_key: Option<String>,
+    pub enrollment: Option<Enrollment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Enrollment {
+    pub agent_id: String,
+    pub enroll_token: String,
+    pub agent_name: String,
+    pub machine_name: String,
+    pub org_id: String,
+}
+
+pub fn config_path() -> Result<PathBuf> {
+    let base = dirs::data_dir().ok_or_else(|| anyhow!("could not resolve OS data dir"))?;
+    let dir = base.join("TrackForceAgent");
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {:?}", dir))?;
+    Ok(dir.join("agent.json"))
+}
+
+pub fn load() -> Result<AgentConfig> {
+    let path = config_path()?;
+    if !path.exists() {
+        return Ok(AgentConfig::default());
+    }
+    let raw = std::fs::read_to_string(&path).with_context(|| format!("reading {:?}", path))?;
+    let cfg: AgentConfig = serde_json::from_str(&raw).context("parsing agent.json")?;
+    Ok(cfg)
+}
+
+pub fn save(cfg: &AgentConfig) -> Result<()> {
+    let path = config_path()?;
+    let raw = serde_json::to_string_pretty(cfg)?;
+    std::fs::write(&path, raw).with_context(|| format!("writing {:?}", path))?;
+    Ok(())
+}
+
+// Compile-time embedded Supabase credentials. Bake the org's production project so
+// employees never see a setup screen — just license key + agent name on first launch.
+// To override per-build, set TRACKFORCE_SUPABASE_URL / _ANON_KEY at compile time.
+const EMBEDDED_SUPABASE_URL: &str = match option_env!("TRACKFORCE_SUPABASE_URL") {
+    Some(v) => v,
+    None => "https://ttjazaxjhzvrzhptrpmd.supabase.co",
+};
+const EMBEDDED_SUPABASE_ANON_KEY: &str = match option_env!("TRACKFORCE_SUPABASE_ANON_KEY") {
+    Some(v) => v,
+    None => "sb_publishable_COxy0KHyEGYPjPJTwN0EZg_kvIfI8zC",
+};
+
+/// Effective Supabase URL — runtime env var first, then on-disk override, then compiled-in default.
+pub fn supabase_url(cfg: &AgentConfig) -> Option<String> {
+    std::env::var("TRACKFORCE_SUPABASE_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| cfg.supabase_url.clone())
+        .or_else(|| Some(EMBEDDED_SUPABASE_URL.to_string()))
+}
+
+pub fn supabase_anon_key(cfg: &AgentConfig) -> Option<String> {
+    std::env::var("TRACKFORCE_SUPABASE_ANON_KEY")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| cfg.supabase_anon_key.clone())
+        .or_else(|| Some(EMBEDDED_SUPABASE_ANON_KEY.to_string()))
+}

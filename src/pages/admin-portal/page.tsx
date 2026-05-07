@@ -1,0 +1,869 @@
+import { useEffect, useMemo, useState } from 'react';
+import DashboardLayout from '@/pages/dashboard/DashboardLayout';
+import { useAuth } from '@/context/AuthContext';
+import { useAgents, useOrgMembers } from '@/lib/dataHooks';
+import { supabase } from '@/lib/supabase';
+
+interface OrgUser {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  status: string;
+  lastLogin: string;
+}
+
+const adminTabs = [
+  { id: 'org', label: 'Organization', icon: 'ri-building-line' },
+  { id: 'subscription', label: 'Subscription', icon: 'ri-vip-crown-line' },
+  { id: 'users', label: 'Users', icon: 'ri-team-line' },
+  { id: 'settings', label: 'Settings', icon: 'ri-settings-3-line' },
+];
+
+const roles = ['Viewer', 'Manager', 'Super Admin'];
+
+export default function AdminPortalPage() {
+  const { organization, user, refreshOrganization } = useAuth();
+  const { agents } = useAgents();
+  const { members, inviteMember, removeMember } = useOrgMembers();
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [inviteBusy, setInviteBusy] = useState(false);
+
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [profileBusy, setProfileBusy] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [profileForm, setProfileForm] = useState({
+    name: '', gst_number: '', address: '', city: '', state: '', phone: '',
+  });
+  useEffect(() => {
+    if (organization) {
+      setProfileForm({
+        name: organization.name ?? '',
+        gst_number: organization.gst_number ?? '',
+        address: organization.address ?? '',
+        city: organization.city ?? '',
+        state: organization.state ?? '',
+        phone: organization.phone ?? '',
+      });
+    }
+  }, [organization]);
+
+  const saveProfile = async () => {
+    if (!organization) return;
+    setProfileBusy(true); setProfileError(null);
+    const { error } = await supabase
+      .from('organizations')
+      .update({
+        name: profileForm.name.trim() || organization.name,
+        gst_number: profileForm.gst_number.trim() || null,
+        address: profileForm.address.trim() || null,
+        city: profileForm.city.trim() || null,
+        state: profileForm.state.trim() || null,
+        phone: profileForm.phone.trim() || null,
+      })
+      .eq('id', organization.id);
+    setProfileBusy(false);
+    if (error) { setProfileError(error.message); return; }
+    await refreshOrganization();
+    setEditingProfile(false);
+  };
+
+  const [activeTab, setActiveTab] = useState('org');
+  const [showAddUser, setShowAddUser] = useState(false);
+  const [showEditUser, setShowEditUser] = useState(false);
+  const [showResetPassword, setShowResetPassword] = useState(false);
+  const [editingUser, setEditingUser] = useState<OrgUser | null>(null);
+
+  // Map org_members → display rows. Email comes from session for self, the email column for
+  // pending invites, and "—" for active non-self members (auth.users not exposed via anon).
+  const fromMembers: OrgUser[] = useMemo(
+    () =>
+      members.map((m) => ({
+        id: m.id,
+        name: m.full_name ?? (m.email ?? '—'),
+        email: m.user_id === user?.id ? user?.email ?? '—' : (m.email ?? '—'),
+        role:
+          m.role === 'owner' ? 'Super Admin' :
+          m.role === 'admin' ? 'Manager' : 'Viewer',
+        status: m.status,
+        lastLogin: '—',
+      })),
+    [members, user],
+  );
+  const [orgUsers, setOrgUsers] = useState<OrgUser[]>([]);
+  useEffect(() => { setOrgUsers(fromMembers); }, [fromMembers]);
+  void removeMember; // exposed for future "Remove" action; not yet surfaced in UI.
+
+  const [addName, setAddName] = useState('');
+  const [addEmail, setAddEmail] = useState('');
+  const [addRole, setAddRole] = useState('Viewer');
+
+  const [editName, setEditName] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  const [editRole, setEditRole] = useState('Viewer');
+  const [editStatus, setEditStatus] = useState('active');
+
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [resetError, setResetError] = useState('');
+  const [resetSuccess, setResetSuccess] = useState(false);
+
+  const [emailNotifications, setEmailNotifications] = useState(true);
+  const [aiAlerts, setAiAlerts] = useState(true);
+  const [autoScreenshot, setAutoScreenshot] = useState(true);
+  const [autoVideo, setAutoVideo] = useState(true);
+  const [dataRetention, setDataRetention] = useState('30');
+  const [idleThreshold, setIdleThreshold] = useState('15');
+
+  const openEditModal = (user: OrgUser) => {
+    setEditingUser(user);
+    setEditName(user.name);
+    setEditEmail(user.email);
+    setEditRole(user.role);
+    setEditStatus(user.status);
+    setShowEditUser(true);
+    setShowResetPassword(false);
+    setResetSuccess(false);
+    setResetError('');
+    setNewPassword('');
+    setConfirmPassword('');
+  };
+
+  const handleSaveUser = () => {
+    if (!editingUser) return;
+    setOrgUsers((prev) =>
+      prev.map((u) =>
+        u.id === editingUser.id
+          ? { ...u, name: editName.trim() || u.name, email: editEmail.trim() || u.email, role: editRole, status: editStatus }
+          : u
+      )
+    );
+    setShowEditUser(false);
+    setEditingUser(null);
+  };
+
+  const handleAddUser = async () => {
+    if (!addEmail.trim()) {
+      setInviteError('Email is required');
+      return;
+    }
+    setInviteError(null);
+    setInviteBusy(true);
+    try {
+      // UI roles → DB roles. "Super Admin" can't be created via invite (only the org creator).
+      const dbRole: 'admin' | 'viewer' = addRole === 'Manager' ? 'admin' : 'viewer';
+      await inviteMember({
+        email: addEmail.trim(),
+        role: dbRole,
+        full_name: addName.trim() || undefined,
+      });
+      setAddName('');
+      setAddEmail('');
+      setAddRole('Viewer');
+      setShowAddUser(false);
+    } catch (err) {
+      setInviteError(err instanceof Error ? err.message : 'Invite failed');
+    } finally {
+      setInviteBusy(false);
+    }
+  };
+
+  const handleResetPassword = () => {
+    setResetError('');
+    if (newPassword.length < 6) {
+      setResetError('Password must be at least 6 characters');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setResetError('Passwords do not match');
+      return;
+    }
+    setResetSuccess(true);
+    setNewPassword('');
+    setConfirmPassword('');
+  };
+
+  return (
+    <DashboardLayout>
+      <div className="space-y-5">
+        {/* Breadcrumb */}
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <span className="flex items-center gap-1">
+            <span className="w-3 h-3 flex items-center justify-center"><i className="ri-dashboard-line" /></span>
+            Dashboard
+          </span>
+          <i className="ri-arrow-right-s-line text-gray-600" />
+          <span className="text-white font-medium">Admin Portal</span>
+        </div>
+
+        {/* Header */}
+        <div>
+          <h1 className="text-xl font-poppins font-bold text-white mb-1">Admin Portal</h1>
+          <p className="text-sm text-gray-500">Manage your organization, subscription, users and system settings</p>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex items-center gap-1 bg-dark-800 border border-dark-700 rounded-lg p-1 overflow-x-auto">
+          {adminTabs.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-md text-xs font-medium whitespace-nowrap transition-all ${
+                activeTab === tab.id ? 'bg-dark-600 text-white' : 'text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              <span className="w-4 h-4 flex items-center justify-center"><i className={`${tab.icon} text-sm`} /></span>
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* === ORGANIZATION TAB === */}
+        {activeTab === 'org' && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Company Profile */}
+            <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <span className="w-5 h-5 flex items-center justify-center"><i className="ri-building-line text-violet-400 text-sm" /></span>
+                  <h3 className="text-sm font-semibold text-white">Company Profile</h3>
+                </div>
+                {!editingProfile ? (
+                  <button
+                    onClick={() => setEditingProfile(true)}
+                    className="px-2.5 py-1 rounded-md bg-emerald-500/10 text-emerald-400 text-[11px] font-medium border border-emerald-500/20 hover:bg-emerald-500/20 transition-colors flex items-center gap-1"
+                  >
+                    <i className="ri-edit-line text-xs" /> Edit
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => { setEditingProfile(false); setProfileError(null); }}
+                      disabled={profileBusy}
+                      className="px-2.5 py-1 rounded-md bg-dark-700 text-gray-400 text-[11px] font-medium hover:bg-dark-600 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={saveProfile}
+                      disabled={profileBusy}
+                      className="px-2.5 py-1 rounded-md bg-emerald-500 text-dark-900 text-[11px] font-semibold hover:bg-emerald-400 transition-colors disabled:opacity-60"
+                    >
+                      {profileBusy ? 'Saving…' : 'Save'}
+                    </button>
+                  </div>
+                )}
+              </div>
+              {profileError && <p className="text-[11px] text-red-400 mb-2">{profileError}</p>}
+
+              {!editingProfile ? (
+                <div className="space-y-3">
+                  {[
+                    { label: 'Company Name', value: organization?.name ?? '—', icon: 'ri-building-2-line' },
+                    { label: 'GST Number', value: organization?.gst_number ?? '—', icon: 'ri-file-list-3-line' },
+                    { label: 'Address', value: [organization?.address, organization?.city, organization?.state].filter(Boolean).join(', ') || '—', icon: 'ri-map-pin-line' },
+                    { label: 'Contact Email', value: user?.email ?? '—', icon: 'ri-mail-line' },
+                    { label: 'Phone', value: organization?.phone ?? '—', icon: 'ri-phone-line' },
+                  ].map((field) => (
+                    <div key={field.label} className="flex items-center gap-3">
+                      <span className="w-5 h-5 flex items-center justify-center text-gray-600">
+                        <i className={`${field.icon} text-xs`} />
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[11px] text-gray-500">{field.label}</p>
+                        <p className="text-xs text-white font-medium truncate">{field.value}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {([
+                    { key: 'name', label: 'Company Name', placeholder: 'Acme Pvt Ltd' },
+                    { key: 'gst_number', label: 'GST Number', placeholder: '22AAAAA0000A1Z5' },
+                    { key: 'address', label: 'Address', placeholder: 'Street, building' },
+                    { key: 'city', label: 'City', placeholder: 'Mumbai' },
+                    { key: 'state', label: 'State', placeholder: 'Maharashtra' },
+                    { key: 'phone', label: 'Phone', placeholder: '+91 98xxxxxx' },
+                  ] as const).map((f) => (
+                    <div key={f.key}>
+                      <label className="text-[11px] text-gray-500 block mb-1">{f.label}</label>
+                      <input
+                        value={profileForm[f.key]}
+                        onChange={(e) => setProfileForm((p) => ({ ...p, [f.key]: e.target.value }))}
+                        placeholder={f.placeholder}
+                        className="w-full bg-dark-900 border border-dark-700 rounded-md px-2.5 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500/50"
+                      />
+                    </div>
+                  ))}
+                  <div className="flex items-center gap-3 pt-1">
+                    <span className="w-5 h-5 flex items-center justify-center text-gray-600"><i className="ri-mail-line text-xs" /></span>
+                    <div className="flex-1">
+                      <p className="text-[11px] text-gray-500">Contact Email (read-only)</p>
+                      <p className="text-xs text-white font-medium">{user?.email ?? '—'}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* License Overview */}
+            <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <span className="w-5 h-5 flex items-center justify-center"><i className="ri-key-2-line text-emerald-400 text-sm" /></span>
+                <h3 className="text-sm font-semibold text-white">License Overview</h3>
+              </div>
+              <div className="space-y-4">
+                <div className="grid grid-cols-3 gap-3">
+                  {(() => {
+                    const total = organization?.license_count ?? 0;
+                    const used = agents.length;
+                    const available = Math.max(0, total - used);
+                    return [
+                      { label: 'Total', value: String(total), color: 'text-white' },
+                      { label: 'Used', value: String(used), color: 'text-emerald-400' },
+                      { label: 'Available', value: String(available), color: 'text-gray-400' },
+                    ];
+                  })().map((stat) => (
+                    <div key={stat.label} className="bg-dark-900 rounded-lg border border-dark-700 p-3 text-center">
+                      <p className={`text-lg font-bold ${stat.color}`}>{stat.value}</p>
+                      <p className="text-[10px] text-gray-500 mt-0.5">{stat.label} Licenses</p>
+                    </div>
+                  ))}
+                </div>
+                <div className="bg-dark-900 rounded-lg border border-dark-700 p-3">
+                  {(() => {
+                    const total = organization?.license_count ?? 0;
+                    const used = agents.length;
+                    const pct = total > 0 ? Math.round((used / total) * 100) : 0;
+                    return (
+                      <>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="text-xs text-gray-400">License Utilization</span>
+                          <span className="text-xs text-emerald-400 font-medium">{pct}%</span>
+                        </div>
+                        <div className="w-full bg-dark-700 rounded-full h-2">
+                          <div className="bg-emerald-500 h-2 rounded-full" style={{ width: `${pct}%` }} />
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+                <div className="bg-dark-900 rounded-lg border border-dark-700 p-3">
+                  <p className="text-[11px] text-gray-500 mb-1">License Key</p>
+                  <div className="flex items-center justify-between">
+                    <code className="text-xs text-emerald-400 font-mono break-all">{organization?.license_key ?? '—'}</code>
+                    <button
+                      onClick={() => organization && navigator.clipboard.writeText(organization.license_key)}
+                      className="text-xs text-gray-500 hover:text-white px-2 py-1 rounded bg-dark-700 transition-colors flex-shrink-0 ml-2"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Subscription Plan */}
+            <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <span className="w-5 h-5 flex items-center justify-center"><i className="ri-vip-crown-line text-amber-400 text-sm" /></span>
+                <h3 className="text-sm font-semibold text-white">Current Plan</h3>
+              </div>
+              <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-4 mb-4">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-sm font-bold text-white capitalize">{organization?.subscription_status ?? 'trial'} Plan</h4>
+                  <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 text-[10px] font-semibold capitalize">
+                    {organization?.subscription_type ?? 'monthly'}
+                  </span>
+                </div>
+                <p className="text-xs text-gray-400">{organization?.license_count ?? 0} licenses</p>
+              </div>
+              <div className="space-y-2.5">
+                {(() => {
+                  const startDate = organization ? new Date(organization.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: '2-digit' }) : '—';
+                  const trialEnd = organization ? new Date(organization.trial_ends_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: '2-digit' }) : '—';
+                  const status = organization?.subscription_status ?? 'trial';
+                  return [
+                    { label: 'Started On', value: startDate },
+                    { label: status === 'trial' ? 'Trial Ends' : 'Renews On', value: trialEnd },
+                    { label: 'Status', value: status.charAt(0).toUpperCase() + status.slice(1) },
+                    { label: 'Billing Cycle', value: organization?.subscription_type ?? '—' },
+                  ];
+                })().map((item) => (
+                  <div key={item.label} className="flex items-center justify-between">
+                    <span className="text-xs text-gray-500">{item.label}</span>
+                    <span className="text-xs text-white font-medium">{item.value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Invoice History */}
+            <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <span className="w-5 h-5 flex items-center justify-center"><i className="ri-bill-line text-teal-400 text-sm" /></span>
+                  <h3 className="text-sm font-semibold text-white">Invoice History</h3>
+                </div>
+              </div>
+              <div className="bg-dark-900 rounded-lg border border-dark-700 p-6 text-center">
+                <span className="w-10 h-10 mx-auto mb-2 flex items-center justify-center text-gray-600">
+                  <i className="ri-bill-line text-2xl" />
+                </span>
+                <p className="text-xs text-gray-400 font-medium">No invoices yet</p>
+                <p className="text-[11px] text-gray-600 mt-1">
+                  Invoices will appear here once your trial converts to a paid plan.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* === SUBSCRIPTION TAB === */}
+        {activeTab === 'subscription' && (
+          <div className="space-y-4">
+            <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
+              <h3 className="text-sm font-semibold text-white mb-4">Available Plans</h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {[
+                  { name: 'Starter', price: '₹ 2,999', period: '/month', agents: '5 agents', features: ['Basic monitoring', 'Email alerts', '7-day data retention'], current: false },
+                  { name: 'Business', price: '₹ 9,999', period: '/month', agents: '50 agents', features: ['AI insights', 'Video recording', '30-day retention', 'Priority support'], current: true },
+                  { name: 'Enterprise', price: 'Custom', period: '', agents: 'Unlimited', features: ['Custom integrations', 'On-premise option', '1-year retention', 'Dedicated manager'], current: false },
+                ].map((plan) => (
+                  <div key={plan.name} className={`rounded-xl border p-5 ${plan.current ? 'bg-emerald-500/5 border-emerald-500/25' : 'bg-dark-900 border-dark-700'}`}>
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="text-sm font-bold text-white">{plan.name}</h4>
+                      {plan.current && <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-semibold">Current</span>}
+                    </div>
+                    <p className="text-lg font-bold text-white mb-1">{plan.price}<span className="text-xs text-gray-500 font-normal">{plan.period}</span></p>
+                    <p className="text-xs text-gray-500 mb-3">{plan.agents}</p>
+                    <ul className="space-y-1.5 mb-4">
+                      {plan.features.map((f) => (
+                        <li key={f} className="flex items-center gap-1.5 text-xs text-gray-400">
+                          <span className="w-3 h-3 flex items-center justify-center text-emerald-400"><i className="ri-check-line text-xs" /></span>
+                          {f}
+                        </li>
+                      ))}
+                    </ul>
+                    <button
+                      disabled={plan.current}
+                      className={`w-full py-2 rounded-lg text-xs font-medium transition-colors ${
+                        plan.current ? 'bg-dark-700 text-gray-500 cursor-not-allowed' : 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/25'
+                      }`}
+                    >
+                      {plan.current ? 'Active Plan' : 'Upgrade'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* === USERS TAB === */}
+        {activeTab === 'users' && (
+          <div className="bg-dark-800 border border-dark-700 rounded-xl overflow-hidden">
+            <div className="p-4 md:p-5 border-b border-dark-700 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <h3 className="text-sm font-semibold text-white">Organization Users</h3>
+              <button
+                onClick={() => setShowAddUser(true)}
+                className="px-3 py-1.5 rounded-lg bg-emerald-500/15 text-emerald-400 text-xs font-medium border border-emerald-500/25 hover:bg-emerald-500/25 transition-colors flex items-center gap-1.5"
+              >
+                <span className="w-3.5 h-3.5 flex items-center justify-center"><i className="ri-add-line text-xs" /></span>
+                Add User
+              </button>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[600px]">
+                <thead>
+                  <tr className="border-b border-dark-700">
+                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3">User</th>
+                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3">Role</th>
+                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3">Status</th>
+                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3">Last Login</th>
+                    <th className="text-right text-xs text-gray-500 font-medium px-4 py-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {orgUsers.map((user) => (
+                    <tr key={user.id} className="border-b border-dark-700/50 hover:bg-dark-700/30 transition-colors">
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 rounded-full bg-violet-500/15 flex items-center justify-center">
+                            <span className="text-xs text-violet-400 font-semibold">{user.name.charAt(0)}</span>
+                          </div>
+                          <div>
+                            <p className="text-sm text-white font-medium">{user.name}</p>
+                            <p className="text-xs text-gray-500">{user.email}</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${
+                          user.role === 'Super Admin' ? 'bg-red-500/15 text-red-400 border border-red-500/20' :
+                          user.role === 'Manager' ? 'bg-amber-500/15 text-amber-400 border border-amber-500/20' :
+                          'bg-sky-500/15 text-sky-400 border border-sky-500/20'
+                        }`}>
+                          {user.role}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                          user.status === 'active'
+                            ? 'bg-emerald-500/15 text-emerald-400'
+                            : user.status === 'pending'
+                              ? 'bg-amber-500/15 text-amber-400'
+                              : 'bg-gray-500/15 text-gray-400'
+                        }`}>
+                          {user.status === 'active' ? 'Active' : user.status === 'pending' ? 'Pending' : 'Inactive'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-400">{user.lastLogin}</td>
+                      <td className="px-4 py-3 text-right">
+                        <button
+                          onClick={() => openEditModal(user)}
+                          className="px-3 py-1.5 rounded-lg bg-dark-700 text-gray-300 hover:text-white text-[11px] font-medium hover:bg-dark-600 transition-colors"
+                        >
+                          Edit
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Add User Modal */}
+            {showAddUser && (
+              <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+                <div className="bg-dark-800 border border-dark-700 rounded-xl w-full max-w-md p-5">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-sm font-semibold text-white">Add New User</h3>
+                    <button onClick={() => setShowAddUser(false)} className="w-7 h-7 flex items-center justify-center text-gray-500 hover:text-white">
+                      <i className="ri-close-line text-sm" />
+                    </button>
+                  </div>
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-[11px] text-gray-500 block mb-1">Full Name</label>
+                      <input
+                        type="text"
+                        value={addName}
+                        onChange={(e) => setAddName(e.target.value)}
+                        className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50"
+                        placeholder="Enter name"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] text-gray-500 block mb-1">Email</label>
+                      <input
+                        type="email"
+                        value={addEmail}
+                        onChange={(e) => setAddEmail(e.target.value)}
+                        className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50"
+                        placeholder="user@company.com"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] text-gray-500 block mb-1">Role</label>
+                      <select
+                        value={addRole}
+                        onChange={(e) => setAddRole(e.target.value)}
+                        className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50"
+                      >
+                        {roles.map((r) => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  {inviteError && (
+                    <div className="mt-3 px-3 py-2 rounded-lg border border-red-500/30 bg-red-500/10 text-red-300 text-[11px]">
+                      {inviteError}
+                    </div>
+                  )}
+                  <p className="text-[11px] text-gray-500 mt-3">
+                    A magic-link invite is sent. The user joins your org once they confirm their email.
+                  </p>
+                  <div className="flex items-center gap-2 mt-3">
+                    <button onClick={() => setShowAddUser(false)} className="flex-1 py-2 rounded-lg border border-dark-700 text-gray-400 text-xs font-medium hover:bg-dark-700 transition-colors">
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleAddUser}
+                      disabled={inviteBusy}
+                      className="flex-1 py-2 rounded-lg bg-emerald-500/15 text-emerald-400 text-xs font-medium border border-emerald-500/25 hover:bg-emerald-500/25 disabled:opacity-50 transition-colors"
+                    >
+                      {inviteBusy ? 'Sending…' : 'Send Invite'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Edit User Modal */}
+            {showEditUser && editingUser && (
+              <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+                <div className="bg-dark-800 border border-dark-700 rounded-xl w-full max-w-md p-5">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-sm font-semibold text-white">Edit User</h3>
+                    <button
+                      onClick={() => { setShowEditUser(false); setEditingUser(null); }}
+                      className="w-7 h-7 flex items-center justify-center text-gray-500 hover:text-white"
+                    >
+                      <i className="ri-close-line text-sm" />
+                    </button>
+                  </div>
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-[11px] text-gray-500 block mb-1">Full Name</label>
+                      <input
+                        type="text"
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50"
+                        placeholder="Enter name"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] text-gray-500 block mb-1">Email</label>
+                      <input
+                        type="email"
+                        value={editEmail}
+                        onChange={(e) => setEditEmail(e.target.value)}
+                        className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50"
+                        placeholder="user@company.com"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[11px] text-gray-500 block mb-1">Role</label>
+                        <select
+                          value={editRole}
+                          onChange={(e) => setEditRole(e.target.value)}
+                          className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50"
+                        >
+                          {roles.map((r) => <option key={r} value={r}>{r}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[11px] text-gray-500 block mb-1">Status</label>
+                        <select
+                          value={editStatus}
+                          onChange={(e) => setEditStatus(e.target.value)}
+                          className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50"
+                        >
+                          <option value="active">Active</option>
+                          <option value="inactive">Inactive</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Password Reset Section */}
+                    <div className="border-t border-dark-700 pt-3 mt-1">
+                      {!showResetPassword && !resetSuccess && (
+                        <button
+                          onClick={() => setShowResetPassword(true)}
+                          className="flex items-center gap-1.5 text-xs text-amber-400 hover:text-amber-300 transition-colors"
+                        >
+                          <span className="w-3.5 h-3.5 flex items-center justify-center"><i className="ri-lock-unlock-line text-xs" /></span>
+                          Reset Password
+                        </button>
+                      )}
+
+                      {showResetPassword && !resetSuccess && (
+                        <div className="space-y-3">
+                          <p className="text-xs text-white font-medium">Reset Password</p>
+                          <div>
+                            <label className="text-[11px] text-gray-500 block mb-1">New Password</label>
+                            <input
+                              type="password"
+                              value={newPassword}
+                              onChange={(e) => { setNewPassword(e.target.value); setResetError(''); }}
+                              className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50"
+                              placeholder="Min 6 characters"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[11px] text-gray-500 block mb-1">Confirm Password</label>
+                            <input
+                              type="password"
+                              value={confirmPassword}
+                              onChange={(e) => { setConfirmPassword(e.target.value); setResetError(''); }}
+                              className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50"
+                              placeholder="Re-enter password"
+                            />
+                          </div>
+                          {resetError && (
+                            <p className="text-[11px] text-red-400 flex items-center gap-1">
+                              <span className="w-3 h-3 flex items-center justify-center"><i className="ri-error-warning-line text-xs" /></span>
+                              {resetError}
+                            </p>
+                          )}
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => { setShowResetPassword(false); setResetError(''); setNewPassword(''); setConfirmPassword(''); }}
+                              className="px-3 py-1.5 rounded-lg border border-dark-700 text-gray-400 text-[11px] font-medium hover:bg-dark-700 transition-colors"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              onClick={handleResetPassword}
+                              className="px-3 py-1.5 rounded-lg bg-amber-500/15 text-amber-400 text-[11px] font-medium border border-amber-500/25 hover:bg-amber-500/25 transition-colors"
+                            >
+                              Update Password
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {resetSuccess && (
+                        <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-3 flex items-center gap-2">
+                          <span className="w-4 h-4 flex items-center justify-center text-emerald-400"><i className="ri-check-line text-xs" /></span>
+                          <p className="text-xs text-emerald-400 font-medium">Password reset successfully!</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 mt-5">
+                    <button
+                      onClick={() => { setShowEditUser(false); setEditingUser(null); }}
+                      className="flex-1 py-2 rounded-lg border border-dark-700 text-gray-400 text-xs font-medium hover:bg-dark-700 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleSaveUser}
+                      className="flex-1 py-2 rounded-lg bg-emerald-500/15 text-emerald-400 text-xs font-medium border border-emerald-500/25 hover:bg-emerald-500/25 transition-colors"
+                    >
+                      Save Changes
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* === SETTINGS TAB === */}
+        {activeTab === 'settings' && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Capture Controls */}
+            <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <span className="w-5 h-5 flex items-center justify-center"><i className="ri-camera-line text-emerald-400 text-sm" /></span>
+                <h3 className="text-sm font-semibold text-white">Default Capture Controls</h3>
+              </div>
+              <p className="text-[11px] text-gray-500 mb-4">These settings apply to all newly registered agents. Override per agent on their detail page.</p>
+              <div className="space-y-3">
+                {[
+                  { label: 'Auto Screenshot', desc: 'Capture screen on activity change', state: autoScreenshot, set: setAutoScreenshot },
+                  { label: 'Auto Video Recording', desc: 'Record 10-min clips every interval', state: autoVideo, set: setAutoVideo },
+                ].map((item) => (
+                  <div key={item.label} className="flex items-center justify-between bg-dark-900 rounded-lg border border-dark-700 p-3">
+                    <div>
+                      <p className="text-xs text-white font-medium">{item.label}</p>
+                      <p className="text-[11px] text-gray-500">{item.desc}</p>
+                    </div>
+                    <button
+                      onClick={() => item.set(!item.state)}
+                      className={`w-10 h-5 rounded-full transition-colors relative ${item.state ? 'bg-emerald-500' : 'bg-dark-700'}`}
+                    >
+                      <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${item.state ? 'left-[22px]' : 'left-[2px]'}`} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Alert Settings */}
+            <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <span className="w-5 h-5 flex items-center justify-center"><i className="ri-notification-3-line text-amber-400 text-sm" /></span>
+                <h3 className="text-sm font-semibold text-white">Alert Settings</h3>
+              </div>
+              <div className="space-y-3">
+                {[
+                  { label: 'Email Notifications', desc: 'Send alert emails to admins', state: emailNotifications, set: setEmailNotifications },
+                  { label: 'AI Auto-Resolution', desc: 'Let AI attempt to fix alerts', state: aiAlerts, set: setAiAlerts },
+                ].map((item) => (
+                  <div key={item.label} className="flex items-center justify-between bg-dark-900 rounded-lg border border-dark-700 p-3">
+                    <div>
+                      <p className="text-xs text-white font-medium">{item.label}</p>
+                      <p className="text-[11px] text-gray-500">{item.desc}</p>
+                    </div>
+                    <button
+                      onClick={() => item.set(!item.state)}
+                      className={`w-10 h-5 rounded-full transition-colors relative ${item.state ? 'bg-emerald-500' : 'bg-dark-700'}`}
+                    >
+                      <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${item.state ? 'left-[22px]' : 'left-[2px]'}`} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Data Policy */}
+            <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <span className="w-5 h-5 flex items-center justify-center"><i className="ri-database-2-line text-sky-400 text-sm" /></span>
+                <h3 className="text-sm font-semibold text-white">Data & Privacy</h3>
+              </div>
+              <div className="space-y-3">
+                <div className="bg-dark-900 rounded-lg border border-dark-700 p-3">
+                  <label className="text-xs text-white font-medium block mb-2">Data Retention (days)</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="range" min="7" max="365" value={dataRetention}
+                      onChange={(e) => setDataRetention(e.target.value)}
+                      className="flex-1 accent-emerald-500"
+                    />
+                    <span className="text-xs text-emerald-400 font-medium w-10 text-right">{dataRetention}</span>
+                  </div>
+                </div>
+                <div className="bg-dark-900 rounded-lg border border-dark-700 p-3">
+                  <label className="text-xs text-white font-medium block mb-2">Idle Threshold (minutes)</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="range" min="5" max="60" value={idleThreshold}
+                      onChange={(e) => setIdleThreshold(e.target.value)}
+                      className="flex-1 accent-emerald-500"
+                    />
+                    <span className="text-xs text-emerald-400 font-medium w-10 text-right">{idleThreshold}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Danger Zone */}
+            <div className="bg-dark-800 border border-red-500/20 rounded-xl p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <span className="w-5 h-5 flex items-center justify-center"><i className="ri-alert-line text-red-400 text-sm" /></span>
+                <h3 className="text-sm font-semibold text-white">Danger Zone</h3>
+              </div>
+              <div className="space-y-2">
+                {[
+                  { label: 'Purge All Screenshots', desc: 'Delete all stored screenshots', icon: 'ri-image-line' },
+                  { label: 'Purge All Videos', desc: 'Delete all stored video clips', icon: 'ri-video-line' },
+                  { label: 'Reset All Agents', desc: 'Disconnect and re-register all agents', icon: 'ri-refresh-line' },
+                ].map((action) => (
+                  <div key={action.label} className="flex items-center justify-between bg-dark-900 rounded-lg border border-dark-700 p-3">
+                    <div className="flex items-center gap-2">
+                      <span className="w-4 h-4 flex items-center justify-center text-gray-600"><i className={`${action.icon} text-xs`} /></span>
+                      <div>
+                        <p className="text-xs text-white font-medium">{action.label}</p>
+                        <p className="text-[11px] text-gray-500">{action.desc}</p>
+                      </div>
+                    </div>
+                    <button className="px-3 py-1.5 rounded-lg border border-red-500/30 text-red-400 text-[11px] font-medium hover:bg-red-500/10 transition-colors">
+                      Run
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </DashboardLayout>
+  );
+}

@@ -1,0 +1,19 @@
+project_id = "ttjazaxjhzvrzhptrpmd"
+
+[functions.enroll-agent]
+verify_jwt = false
+
+[functions.ingest]
+verify_jwt = false
+
+[functions.agent-settings]
+verify_jwt = false
+
+[functions.upload-screenshot]
+verify_jwt = false
+
+[functions.upload-video]
+verify_jwt = false
+
+[functions.invite-member]
+verify_jwt = false

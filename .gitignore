@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output
+dist/
+dist-mac/
+agent/dist/
+agent/dist-mac/
+agent/src-tauri/target/
+agent/src-tauri/gen/schemas/
+
+# Environment / secrets — never commit
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Tauri runtime config (dev only)
+agent/src-tauri/.cargo/
+agent/src-tauri/WixTools/
+
+# Combined SQL scratch
+supabase/_combined_setup.sql
+
+# Screenshots local
+Screenshot*.png

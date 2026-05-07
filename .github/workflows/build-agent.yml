@@ -1,0 +1,161 @@
+# Cross-platform agent build pipeline.
+# Builds the Tauri agent on each OS's native runner (macOS/Windows/Linux) so the produced
+# .pkg/.msi/.deb installers carry the right toolchain artifacts (WiX for MSI, dpkg for deb,
+# Apple codesign hooks for pkg). Each artifact is uploaded to the Supabase Storage
+# `releases` bucket so the dashboard's Setup page download buttons resolve.
+#
+# Triggers:
+#   - Manual dispatch (Actions tab → Run workflow)
+#   - Push of a tag matching v* (release flow)
+#
+# Required GitHub repo secret:
+#   SUPABASE_ACCESS_TOKEN  — sbp_… personal access token from supabase.com/dashboard/account/tokens
+# Optional:
+#   SUPABASE_PROJECT_REF   — defaults to ttjazaxjhzvrzhptrpmd
+
+name: Build & Publish Agent
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - 'v*'
+
+env:
+  SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF || 'ttjazaxjhzvrzhptrpmd' }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            bundle: app
+            artifact_glob: agent/src-tauri/target/release/bundle/macos/*.app
+            remote_name: TrackForce-Agent-macOS-arm64-${{ github.ref_name }}.pkg
+            packager: pkg
+          - os: macos-13
+            target: x86_64-apple-darwin
+            bundle: app
+            artifact_glob: agent/src-tauri/target/release/bundle/macos/*.app
+            remote_name: TrackForce-Agent-macOS-x64-${{ github.ref_name }}.pkg
+            packager: pkg
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundle: msi
+            artifact_glob: agent/src-tauri/target/release/bundle/msi/*.msi
+            remote_name: TrackForce-Agent-Windows-${{ github.ref_name }}.msi
+            packager: passthrough
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundle: deb
+            artifact_glob: agent/src-tauri/target/release/bundle/deb/*.deb
+            remote_name: trackforce-agent_${{ github.ref_name }}_amd64.deb
+            packager: passthrough
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Linux build deps
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev
+
+      - name: Install agent JS deps
+        working-directory: agent
+        run: npm ci || npm install
+
+      - name: Build agent
+        working-directory: agent
+        run: npm run tauri build -- --bundles ${{ matrix.bundle }} --target ${{ matrix.target }}
+
+      - name: Wrap macOS .app into signed .pkg
+        if: matrix.packager == 'pkg'
+        run: |
+          chmod +x agent/scripts/build-mac-pkg.sh
+          # The build-mac-pkg.sh script rebuilds, so just re-stage and use pkgbuild directly.
+          APP_PATH=$(ls -d agent/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app | head -1)
+          STAGE=agent/dist-mac/stage
+          mkdir -p "$STAGE/Applications"
+          cp -R "$APP_PATH" "$STAGE/Applications/"
+          # Generate uninstaller .app
+          osacompile -o "$STAGE/Applications/Uninstall TrackForce Agent.app" -e \
+            'do shell script "/Applications/TrackForce Agent.app/Contents/MacOS/TrackForce Agent --uninstall || true" with administrator privileges'
+          pkgbuild --root "$STAGE" \
+            --identifier com.trackforce.agent \
+            --version "${{ github.ref_name }}" \
+            --install-location "/" \
+            "agent/dist-mac/${{ matrix.remote_name }}"
+
+      - name: Locate artifact (passthrough)
+        if: matrix.packager == 'passthrough'
+        id: passthrough
+        shell: bash
+        run: |
+          FILE=$(ls ${{ matrix.artifact_glob }} | head -1)
+          mkdir -p agent/dist
+          cp "$FILE" "agent/dist/${{ matrix.remote_name }}"
+          echo "path=agent/dist/${{ matrix.remote_name }}" >> $GITHUB_OUTPUT
+
+      - name: Upload to Supabase Storage
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          if [ "${{ matrix.packager }}" = "pkg" ]; then
+            ARTIFACT="agent/dist-mac/${{ matrix.remote_name }}"
+          else
+            ARTIFACT="agent/dist/${{ matrix.remote_name }}"
+          fi
+          # Resolve service_role key
+          SR_KEY=$(curl -fsS \
+            -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
+            "https://api.supabase.com/v1/projects/${{ env.SUPABASE_PROJECT_REF }}/api-keys?reveal=true" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print(next(k['api_key'] for k in d if k['name']=='service_role'))")
+          UPLOAD_URL="https://${{ env.SUPABASE_PROJECT_REF }}.supabase.co/storage/v1/object/releases/${{ matrix.remote_name }}"
+          # Upsert: PUT replaces if exists.
+          HTTP=$(curl -s -o /tmp/r.json -w "%{http_code}" \
+            -X POST "$UPLOAD_URL" \
+            -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary "@$ARTIFACT")
+          if [ "$HTTP" = "409" ] || [ "$HTTP" = "400" ]; then
+            HTTP=$(curl -s -o /tmp/r.json -w "%{http_code}" \
+              -X PUT "$UPLOAD_URL" \
+              -H "Authorization: Bearer $SR_KEY" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary "@$ARTIFACT")
+          fi
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "upload failed: HTTP $HTTP"; cat /tmp/r.json; exit 1
+          fi
+          echo "Uploaded → https://${{ env.SUPABASE_PROJECT_REF }}.supabase.co/storage/v1/object/public/releases/${{ matrix.remote_name }}"
+
+      - name: Upload artifact to GitHub run (debug)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ${{ matrix.remote_name }}
+          path: |
+            agent/dist-mac/${{ matrix.remote_name }}
+            agent/dist/${{ matrix.remote_name }}
+          if-no-files-found: ignore
