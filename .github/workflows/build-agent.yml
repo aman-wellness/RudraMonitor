@@ -33,25 +33,25 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             bundle: app
-            artifact_glob: agent/src-tauri/target/release/bundle/macos/*.app
+            artifact_glob: agent/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
             remote_name: TrackForce-Agent-macOS-arm64-${{ github.ref_name }}.pkg
             packager: pkg
           - os: macos-13
             target: x86_64-apple-darwin
             bundle: app
-            artifact_glob: agent/src-tauri/target/release/bundle/macos/*.app
+            artifact_glob: agent/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
             remote_name: TrackForce-Agent-macOS-x64-${{ github.ref_name }}.pkg
             packager: pkg
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bundle: msi
-            artifact_glob: agent/src-tauri/target/release/bundle/msi/*.msi
+            artifact_glob: agent/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
             remote_name: TrackForce-Agent-Windows-${{ github.ref_name }}.msi
             packager: passthrough
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             bundle: deb
-            artifact_glob: agent/src-tauri/target/release/bundle/deb/*.deb
+            artifact_glob: agent/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
             remote_name: trackforce-agent_${{ github.ref_name }}_amd64.deb
             packager: passthrough
 
@@ -87,7 +87,10 @@ jobs:
             libxcb1-dev \
             libxcb-randr0-dev \
             libxcb-shape0-dev \
-            libxcb-xfixes0-dev
+            libxcb-xfixes0-dev \
+            libpipewire-0.3-dev \
+            libspa-0.2-dev \
+            libdbus-1-dev
 
       - name: Install agent JS deps
         working-directory: agent
@@ -97,21 +100,19 @@ jobs:
         working-directory: agent
         run: npm run tauri build -- --bundles ${{ matrix.bundle }} --target ${{ matrix.target }}
 
-      - name: Wrap macOS .app into signed .pkg
+      - name: Wrap macOS .app into .pkg
         if: matrix.packager == 'pkg'
         run: |
-          chmod +x agent/scripts/build-mac-pkg.sh
-          # The build-mac-pkg.sh script rebuilds, so just re-stage and use pkgbuild directly.
           APP_PATH=$(ls -d agent/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app | head -1)
           STAGE=agent/dist-mac/stage
-          mkdir -p "$STAGE/Applications"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/Applications" agent/dist-mac
           cp -R "$APP_PATH" "$STAGE/Applications/"
-          # Generate uninstaller .app
           osacompile -o "$STAGE/Applications/Uninstall TrackForce Agent.app" -e \
             'do shell script "/Applications/TrackForce Agent.app/Contents/MacOS/TrackForce Agent --uninstall || true" with administrator privileges'
           pkgbuild --root "$STAGE" \
             --identifier com.trackforce.agent \
-            --version "${{ github.ref_name }}" \
+            --version "0.1.0" \
             --install-location "/" \
             "agent/dist-mac/${{ matrix.remote_name }}"
 
