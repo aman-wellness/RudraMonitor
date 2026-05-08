@@ -37,6 +37,11 @@ image = { version = "0.25", default-features = false, features = ["jpeg"] }
 base64 = "0.22"
 user-idle = "0.5"
 starship-battery = "0.10"
+# DLP — filesystem watcher for USB-transfer detection and SHA256 for file hashes
+notify = "6"
+notify-debouncer-mini = "0.4"
+sha2 = "0.10"
+hex = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

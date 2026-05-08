@@ -6,6 +6,7 @@ mod active_window;
 mod api;
 mod browser_url;
 mod config;
+mod dlp;
 mod watchdog;
 
 pub use watchdog::{is_guardian_invocation, run_guardian_loop, mark_graceful_shutdown};
@@ -919,8 +920,9 @@ pub fn run() {
                 }
             }
 
-            spawn_background_loop(state);
+            spawn_background_loop(state.clone());
             spawn_updater_loop(app.handle().clone());
+            spawn_dlp_loop(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -938,6 +940,56 @@ pub fn run() {
 // Periodic updater check. Runs once on launch, then every UPDATE_CHECK_INTERVAL_SECS.
 // Silently downloads + applies updates if signed manifest endpoint resolves a newer version.
 // Failures are logged but never break the agent — the rest of the app keeps running.
+// DLP USB-transfer watcher. Reconciles attached removable drives every 5s and
+// posts file events to the dashboard via dlp-ingest. The edge fn handles AI
+// classification + email alerts on its side.
+fn spawn_dlp_loop(state: AppState) {
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    // Tokio unbounded channel — `send()` is sync (never blocks), so we can call
+    // it from the synchronous notify watcher thread. Drain happens in async land.
+    let (tx, mut rx) = mpsc::unbounded_channel::<dlp::DlpFileEvent>();
+    let sink: Arc<dyn Fn(dlp::DlpFileEvent) + Send + Sync> = Arc::new(move |ev| {
+        let _ = tx.send(ev);
+    });
+    let watcher = Arc::new(dlp::DlpWatcher::new(sink));
+
+    // Reconcile loop — discovers new USB drives, drops detached ones.
+    let w_clone = watcher.clone();
+    tauri::async_runtime::spawn(async move {
+        sleep(Duration::from_secs(15)).await;  // let the rest of startup finish
+        loop {
+            w_clone.reconcile();
+            sleep(Duration::from_secs(5)).await;
+        }
+    });
+
+    // Drain loop — converts each captured file event into a dlp-ingest POST.
+    tauri::async_runtime::spawn(async move {
+        while let Some(ev) = rx.recv().await {
+            if let Err(e) = post_dlp_event(&state, ev).await {
+                log::warn!("dlp post failed: {e}");
+            }
+        }
+    });
+}
+
+async fn post_dlp_event(state: &AppState, ev: dlp::DlpFileEvent) -> Result<()> {
+    let cfg = state.config.lock().await.clone();
+    let enrollment = cfg.enrollment.clone().ok_or_else(|| anyhow!("not enrolled"))?;
+    let supabase_url = config::supabase_url(&cfg).ok_or_else(|| anyhow!("no supabase url"))?;
+    let anon_key = config::supabase_anon_key(&cfg).ok_or_else(|| anyhow!("no anon key"))?;
+
+    // Active window snapshot for context — useful for the AI classifier.
+    let active_window = active_window::current()
+        .map(|w| format!("{} — {}", w.app_name, w.window_title));
+
+    let payload = dlp::to_payload(&ev, active_window);
+    let client = api::build_client()?;
+    api::dlp_ingest(&client, &supabase_url, &anon_key, &enrollment.enroll_token, &payload).await
+}
+
 fn spawn_updater_loop(handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         // Small initial delay so the rest of setup completes first.

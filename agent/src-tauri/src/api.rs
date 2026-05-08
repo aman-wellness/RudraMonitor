@@ -103,6 +103,32 @@ pub async fn validate_license(
     Ok(json)
 }
 
+/// Send a DLP event (USB transfer / email attachment / etc.) to the dashboard.
+/// Server-side this triggers AI classification + email alert if unauthorized.
+pub async fn dlp_ingest(
+    client: &Client,
+    supabase_url: &str,
+    anon_key: &str,
+    enroll_token: &str,
+    payload: &Value,
+) -> Result<()> {
+    let url = format!("{}/functions/v1/dlp-ingest", supabase_url.trim_end_matches('/'));
+    let resp = client
+        .post(&url)
+        .bearer_auth(anon_key)
+        .header("apikey", anon_key)
+        .header("X-Agent-Token", enroll_token)
+        .json(payload)
+        .send()
+        .await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("dlp-ingest: {} — {}", status, body));
+    }
+    Ok(())
+}
+
 pub fn build_client() -> Result<Client> {
     Ok(Client::builder()
         .timeout(Duration::from_secs(20))
