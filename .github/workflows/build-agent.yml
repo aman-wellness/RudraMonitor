@@ -138,17 +138,30 @@ jobs:
         run: |
           BASE="agent/src-tauri/target/${{ matrix.target }}/release/bundle"
           shopt -s nullglob
-          # Tauri picks the updater archive based on bundle type.
-          for f in "$BASE"/macos/*.app.tar.gz "$BASE"/msi/*.msi.zip "$BASE"/nsis/*.nsis.zip "$BASE"/appimage/*.AppImage.tar.gz "$BASE"/deb/*.deb.tar.gz; do
-            if [ -f "$f" ] && [ -f "${f}.sig" ]; then
-              echo "found: $f"
-              cp "$f" "agent/dist-update-$(basename "$f")"
-              cp "${f}.sig" "agent/dist-update-$(basename "$f").sig"
-              echo "bundle=agent/dist-update-$(basename "$f")" >> $GITHUB_OUTPUT
-              echo "sig=agent/dist-update-$(basename "$f").sig" >> $GITHUB_OUTPUT
-              echo "name=$(basename "$f")" >> $GITHUB_OUTPUT
-              break
-            fi
+          # Tauri picks the updater archive based on bundle type. macOS writes the
+          # archive with the productName (which has a space — "TrackForce Agent"),
+          # so we rename to a URL-safe filename before upload.
+          # We try each known updater-bundle path; first match wins.
+          declare -A EXTS=(
+            [macos]="app.tar.gz"
+            [msi]="msi.zip"
+            [nsis]="nsis.zip"
+            [appimage]="AppImage.tar.gz"
+            [deb]="deb.tar.gz"
+          )
+          for sub in macos msi nsis appimage deb; do
+            for f in "$BASE/$sub"/*.${EXTS[$sub]}; do
+              if [ -f "$f" ] && [ -f "${f}.sig" ]; then
+                echo "found: $f"
+                SAFE="TrackForce-Agent-${{ matrix.target }}-${{ github.ref_name }}.${EXTS[$sub]}"
+                cp "$f" "agent/$SAFE"
+                cp "${f}.sig" "agent/${SAFE}.sig"
+                echo "bundle=agent/$SAFE" >> $GITHUB_OUTPUT
+                echo "sig=agent/${SAFE}.sig" >> $GITHUB_OUTPUT
+                echo "name=$SAFE" >> $GITHUB_OUTPUT
+                break 2
+              fi
+            done
           done
 
       - name: Upload updater bundle to Supabase
