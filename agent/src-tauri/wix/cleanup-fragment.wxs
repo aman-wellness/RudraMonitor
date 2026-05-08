@@ -8,12 +8,18 @@
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Fragment>
+    <!--
+      Impersonate="yes" so the action runs as the installing user, NOT as SYSTEM.
+      Without impersonation, %APPDATA% resolves to the SYSTEM profile
+      (C:\Windows\system32\config\systemprofile\AppData) and the user's actual
+      TrackForceAgent data dir is left behind.
+      -->
     <CustomAction
       Id="RunSelfUninstall"
       FileKey="MainExecutable"
       ExeCommand="--uninstall"
       Execute="deferred"
-      Impersonate="no"
+      Impersonate="yes"
       Return="ignore" />
 
     <InstallExecuteSequence>

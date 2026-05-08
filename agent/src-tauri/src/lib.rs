@@ -416,7 +416,26 @@ async fn settings_tick(state: &AppState) -> Result<()> {
     let anon_key = config::supabase_anon_key(&cfg).ok_or_else(|| anyhow!("no anon key"))?;
 
     let client = api::build_client()?;
-    let s = api::fetch_settings(&client, &supabase_url, &anon_key, &enrollment.enroll_token).await?;
+    let s = match api::fetch_settings(&client, &supabase_url, &anon_key, &enrollment.enroll_token).await {
+        Ok(s) => s,
+        Err(e) => {
+            // If the server says this enrollment doesn't exist (404/401/403), the
+            // org admin probably deleted this agent from the portal. Clear local
+            // enrollment so the next heartbeat falls back to the setup screen
+            // instead of looping on a dead agent_id forever.
+            let msg = e.to_string();
+            if msg.contains("404") || msg.contains("401") || msg.contains("403")
+                || msg.to_lowercase().contains("not found")
+            {
+                log::warn!("server rejected enrollment ({msg}) — clearing local config to re-enroll");
+                let mut cfg_w = state.config.lock().await;
+                cfg_w.enrollment = None;
+                cfg_w.license_key = None;
+                let _ = config::save(&cfg_w);
+            }
+            return Err(e);
+        }
+    };
     *state.settings.lock().await = s;
 
     // License re-validation. If a license_key is configured we honour it; if not,
@@ -688,6 +707,38 @@ async fn ready(state: &AppState) -> bool {
 /// Designed to be idempotent: running it twice is harmless. Running it on a partially
 /// installed system (e.g. dev builds) cleans up whatever bits exist and ignores the rest.
 pub fn uninstall_self() -> Result<()> {
+    // 0. Mark graceful shutdown + give the watchdog a moment to notice. Without this
+    //    the guardian process polls every 2s and may respawn the agent mid-wipe.
+    watchdog::mark_graceful_shutdown();
+    std::thread::sleep(std::time::Duration::from_secs(3));
+
+    // 0a. Kill the running agent + guardian by their recorded PIDs (not by image name —
+    //    that would kill THIS uninstall process too). We skip our own PID so the
+    //    uninstall continues to run.
+    let my_pid = std::process::id();
+    if let Some(base) = dirs::data_dir() {
+        let dir = base.join("TrackForceAgent");
+        for pid_file in &["agent.pid", "guardian.pid"] {
+            if let Ok(raw) = std::fs::read_to_string(dir.join(pid_file)) {
+                if let Ok(pid) = raw.trim().parse::<u32>() {
+                    if pid == my_pid { continue; }
+                    #[cfg(target_os = "windows")]
+                    {
+                        let _ = std::process::Command::new("taskkill")
+                            .args(["/F", "/PID", &pid.to_string()])
+                            .status();
+                    }
+                    #[cfg(unix)]
+                    unsafe {
+                        let _ = libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                    }
+                }
+            }
+        }
+    }
+    // Brief pause so the OS releases file handles held by the killed processes.
+    std::thread::sleep(std::time::Duration::from_secs(1));
+
     // 1. Disable autolaunch. We touch each platform's launcher path directly — pulling in
     //    Tauri's autostart plugin would require a running App handle, which we don't have here.
     #[cfg(target_os = "macos")]
@@ -723,10 +774,25 @@ pub fn uninstall_self() -> Result<()> {
         }
     }
 
-    // 2. Wipe agent.json + any sibling state.
+    // 2. Wipe agent.json + any sibling state. Retry briefly because on Windows
+    //    file handles can linger for a second or two after process termination.
     if let Ok(path) = config::config_path() {
         if let Some(dir) = path.parent() {
-            let _ = std::fs::remove_dir_all(dir);
+            for attempt in 0..5 {
+                if std::fs::remove_dir_all(dir).is_ok() { break; }
+                std::thread::sleep(std::time::Duration::from_millis(500 * (attempt + 1) as u64));
+            }
+            // Final fallback on Windows: scheduled cmd that nukes the dir after we exit.
+            #[cfg(target_os = "windows")]
+            if dir.exists() {
+                let dir_str = dir.display().to_string();
+                let _ = std::process::Command::new("cmd")
+                    .args([
+                        "/C",
+                        &format!("ping 127.0.0.1 -n 5 > nul && rmdir /s /q \"{}\"", dir_str),
+                    ])
+                    .spawn();
+            }
         }
     }
 
@@ -806,26 +872,39 @@ pub fn run() {
             let state = AppState::new(cfg);
             app.manage(state.clone());
 
-            // Stealth mode on macOS: no dock icon, no menu bar — pure background process.
-            // The tray icon is also skipped post-enrollment so the user has zero visible UI.
+            // macOS activation policy: Accessory = tray-only (no dock icon).
+            // Regular = full app with dock. We use Regular for fresh installs
+            // (so the setup window grabs focus) and Accessory once enrolled +
+            // licensed (background-only). Tray icon is always present so the
+            // user can re-enter the UI if stale state ever blocks them.
             #[cfg(target_os = "macos")]
             {
-                let policy = if enrolled {
-                    tauri::ActivationPolicy::Accessory
-                } else {
+                let needs_setup_mac = !enrolled
+                    || state.config.try_lock().map(|c| c.license_key.is_none()).unwrap_or(false);
+                let policy = if needs_setup_mac {
                     tauri::ActivationPolicy::Regular
+                } else {
+                    tauri::ActivationPolicy::Accessory
                 };
                 let _ = app.set_activation_policy(policy);
             }
 
-            // Show enrollment window only if the agent hasn't been enrolled yet.
-            // Once enrolled, the agent is fully silent — no window, no dock, no tray.
-            if !enrolled {
+            // Always build the tray so users have a way back to the UI even when
+            // enrolled (re-enroll, sign out, manual updates check, support escape
+            // hatch when stale state exists). Tray is the minimum visible UI.
+            build_tray(app)?;
+
+            // Show the main window automatically only when there is no enrollment
+            // OR no license key yet — so users always see the setup screen on a
+            // fresh install. Re-installs that find stale agent.json now still
+            // surface the UI via the tray.
+            let needs_setup = !enrolled
+                || state.config.try_lock().map(|c| c.license_key.is_none()).unwrap_or(false);
+            if needs_setup {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.show();
                     let _ = w.set_focus();
                 }
-                build_tray(app)?;
             }
 
             spawn_background_loop(state);

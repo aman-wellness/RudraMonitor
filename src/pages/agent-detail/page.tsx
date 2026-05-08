@@ -189,10 +189,40 @@ export default function AgentDetailPage() {
                   <i className="ri-information-line text-base mt-0.5" />
                   <div>
                     <p className="font-medium text-amber-200">Many sessions are missing URLs</p>
-                    <p className="text-amber-300/80 mt-0.5">
-                      On macOS, grant Automation permission so the agent can read browser tab URLs.
-                      System Settings → Privacy &amp; Security → Automation → TrackForce Agent → enable Chrome / Brave / Safari.
-                    </p>
+                    {(() => {
+                      const os = (agent.os ?? '').toLowerCase();
+                      if (os.includes('mac')) {
+                        return (
+                          <p className="text-amber-300/80 mt-0.5">
+                            On macOS, grant Automation permission so the agent can read browser tab URLs.
+                            System Settings → Privacy &amp; Security → Automation → TrackForce Agent → enable Chrome / Brave / Safari.
+                          </p>
+                        );
+                      }
+                      if (os.includes('win')) {
+                        return (
+                          <p className="text-amber-300/80 mt-0.5">
+                            On Windows, the agent reads URLs through the OS UI Automation API. If URLs are still missing,
+                            ensure PowerShell + .NET 4.x are available and the browser window is visible (UIA cannot read
+                            minimised or background windows). Restart the agent after browser updates.
+                          </p>
+                        );
+                      }
+                      if (os.includes('ubuntu') || os.includes('linux')) {
+                        return (
+                          <p className="text-amber-300/80 mt-0.5">
+                            On Linux, browser URL extraction is not yet implemented — only window titles are captured.
+                            Install xdotool / wmctrl for richer window metadata.
+                          </p>
+                        );
+                      }
+                      return (
+                        <p className="text-amber-300/80 mt-0.5">
+                          The agent could not extract tab URLs from the browser. Check the agent&apos;s OS-specific
+                          permissions and ensure the browser window is on the foreground.
+                        </p>
+                      );
+                    })()}
                   </div>
                 </div>
               )}

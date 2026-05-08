@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import { supabase, type Organization } from '../lib/supabase';
 
@@ -22,16 +22,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [organization, setOrganization] = useState<Organization | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const loadOrg = async (userId: string) => {
+  // Track which user we've already loaded the org for. Without this,
+  // every TOKEN_REFRESHED / SIGNED_IN-on-focus event re-fetches and creates
+  // a brand-new organization object reference, which cascades through every
+  // component that depends on it (useAgents, useActivityLogs, ...) and
+  // re-fires their fetches mid-flight — causing endless "Loading…" states
+  // when navigating.
+  const loadedForUser = useRef<string | null>(null);
+
+  const loadOrg = async (userId: string, force = false) => {
+    if (!force && loadedForUser.current === userId) return;
+    loadedForUser.current = userId;
     const { data } = await supabase
       .from('org_members')
       .select('org_id, organizations(*)')
       .eq('user_id', userId)
       .limit(1)
       .maybeSingle();
-    const org = data?.organizations as unknown;
-    if (Array.isArray(org)) setOrganization((org[0] as Organization) ?? null);
-    else setOrganization((org as Organization | null) ?? null);
+    const raw = data?.organizations as unknown;
+    const next = (Array.isArray(raw) ? raw[0] : raw) as Organization | null;
+    // Only update state if the org id actually changed; identical orgs would
+    // otherwise produce a new reference and re-render every consumer.
+    setOrganization((prev) => {
+      if (prev?.id === next?.id) return prev;
+      return next ?? null;
+    });
   };
 
   useEffect(() => {
@@ -40,10 +55,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (data.session?.user) await loadOrg(data.session.user.id);
       setLoading(false);
     });
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_e, s) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
+      // Ignore noisy events that don't represent a real user transition.
+      // INITIAL_SESSION fires right after getSession() above (duplicate);
+      // TOKEN_REFRESHED fires on tab focus / hourly; USER_UPDATED on profile edits.
+      if (event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+        setSession(s);
+        return;
+      }
       setSession(s);
-      if (s?.user) await loadOrg(s.user.id);
-      else setOrganization(null);
+      if (s?.user) {
+        loadedForUser.current = null;  // force reload on actual sign-in
+        void loadOrg(s.user.id);
+      } else {
+        loadedForUser.current = null;
+        setOrganization(null);
+      }
     });
     return () => sub.subscription.unsubscribe();
   }, []);
@@ -89,7 +116,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const refreshOrganization = async () => {
-    if (session?.user) await loadOrg(session.user.id);
+    if (session?.user) await loadOrg(session.user.id, true);
   };
 
   return (

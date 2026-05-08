@@ -83,84 +83,69 @@ pub fn current_for_app(app_name: &str) -> Option<BrowserContext> {
 // Windows
 // ---------------------------------------------------------------------------
 //
-// We use a single short PowerShell snippet that talks to the OS UIAutomation
-// API to read the focused browser's address bar and tab title. Spawning
-// powershell is ~80-150ms — comparable to osascript on macOS — and only fires
-// when a browser window is in focus, so the cost is bounded.
-//
-// The snippet looks up the foreground window, finds the Edit control whose
-// AutomationId is "addressEditBox" (Edge) or "url-bar" (Firefox) or any Edit
-// inside the Chrome/Brave document — Chromium-based browsers don't expose a
-// stable AutomationId, so we walk the tree and pick the first Edit child of
-// the toolbar.
+// Native UIA via the `uiautomation` Rust crate — no PowerShell subprocess. Each
+// poll runs in well under 50ms and bypasses PowerShell startup latency, which
+// was the main reason URLs weren't being captured earlier (PowerShell on
+// employee machines occasionally takes 2-5s to start, well past the agent's
+// effective polling budget).
 #[cfg(target_os = "windows")]
 pub fn current_for_app(_app_name: &str) -> Option<BrowserContext> {
-    // Caller (active_window::current) already verified this is a known browser
-    // process via the strict is_browser() check, so we don't re-filter here.
+    use uiautomation::UIAutomation;
+    use uiautomation::types::{TreeScope, UIProperty};
+    use uiautomation::variants::Variant;
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
-    // PowerShell + UIAutomation:
-    //   1. Win32 GetForegroundWindow → HWND of the topmost browser window
-    //   2. AutomationElement.FromHandle wraps the HWND in a UIA element
-    //   3. Walk descendants for Edit controls, pick the one whose value looks
-    //      like a URL (this is the address bar — works for Chrome / Edge /
-    //      Brave / Vivaldi / Opera / Firefox)
-    //   4. Output: <URL>\n<window title>
-    //
-    // This is more reliable than `[AutomationElement]::FocusedElement` which
-    // sometimes returns a popup or unrelated element.
-    const SCRIPT: &str = r#"
-$ErrorActionPreference='SilentlyContinue';
-Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes;
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class W { [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); }
-"@;
-$hwnd = [W]::GetForegroundWindow();
-if($hwnd -eq 0){ exit 0 };
-$ae = [System.Windows.Automation.AutomationElement];
-$top = $ae::FromHandle($hwnd);
-if($top -eq $null){ exit 0 };
-$title = $top.Current.Name;
-$cond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit);
-$edits = $top.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond);
-$url='';
-foreach($e in $edits){
-  $vp = $null;
-  if($e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$vp)){
-    try { $v = $vp.Current.Value } catch { continue };
-    if($v -and ($v -match '^[a-zA-Z]+://' -or $v -match '^[a-z0-9.-]+\.[a-z]{2,}')){ $url=$v; break };
-  }
-}
-"$url`n$title"
-"#;
+    // 1. Foreground HWND
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.0 == 0 { return None; }
 
-    let output = std::process::Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy", "Bypass",
-            "-Command", SCRIPT,
-        ])
-        .output()
+    // 2. Wrap in a UIA element. `UIAutomation::new()` is cheap (cached by the
+    //    crate). `element_from_handle` returns the AutomationElement for the
+    //    window's root.
+    let automation = UIAutomation::new().ok()?;
+    let root = automation.element_from_handle(hwnd.into()).ok()?;
+
+    // Window title (used as a fallback for page title; Chromium browsers expose
+    // the active tab title here as "Page Title - Browser Name").
+    let title = root.get_name().ok().filter(|s| !s.is_empty());
+
+    // 3. Walk descendants looking for Edit controls. The address bar is always
+    //    an Edit (ControlType::Edit). On Chromium the AutomationId varies by
+    //    browser, but the address bar value always passes the URL/host regex
+    //    below. We grab the first Edit whose value looks like a URL.
+    let edit_cond = automation
+        .create_property_condition(UIProperty::ControlType, Variant::from(50004i32), None)
         .ok()?;
-    if !output.status.success() { return None; }
-    let raw = String::from_utf8_lossy(&output.stdout);
-    let trimmed = raw.trim();
-    if trimmed.is_empty() { return None; }
+    let edits = root.find_all(TreeScope::Descendants, &edit_cond).ok()?;
 
-    let mut lines = trimmed.split('\n');
-    let mut url = lines.next().map(|s| s.trim().to_string()).unwrap_or_default();
-    let title = lines.next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-
-    // Normalise bare hostnames into full URLs so the dashboard's URL parser works.
-    if !url.is_empty() && !url.contains("://") {
-        url = format!("https://{}", url);
+    let mut url: Option<String> = None;
+    for e in edits.iter() {
+        let value = e.get_property_value(UIProperty::ValueValue).ok()
+            .and_then(|v| v.get_string().ok())
+            .filter(|s| !s.is_empty());
+        if let Some(v) = value {
+            if looks_like_url(&v) {
+                url = Some(if v.contains("://") { v } else { format!("https://{}", v) });
+                break;
+            }
+        }
     }
-    let url = if url.is_empty() { None } else { Some(url) };
 
     if url.is_none() && title.is_none() { return None; }
     Some(BrowserContext { url, page_title: title })
+}
+
+#[cfg(target_os = "windows")]
+fn looks_like_url(v: &str) -> bool {
+    // Schemes that browsers actually load (skip about:, chrome://, etc — they're
+    // not useful in productivity reports).
+    if v.starts_with("http://") || v.starts_with("https://") { return true; }
+    // Bare host like "example.com" or "sub.domain.co.uk".
+    let lower = v.to_ascii_lowercase();
+    if !lower.contains('.') { return false; }
+    let first = lower.split('/').next().unwrap_or("");
+    let parts: Vec<&str> = first.split('.').collect();
+    parts.len() >= 2 && parts.iter().all(|p| !p.is_empty()) && parts.last().is_some_and(|tld| tld.len() >= 2)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]

@@ -40,6 +40,13 @@ starship-battery = "0.10"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Pure-Rust UIA bindings used by browser_url::current_for_app on Windows.
+# Replaces the older PowerShell subprocess approach which was both slow (~2s
+# per poll) and unreliable when PowerShell startup latency spiked.
+[target.'cfg(target_os = "windows")'.dependencies]
+uiautomation = "0.18"
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
