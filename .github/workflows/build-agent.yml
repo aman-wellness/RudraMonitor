@@ -235,15 +235,69 @@ jobs:
         run: |
           APP_PATH=$(ls -d agent/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app | head -1)
           STAGE=agent/dist-mac/stage
-          rm -rf "$STAGE"
-          mkdir -p "$STAGE/Applications" agent/dist-mac
+          SCRIPTS_DIR=agent/dist-mac/scripts
+          rm -rf "$STAGE" "$SCRIPTS_DIR"
+          mkdir -p "$STAGE/Applications" "$SCRIPTS_DIR" agent/dist-mac
           cp -R "$APP_PATH" "$STAGE/Applications/"
           osacompile -o "$STAGE/Applications/Uninstall TrackForce Agent.app" -e \
             'do shell script "/Applications/TrackForce Agent.app/Contents/MacOS/TrackForce Agent --uninstall || true" with administrator privileges'
+
+          # Postinstall script: registers a system-wide LaunchDaemon (root-owned) with
+          # KeepAlive=true so launchd respawns the agent within ~5s of any kill.
+          # Survives Activity-Monitor force-quit and `sudo killall`. Coexists with the
+          # in-process watchdog: launchd is the outer ring, the watchdog is the inner.
+          cat > "$SCRIPTS_DIR/postinstall" <<'POSTINSTALL'
+          #!/bin/bash
+          set -e
+          LABEL="com.trackforce.agent"
+          DAEMON_PLIST="/Library/LaunchDaemons/${LABEL}.plist"
+          APP_BIN="/Applications/TrackForce Agent.app/Contents/MacOS/TrackForce Agent"
+
+          # Remove any older user-level LaunchAgent left by tauri-plugin-autostart.
+          LOGGED_IN_USER=$(stat -f%Su /dev/console)
+          if [ -n "$LOGGED_IN_USER" ] && [ "$LOGGED_IN_USER" != "root" ]; then
+            USER_HOME=$(eval echo "~$LOGGED_IN_USER")
+            USER_PLIST="${USER_HOME}/Library/LaunchAgents/${LABEL}.plist"
+            if [ -f "$USER_PLIST" ]; then
+              sudo -u "$LOGGED_IN_USER" launchctl unload "$USER_PLIST" 2>/dev/null || true
+              rm -f "$USER_PLIST"
+            fi
+          fi
+
+          cat > "${DAEMON_PLIST}" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>Label</key><string>${LABEL}</string>
+              <key>ProgramArguments</key><array><string>${APP_BIN}</string></array>
+              <key>RunAtLoad</key><true/>
+              <key>KeepAlive</key><true/>
+              <key>ThrottleInterval</key><integer>5</integer>
+              <key>ProcessType</key><string>Background</string>
+              <key>StandardOutPath</key><string>/var/log/trackforce-agent.log</string>
+              <key>StandardErrorPath</key><string>/var/log/trackforce-agent.log</string>
+          </dict>
+          </plist>
+          PLIST
+
+          chown root:wheel "${DAEMON_PLIST}"
+          chmod 644 "${DAEMON_PLIST}"
+          launchctl load -w "${DAEMON_PLIST}" 2>/dev/null || true
+
+          # First-launch enrollment popup on the user's session.
+          if [ -n "$LOGGED_IN_USER" ] && [ "$LOGGED_IN_USER" != "root" ]; then
+            sudo -u "$LOGGED_IN_USER" open -a "/Applications/TrackForce Agent.app" || true
+          fi
+          exit 0
+          POSTINSTALL
+          chmod 755 "$SCRIPTS_DIR/postinstall"
+
           pkgbuild --root "$STAGE" \
             --identifier com.trackforce.agent \
             --version "0.1.0" \
             --install-location "/" \
+            --scripts "$SCRIPTS_DIR" \
             "agent/dist-mac/${{ matrix.remote_name }}"
 
       - name: Locate artifact (passthrough)
