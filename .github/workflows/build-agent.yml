@@ -109,10 +109,23 @@ jobs:
         working-directory: agent
         run: npm ci || npm install
 
+      # GitHub Secrets sometimes preserve trailing whitespace/newline from paste,
+      # which breaks Tauri's base64 decode (`Invalid symbol 10, offset N`).
+      # Strip ALL whitespace before passing to the build.
+      - name: Sanitize signing key
+        shell: bash
+        env:
+          RAW_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          CLEAN=$(printf '%s' "$RAW_KEY" | tr -d '[:space:]')
+          echo "TAURI_SIGNING_PRIVATE_KEY=$CLEAN" >> "$GITHUB_ENV"
+          echo "::add-mask::$CLEAN"
+          echo "Sanitized signing key (length: ${#CLEAN})"
+
       - name: Build agent
         working-directory: agent
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # TAURI_SIGNING_PRIVATE_KEY is set above via GITHUB_ENV
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- --bundles ${{ matrix.bundle }} --target ${{ matrix.target }}
 
