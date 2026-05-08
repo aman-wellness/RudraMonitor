@@ -129,7 +129,18 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- --bundles ${{ matrix.bundle }} --target ${{ matrix.target }}
 
-      # Collect the updater-format bundle (.tar.gz / .msi.zip) AND its .sig file
+      # Read the actual product version from tauri.conf.json so artifact names
+      # are deterministic across triggers (push tag, workflow_dispatch on main, …).
+      # Without this, dispatch-on-main runs overwrite tag runs in Storage.
+      - name: Read product version
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./agent/src-tauri/tauri.conf.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Using version v$VERSION (from tauri.conf.json, not ref_name)"
+
+      # Collect the updater-format bundle (.tar.gz / .msi) AND its .sig file
       # produced by Tauri when TAURI_SIGNING_PRIVATE_KEY is set. We need both for
       # the latest.json manifest.
       - name: Collect updater bundle + signature
@@ -143,18 +154,23 @@ jobs:
           # so we rename to a URL-safe hyphenated form before upload. We use a
           # case statement (NOT associative arrays — macOS ships bash 3.2 which
           # doesn't support `declare -A`).
+          # Tauri 2 updater bundle naming (verified against actual build output):
+          #   macOS:   <name>.app.tar.gz   + .app.tar.gz.sig
+          #   Windows MSI:  <name>.msi      + .msi.sig         (not wrapped in .zip!)
+          #   Windows NSIS: <name>.exe      + .exe.sig
+          #   AppImage:     <name>.AppImage + .AppImage.sig    (newer Tauri)
           for sub in macos msi nsis appimage deb; do
             case "$sub" in
               macos)    EXT="app.tar.gz" ;;
-              msi)      EXT="msi.zip" ;;
-              nsis)     EXT="nsis.zip" ;;
-              appimage) EXT="AppImage.tar.gz" ;;
-              deb)      EXT="deb.tar.gz" ;;
+              msi)      EXT="msi" ;;
+              nsis)     EXT="exe" ;;
+              appimage) EXT="AppImage" ;;
+              deb)      EXT="deb" ;;
             esac
             for f in "$BASE/$sub"/*."$EXT"; do
               if [ -f "$f" ] && [ -f "${f}.sig" ]; then
                 echo "found: $f"
-                SAFE="TrackForce-Agent-${{ matrix.target }}-${{ github.ref_name }}.${EXT}"
+                SAFE="TrackForce-Agent-${{ matrix.target }}-v${{ steps.version.outputs.version }}.${EXT}"
                 cp "$f" "agent/$SAFE"
                 cp "${f}.sig" "agent/${SAFE}.sig"
                 echo "bundle=agent/$SAFE" >> "$GITHUB_OUTPUT"
