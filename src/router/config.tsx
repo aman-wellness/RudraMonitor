@@ -10,6 +10,7 @@ import Agents from "../pages/agents/page";
 import Setup from "../pages/setup/page";
 import AdminPortal from "../pages/admin-portal/page";
 import Reports from "../pages/reports/page";
+import DlpPage from "../pages/dlp/page";
 import Alerts from "../pages/alerts/page";
 import SystemHealth from "../pages/system-health/page";
 import PerformanceReports from "../pages/performance-reports/page";
@@ -26,6 +27,7 @@ import AdminLicenses from "../pages/admin/licenses/page";
 import AdminInvoices from "../pages/admin/invoices/page";
 import AdminPlans from "../pages/admin/plans/page";
 import AdminAudit from "../pages/admin/audit/page";
+import AdminDlp from "../pages/admin/dlp/page";
 import PartnerDashboard from "../pages/partner/dashboard/page";
 import PartnerCustomers from "../pages/partner/customers/page";
 import PartnerLicenses from "../pages/partner/licenses/page";
@@ -51,6 +53,7 @@ const routes: RouteObject[] = [
   { path: "/performance-reports", element: protect(<PerformanceReports />) },
   { path: "/admin-portal", element: protect(<AdminPortal />) },
   { path: "/reports", element: protect(<Reports />) },
+  { path: "/dlp", element: protect(<DlpPage />) },
 
   // Post-login role router
   { path: "/post-login", element: protect(<PostLogin />) },
@@ -72,6 +75,7 @@ const routes: RouteObject[] = [
   { path: "/admin/licenses",  element: superAdmin(<AdminLicenses />) },
   { path: "/admin/invoices",  element: superAdmin(<AdminInvoices />) },
   { path: "/admin/plans",     element: superAdmin(<AdminPlans />) },
+  { path: "/admin/dlp",       element: superAdmin(<AdminDlp />) },
   { path: "/admin/audit",     element: superAdmin(<AdminAudit />) },
 
   // Partner portal

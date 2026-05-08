@@ -9,6 +9,7 @@ const nav = [
   { to: '/admin/licenses',  label: 'Licenses',   icon: 'ri-key-2-line' },
   { to: '/admin/invoices',  label: 'Invoices',   icon: 'ri-bill-line' },
   { to: '/admin/plans',     label: 'Plans',      icon: 'ri-price-tag-3-line' },
+  { to: '/admin/dlp',       label: 'DLP Alerts', icon: 'ri-shield-keyhole-line' },
   { to: '/admin/audit',     label: 'Audit Log',  icon: 'ri-shield-check-line' },
 ];
 

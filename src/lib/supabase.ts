@@ -166,6 +166,60 @@ export type AuditLogEntry = {
   created_at: string;
 };
 
+export type DlpEventType = 'usb_transfer' | 'email_attachment' | 'clipboard_exfil';
+export type DlpSeverity = 'low' | 'medium' | 'high' | 'critical';
+
+export type DlpEvent = {
+  id: string;
+  org_id: string;
+  agent_id: string;
+  event_type: DlpEventType;
+  direction: 'to_external' | 'from_external' | 'unknown' | null;
+  device_name: string | null;
+  device_serial: string | null;
+  device_type: string | null;
+  mail_provider: string | null;
+  mail_url: string | null;
+  recipient_email: string | null;
+  file_path: string | null;
+  file_name: string | null;
+  file_size_bytes: number | null;
+  file_mime: string | null;
+  file_hash_sha256: string | null;
+  active_window: string | null;
+  screenshot_url: string | null;
+  ai_authorized: boolean | null;
+  ai_severity: DlpSeverity | null;
+  ai_reason: string | null;
+  ai_model: string | null;
+  ai_processed_at: string | null;
+  alert_sent_at: string | null;
+  alert_email: string | null;
+  occurred_at: string;
+  created_at: string;
+};
+
+export type DlpAlertRecipient = {
+  id: string;
+  org_id: string | null;
+  email: string;
+  full_name: string | null;
+  is_active: boolean;
+  severities: DlpSeverity[];
+  created_at: string;
+};
+
+export type DlpSettings = {
+  org_id: string;
+  usb_enabled: boolean;
+  email_enabled: boolean;
+  clipboard_enabled: boolean;
+  authorized_domains: string[];
+  blocked_keywords: string[];
+  ai_policy_prompt: string | null;
+  updated_at: string;
+};
+
 export type Agent = {
   id: string;
   org_id: string;

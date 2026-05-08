@@ -37,3 +37,8 @@ supabase/_combined_setup.sql
 
 # Screenshots local
 Screenshot*.png
+
+# Local secrets reference files — NEVER commit these
+SECRETS.local.md
+SECRETS.local
+*.secrets

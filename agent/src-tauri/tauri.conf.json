@@ -46,8 +46,7 @@
     "windows": {
       "wix": {
         "fragmentPaths": [
-          "wix/cleanup-fragment.wxs",
-          "wix/service-fragment.wxs"
+          "wix/cleanup-fragment.wxs"
         ]
       }
     }

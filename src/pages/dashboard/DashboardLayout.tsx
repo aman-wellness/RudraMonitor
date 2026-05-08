@@ -19,6 +19,7 @@ const sidebarLinks = [
   { label: 'Agents', href: '/agents', icon: 'ri-team-line' },
   { label: 'Monitoring', href: '/monitoring', icon: 'ri-computer-line' },
   { label: 'Alerts', href: '/alerts', icon: 'ri-notification-3-line' },
+  { label: 'DLP', href: '/dlp', icon: 'ri-shield-keyhole-line' },
   { label: 'System Health', href: '/system-health', icon: 'ri-heart-pulse-line' },
   { label: 'Performance', href: '/performance-reports', icon: 'ri-bar-chart-grouped-line' },
   { label: 'Reports', href: '/reports', icon: 'ri-file-chart-line' },
