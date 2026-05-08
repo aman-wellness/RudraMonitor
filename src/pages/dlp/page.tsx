@@ -234,26 +234,36 @@ function DlpSettingsPanel({ orgId }: { orgId: string | null }) {
       </div>
 
       <div className="bg-dark-800 border border-dark-700 rounded-xl p-5 space-y-3">
-        <h2 className="text-sm font-semibold text-white">Authorized email domains</h2>
-        <p className="text-xs text-gray-400">Comma-separated. Sending attachments to addresses on these domains is treated as authorized business activity.</p>
+        <h2 className="text-sm font-semibold text-white">Authorized email domains (whitelist)</h2>
+        <p className="text-xs text-gray-400">
+          Comma-separated. <strong>By default every personal-mail attachment is flagged</strong>.
+          List your company / partner / client domains here so legitimate business email isn't alerted on.
+          Recipients ending in <code className="text-cyan-300">@&lt;listed domain&gt;</code> become LOW severity, authorized.
+        </p>
         <input
           defaultValue={settings.authorized_domains.join(', ')}
-          placeholder="company.com, partner.in"
+          placeholder="company.com, partner.in, client.co"
           className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white"
           onBlur={(e) => {
             const list = e.target.value.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
             update({ authorized_domains: list });
           }}
         />
+        <p className="text-[11px] text-gray-500">
+          <strong className="text-amber-300">Note:</strong> USB transfers are always flagged regardless of this list — no whitelist for removable drives.
+        </p>
       </div>
 
       <div className="bg-dark-800 border border-dark-700 rounded-xl p-5 space-y-3">
         <h2 className="text-sm font-semibold text-white">Custom AI policy (optional)</h2>
-        <p className="text-xs text-gray-400">Extra guidance for the AI classifier. E.g. "Block anything labelled 'Internal Only' or containing customer PII."</p>
+        <p className="text-xs text-gray-400">
+          Default behaviour: <strong>track every USB transfer + every personal-mail attachment</strong>, regardless of file content.
+          Add extra rules here if you want stricter classification (e.g. critical severity on specific keywords).
+        </p>
         <textarea
           defaultValue={settings.ai_policy_prompt ?? ''}
           rows={3}
-          placeholder="Default: emails to personal mail providers are unauthorized; USB transfers of source code or financial documents are unauthorized."
+          placeholder='e.g. "Mark CRITICAL when file name contains payroll, customer_db, source_code, or NDA. Mark HIGH for any large transfer (>10 MB)."'
           className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white"
           onBlur={(e) => update({ ai_policy_prompt: e.target.value || null })}
         />

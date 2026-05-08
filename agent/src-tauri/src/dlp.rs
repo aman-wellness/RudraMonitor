@@ -40,7 +40,12 @@ pub fn list_removable() -> Vec<RemovableDrive> {
 
 #[cfg(target_os = "windows")]
 fn windows_drives() -> Vec<RemovableDrive> {
-    use windows::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW, DRIVE_REMOVABLE};
+    use windows::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW};
+    // DRIVE_REMOVABLE = 2 (Win32 docs). Hard-coding the constant rather than importing
+    // it because the windows-rs feature flag for this re-export shifts between versions
+    // and pulling it in on the wrong feature breaks the build with confusing "no
+    // DRIVE_REMOVABLE in this module" errors.
+    const DRIVE_REMOVABLE: u32 = 2;
     let mask = unsafe { GetLogicalDrives() };
     let mut out = Vec::new();
     for i in 0..26 {

@@ -161,11 +161,28 @@ async function classify(
   ev: Record<string, unknown>,
   settings: Record<string, unknown> | null,
 ): Promise<Classification> {
-  const policy = (settings?.ai_policy_prompt as string | null) ??
-    "Default: emails to personal mail providers (gmail, yahoo, rediffmail, outlook personal) are unauthorized. " +
-    "USB transfers of files containing 'salary', 'confidential', 'NDA', source code, or financial documents are unauthorized.";
-  const allowed = (settings?.authorized_domains as string[] | null)?.join(", ") ?? "(none)";
-  const blocked = (settings?.blocked_keywords as string[] | null)?.join(", ") ?? "(none)";
+  // Default policy is intentionally STRICT — every USB transfer and every
+  // attachment to a personal mail provider is treated as unauthorized data
+  // movement. Customers narrow this down by adding their company's email
+  // domains to authorized_domains, or providing a custom ai_policy_prompt.
+  const customPolicy = (settings?.ai_policy_prompt as string | null) ?? null;
+  const allowed = (settings?.authorized_domains as string[] | null) ?? [];
+  const blocked = (settings?.blocked_keywords as string[] | null) ?? [];
+  const allowedStr = allowed.length ? allowed.join(", ") : "(none — every external recipient is unauthorized)";
+  const blockedStr = blocked.length ? blocked.join(", ") : "(none)";
+
+  // Quick deterministic check for authorized domain — bypass AI when it's a clear allow.
+  const recipientLower = String(ev.recipient_email ?? "").toLowerCase();
+  if (recipientLower && allowed.length > 0) {
+    if (allowed.some((d) => recipientLower.endsWith("@" + d.toLowerCase()) || recipientLower.endsWith("." + d.toLowerCase()))) {
+      return {
+        authorized: true,
+        severity: "low",
+        reason: "Recipient is on the authorized_domains whitelist.",
+        model: "rule",
+      };
+    }
+  }
 
   const eventSummary = JSON.stringify({
     type: ev.event_type,
@@ -181,11 +198,19 @@ async function classify(
 
   const systemPrompt =
     "You are a Data Loss Prevention (DLP) classifier for a workforce monitoring agent. " +
-    "Decide if the captured event is an authorized business action or a potential exfiltration. " +
-    `Policy: ${policy}\n` +
-    `Authorized email domains: ${allowed}\n` +
-    `Blocked keywords (always flag): ${blocked}\n\n` +
-    'Respond with ONLY a JSON object matching: {"authorized": boolean, "severity": "low"|"medium"|"high"|"critical", "reason": "<one sentence>"}.';
+    "Your default stance: ANY file transfer to a USB/removable device is unauthorized data exfiltration, " +
+    "and ANY file attached to a personal mail provider (Gmail, Yahoo, Rediffmail, Outlook personal, Hotmail, " +
+    "Proton, AOL, Zoho personal) is unauthorized. The file's name or content does NOT need to look 'sensitive' — " +
+    "the act of moving company data to external channels is itself unauthorized unless explicitly allowed below.\n\n" +
+    `Authorized email domains (recipients on these are LOW severity, authorized=true): ${allowedStr}\n` +
+    `Blocked keywords (always CRITICAL severity if matched): ${blockedStr}\n` +
+    (customPolicy ? `Customer-specific policy override: ${customPolicy}\n` : "") +
+    "\nSeverity guidance:\n" +
+    "  - critical: matches a blocked keyword OR file size > 50 MB OR name suggests bulk export (db_dump, customers, payroll, contacts)\n" +
+    "  - high:     any USB transfer, any personal-mail attachment with no whitelist match (this is the DEFAULT for unauthorized)\n" +
+    "  - medium:   ambiguous case (e.g. file going to a domain that LOOKS corporate but isn't whitelisted)\n" +
+    "  - low:      authorized — recipient on whitelist, or transfer to a non-personal-mail destination\n\n" +
+    'Respond with ONLY a JSON object: {"authorized": boolean, "severity": "low"|"medium"|"high"|"critical", "reason": "<one short sentence>"}';
 
   const userPrompt = `Event:\n${eventSummary}`;
 
@@ -240,15 +265,28 @@ async function classify(
     } catch { /* fall through to default */ }
   }
 
-  // Last-resort heuristic so we always have SOMETHING
-  const isPersonalMail = /gmail|yahoo|rediff|outlook\.com|hotmail|protonmail/i
-    .test(`${ev.mail_provider ?? ""}${ev.recipient_email ?? ""}${ev.mail_url ?? ""}`);
+  // Last-resort heuristic — strict by default so policy is "track everything,
+  // whitelist exceptions" rather than "only flag obvious cases".
   const isUsb = ev.event_type === "usb_transfer";
-  const authorized = !isPersonalMail && !isUsb;
+  const isEmailAttach = ev.event_type === "email_attachment";
+  const isAuthorizedDomain = recipientLower && allowed.some((d) =>
+    recipientLower.endsWith("@" + d.toLowerCase()) || recipientLower.endsWith("." + d.toLowerCase())
+  );
+  // USB always flagged. Email attachments flagged unless on whitelist.
+  const authorized = isAuthorizedDomain && isEmailAttach;
+  // Bulk-export cue: file size > 50 MB
+  const sz = Number(ev.file_size_bytes ?? 0);
+  const isBulk = sz > 50 * 1024 * 1024;
+  let severity: Classification["severity"] = authorized ? "low" : "high";
+  if (!authorized && isBulk) severity = "critical";
   return {
     authorized,
-    severity: authorized ? "low" : "high",
-    reason: authorized ? "auto: no AI key configured, default-allowed" : "auto: no AI key, default-flagged for review",
+    severity,
+    reason: authorized
+      ? "Recipient is on the authorized_domains whitelist."
+      : isUsb
+        ? "USB transfer to external device — no AI key configured, default-flagged."
+        : "Personal-mail attachment — no AI key configured, default-flagged.",
     model: "heuristic",
   };
 }

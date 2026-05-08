@@ -922,7 +922,14 @@ pub fn run() {
 
             spawn_background_loop(state.clone());
             spawn_updater_loop(app.handle().clone());
-            spawn_dlp_loop(state);
+            // DLP watcher (filesystem + email tracking) is opt-in via the
+            // TRACKFORCE_ENABLE_DLP env var because on some Windows hosts the
+            // notify-debouncer-mini watcher saturates the IO subsystem and
+            // causes input-lag / mouse stutter. Default OFF until we have a
+            // proper backpressure / poll-rate fix.
+            if std::env::var("TRACKFORCE_ENABLE_DLP").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false) {
+                spawn_dlp_loop(state);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
