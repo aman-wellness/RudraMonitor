@@ -849,6 +849,18 @@ pub fn run() {
     watchdog::register_agent_and_ensure_guardian();
 
     tauri::Builder::default()
+        // Single-instance: if the user double-clicks the app while it's already running
+        // (or relaunches it from Spotlight/Start menu), focus the hidden window instead
+        // of spawning a second agent process. Without this, every relaunch boots a
+        // fresh Tauri instance — which the watchdog then has to fight, and the user
+        // may see stale "Loading…" or duplicate license-key prompts.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_autostart::init(
