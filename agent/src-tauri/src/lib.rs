@@ -4,7 +4,11 @@
 
 mod active_window;
 mod api;
+mod browser_url;
 mod config;
+mod watchdog;
+
+pub use watchdog::{is_guardian_invocation, run_guardian_loop, mark_graceful_shutdown};
 mod idle;
 mod metrics;
 mod screenshots;
@@ -37,7 +41,7 @@ const WINDOW_POLL_SECS: u64 = 10;
 const WINDOW_MAX_SESSION_SECS: i64 = 300;
 const SCREENSHOT_INTERVAL_SECS: u64 = 300;
 const IDLE_POLL_SECS: u64 = 30;
-const UPDATE_CHECK_INTERVAL_SECS: u64 = 6 * 60 * 60; // 6 hours
+const UPDATE_CHECK_INTERVAL_SECS: u64 = 30 * 60; // 30 minutes — balance bandwidth vs propagation speed
 const SETTINGS_REFRESH_SECS: u64 = 300; // 5 min — admin toggles propagate within this window.
 
 // Defaults used when settings can't be fetched yet (first launch, network blip).
@@ -65,6 +69,11 @@ pub struct AppState {
     active_alerts: Arc<Mutex<HashSet<String>>>,
     paused: Arc<AtomicBool>,
     settings: Arc<Mutex<api::AgentSettings>>,
+    /// True if license is missing or last validation said "valid: false".
+    /// Capture loops short-circuit when this is set so revoked/expired licenses
+    /// stop pumping data immediately.
+    license_blocked: Arc<AtomicBool>,
+    license_reason: Arc<Mutex<Option<String>>>,
 }
 
 impl AppState {
@@ -78,6 +87,8 @@ impl AppState {
             active_alerts: Arc::new(Mutex::new(HashSet::new())),
             paused: Arc::new(AtomicBool::new(false)),
             settings: Arc::new(Mutex::new(DEFAULT_SETTINGS)),
+            license_blocked: Arc::new(AtomicBool::new(false)),
+            license_reason: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -93,6 +104,12 @@ struct StatusPayload {
     last_error: Option<String>,
     paused: bool,
     autostart_enabled: bool,
+    /// Set by the personalized launcher script (Install-<Name>.command/.bat/.sh).
+    /// When Some, the React UI hides the name field — employee only enters license key.
+    prefilled_agent_name: Option<String>,
+    license_present: bool,
+    license_blocked: bool,
+    license_reason: Option<String>,
 }
 
 #[tauri::command]
@@ -115,6 +132,10 @@ async fn get_status(app: tauri::AppHandle, state: State<'_, AppState>) -> Result
         .is_enabled()
         .unwrap_or(false);
 
+    let license_present = cfg.license_key.as_deref().map(|s| !s.is_empty()).unwrap_or(false);
+    let license_blocked = state.license_blocked.load(Ordering::SeqCst);
+    let license_reason = state.license_reason.lock().await.clone();
+
     Ok(StatusPayload {
         enrolled,
         agent_name,
@@ -125,12 +146,45 @@ async fn get_status(app: tauri::AppHandle, state: State<'_, AppState>) -> Result
         last_error,
         paused: state.paused.load(Ordering::SeqCst),
         autostart_enabled,
+        prefilled_agent_name: if enrolled { None } else { config::read_prefill_name() },
+        license_present,
+        license_blocked,
+        license_reason,
     })
 }
 
 #[tauri::command]
 fn set_paused(paused: bool, state: State<'_, AppState>) {
     state.paused.store(paused, Ordering::SeqCst);
+}
+
+#[tauri::command]
+async fn set_license_key(license_key: String, state: State<'_, AppState>) -> Result<api::ValidateLicenseResponse, String> {
+    let key = license_key.trim().to_string();
+    if key.is_empty() { return Err("license key required".into()); }
+
+    let cfg = state.config.lock().await.clone();
+    let supabase_url = config::supabase_url(&cfg).ok_or("no supabase url")?;
+    let anon_key = config::supabase_anon_key(&cfg).ok_or("no anon key")?;
+    let org_id = cfg.enrollment.as_ref().map(|e| e.org_id.clone());
+
+    let client = api::build_client().map_err(|e| e.to_string())?;
+    let resp = api::validate_license(&client, &supabase_url, &anon_key, &key, org_id.as_deref())
+        .await.map_err(|e| e.to_string())?;
+    if !resp.valid {
+        let reason = resp.reason.clone().unwrap_or_else(|| "invalid".into());
+        return Err(format!("license invalid: {}", reason));
+    }
+
+    // Persist
+    {
+        let mut cfg = state.config.lock().await;
+        cfg.license_key = Some(key);
+        config::save(&cfg).map_err(|e| e.to_string())?;
+    }
+    state.license_blocked.store(false, Ordering::SeqCst);
+    *state.license_reason.lock().await = None;
+    Ok(resp)
 }
 
 #[tauri::command]
@@ -187,6 +241,7 @@ async fn enroll(args: EnrollArgs, app: tauri::AppHandle, state: State<'_, AppSta
         org_id: resp.org_id,
     });
     config::save(&cfg).map_err(|e| e.to_string())?;
+    config::consume_prefill();
 
     // Auto-enable launch-at-login so the agent persists across reboots without the user
     // having to know about it.
@@ -228,6 +283,7 @@ fn detect_os() -> String {
 }
 
 async fn push_kind(state: &AppState, kind: &str, payload: Value) -> Result<()> {
+    if !license_ok(state) { return Ok(()); }
     let cfg = state.config.lock().await.clone();
     let enrollment = cfg.enrollment.clone().ok_or_else(|| anyhow!("not enrolled"))?;
     let supabase_url = config::supabase_url(&cfg).ok_or_else(|| anyhow!("no supabase url"))?;
@@ -362,10 +418,38 @@ async fn settings_tick(state: &AppState) -> Result<()> {
     let client = api::build_client()?;
     let s = api::fetch_settings(&client, &supabase_url, &anon_key, &enrollment.enroll_token).await?;
     *state.settings.lock().await = s;
+
+    // License re-validation. If a license_key is configured we honour it; if not,
+    // the agent runs unblocked (legacy enroll-token-only mode is still supported).
+    if let Some(key) = cfg.license_key.as_ref() {
+        match api::validate_license(&client, &supabase_url, &anon_key, key, Some(&enrollment.org_id)).await {
+            Ok(resp) => {
+                if resp.valid {
+                    state.license_blocked.store(false, Ordering::SeqCst);
+                    *state.license_reason.lock().await = None;
+                } else {
+                    state.license_blocked.store(true, Ordering::SeqCst);
+                    *state.license_reason.lock().await =
+                        Some(resp.reason.unwrap_or_else(|| "invalid".into()));
+                    log::warn!("license blocked — captures paused");
+                }
+            }
+            Err(e) => {
+                // Network failure — don't kill the agent over a transient error.
+                log::warn!("license re-validation failed (transient): {e}");
+            }
+        }
+    }
     Ok(())
 }
 
+/// Capture loops call this before doing any work.
+fn license_ok(state: &AppState) -> bool {
+    !state.license_blocked.load(Ordering::SeqCst)
+}
+
 async fn screenshot_tick(state: &AppState) -> Result<()> {
+    if !license_ok(state) { return Ok(()); }
     if !state.settings.lock().await.screenshots_enabled {
         return Ok(());
     }
@@ -395,6 +479,7 @@ async fn screenshot_tick(state: &AppState) -> Result<()> {
 }
 
 async fn video_tick(state: &AppState) -> Result<()> {
+    if !license_ok(state) { return Ok(()); }
     if !state.settings.lock().await.videos_enabled {
         return Ok(());
     }
@@ -694,6 +779,9 @@ pub fn run() {
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .try_init();
 
+    // Record our PID + (re)spawn guardian so a Task-Manager-kill is auto-recovered.
+    watchdog::register_agent_and_ensure_guardian();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
@@ -750,6 +838,7 @@ pub fn run() {
             sign_out,
             set_paused,
             set_autostart,
+            set_license_key,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -823,7 +912,9 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 }
             }
             "quit" => {
-                // Bypass the close-prevent handler so the process actually exits.
+                // Tray "Quit" is an explicit user-initiated stop. Mark graceful so
+                // the guardian doesn't immediately respawn the agent.
+                watchdog::mark_graceful_shutdown();
                 std::process::exit(0);
             }
             _ => {}

@@ -164,6 +164,133 @@ html:not(.dark) input[type="range"] {
   accent-color: #10b981;
 }
 
+/* Chrome / Safari autofill override.
+   Browser autofill paints inputs with a yellow/white background regardless of
+   our theme, hiding the value on dark surfaces. We can't actually remove the
+   autofill background — only cover it with a large inset box-shadow matching
+   our dark surface. Applied to every input on every theme; the inset color
+   matches dark-900 (#0f172a) which is also what we use as the input bg almost
+   everywhere. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active,
+textarea:-webkit-autofill,
+textarea:-webkit-autofill:hover,
+textarea:-webkit-autofill:focus {
+  -webkit-text-fill-color: #ffffff !important;
+  -webkit-box-shadow: 0 0 0 1000px #1a1a1a inset !important;
+  box-shadow: 0 0 0 1000px #1a1a1a inset !important;
+  caret-color: #ffffff !important;
+  transition: background-color 99999s ease-in-out 0s;
+}
+
+/* ============================================
+   ANIMATED LOGIN BACKGROUND — theme-able aurora
+   ============================================
+   Apply one of the .login-bg-* classes to a container to set its colour palette.
+   Each page can pick its own accent (super = purple, partner = violet, customer
+   = emerald) without duplicating the animation rules. */
+
+.login-bg {
+  background:
+    radial-gradient(ellipse at top, var(--login-bg-tint, #1a0d2e) 0%, #0a0a0a 50%, #050505 100%);
+}
+
+/* ---- Per-portal colour palettes (set via CSS variables) ---- */
+.login-bg-purple   { --login-aurora-1: #a855f7; --login-aurora-2: #6366f1; --login-aurora-3: #ec4899; --login-bg-tint: #1a0d2e; --login-grid: 168, 85, 247; }
+.login-bg-violet   { --login-aurora-1: #8b5cf6; --login-aurora-2: #06b6d4; --login-aurora-3: #3b82f6; --login-bg-tint: #0f0a24; --login-grid: 139, 92, 246; }
+.login-bg-emerald  { --login-aurora-1: #10b981; --login-aurora-2: #06b6d4; --login-aurora-3: #14b8a6; --login-bg-tint: #062e22; --login-grid: 16, 185, 129; }
+.login-bg-amber    { --login-aurora-1: #f59e0b; --login-aurora-2: #ef4444; --login-aurora-3: #ec4899; --login-bg-tint: #2a1505; --login-grid: 245, 158, 11; }
+
+/* Three drifting blurred gradient orbs. Each is purely decorative —
+   pointer-events disabled, marked aria-hidden in markup. */
+.aurora {
+  position: absolute;
+  width: 600px;
+  height: 600px;
+  border-radius: 50%;
+  filter: blur(120px);
+  opacity: 0.55;
+  pointer-events: none;
+  will-change: transform;
+}
+.aurora-a {
+  background: radial-gradient(circle, var(--login-aurora-1, #a855f7) 0%, transparent 65%);
+  top: -150px;
+  left: -120px;
+  animation: aurora-drift-a 22s ease-in-out infinite;
+}
+.aurora-b {
+  background: radial-gradient(circle, var(--login-aurora-2, #6366f1) 0%, transparent 65%);
+  bottom: -180px;
+  right: -150px;
+  animation: aurora-drift-b 28s ease-in-out infinite;
+}
+.aurora-c {
+  background: radial-gradient(circle, var(--login-aurora-3, #ec4899) 0%, transparent 65%);
+  top: 30%;
+  right: 25%;
+  width: 450px;
+  height: 450px;
+  opacity: 0.35;
+  animation: aurora-drift-c 32s ease-in-out infinite;
+}
+
+@keyframes aurora-drift-a {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33%      { transform: translate(120px, 80px) scale(1.1); }
+  66%      { transform: translate(-60px, 150px) scale(0.95); }
+}
+@keyframes aurora-drift-b {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50%      { transform: translate(-200px, -120px) scale(1.15); }
+}
+@keyframes aurora-drift-c {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  25%      { transform: translate(-150px, 100px) scale(1.05); }
+  75%      { transform: translate(180px, -80px) scale(0.9); }
+}
+
+/* Faint grid texture; faded toward edges so the form has visual quiet. The
+   grid colour is whichever rgb triple the parent palette set. */
+.grid-overlay {
+  background-image:
+    linear-gradient(rgba(var(--login-grid, 168, 85, 247), 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(var(--login-grid, 168, 85, 247), 0.04) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse at center, black 20%, transparent 70%);
+  -webkit-mask-image: radial-gradient(ellipse at center, black 20%, transparent 70%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aurora { animation: none !important; }
+}
+
+/* Light-mode override: when the host explicitly opts into light theme, autofill
+   should match the light surface instead of bleeding dark over white inputs. */
+html.light input:-webkit-autofill,
+html.light input:-webkit-autofill:hover,
+html.light input:-webkit-autofill:focus,
+html.light input:-webkit-autofill:active {
+  -webkit-text-fill-color: #0f172a !important;
+  -webkit-box-shadow: 0 0 0 1000px #ffffff inset !important;
+  box-shadow: 0 0 0 1000px #ffffff inset !important;
+  caret-color: #0f172a !important;
+}
+
+/* Inputs inside a light-themed login surface (split-screen / white form pages).
+   We can't rely on a body class, so we scope by ancestor that uses bg-slate-50 /
+   bg-white form fields directly via class selectors. */
+input.bg-slate-50:-webkit-autofill,
+input.bg-slate-50:-webkit-autofill:hover,
+input.bg-slate-50:-webkit-autofill:focus {
+  -webkit-text-fill-color: #0f172a !important;
+  -webkit-box-shadow: 0 0 0 1000px #f8fafc inset !important;
+  box-shadow: 0 0 0 1000px #f8fafc inset !important;
+  caret-color: #0f172a !important;
+}
+
 /* ============================================
    INVOICE PRINT STYLES
    ============================================ */
@@ -175,3 +302,49 @@ html:not(.dark) input[type="range"] {
 }
 
 .print-only { display: none; }
+
+/* ============================================
+   DARK-SURFACE READABILITY OVERRIDES
+   --------------------------------------------
+   Tailwind's gray-500/600/700 sits at ~#4b5563 — poor contrast against our
+   bg-dark-950/900/800 surfaces. We brighten muted text only inside elements
+   sitting on a bg-dark-* (or known dark) surface, leaving the light-themed
+   login/marketing pages untouched.
+   ============================================ */
+
+/* Match any element whose ANCESTOR has a `bg-dark-*` class — captures the
+   entire dashboard / monitoring / agent-detail / admin / partner shells. */
+[class*="bg-dark-"] .text-gray-700,
+[class*="bg-dark-"] .text-slate-700 { color: #d1d5db !important; }
+
+[class*="bg-dark-"] .text-gray-600,
+[class*="bg-dark-"] .text-slate-600 { color: #cbd5e1 !important; }
+
+[class*="bg-dark-"] .text-gray-500,
+[class*="bg-dark-"] .text-slate-500 { color: #b8c1cc !important; }
+
+[class*="bg-dark-"] .text-gray-400,
+[class*="bg-dark-"] .text-slate-400 { color: #d4dae3 !important; }
+
+[class*="bg-dark-"] .text-gray-300,
+[class*="bg-dark-"] .text-slate-300 { color: #e8ecf2 !important; }
+
+/* Stronger card edges so panels separate from the page background */
+[class*="bg-dark-"] .border-dark-700 { border-color: #3f3f46 !important; }
+[class*="bg-dark-"] .border-dark-800 { border-color: #2e2e35 !important; }
+
+/* Tiny labels (10/11 px) — bump 1 px so hi-DPI screens stay legible. */
+[class*="bg-dark-"] .text-\[10px\] { font-size: 11px !important; letter-spacing: 0.02em; }
+[class*="bg-dark-"] .text-\[11px\] { font-size: 12px !important; }
+
+/* Placeholders */
+[class*="bg-dark-"] input::placeholder,
+[class*="bg-dark-"] textarea::placeholder { color: #9ca3af !important; opacity: 1; }
+
+/* Stronger focus ring on dark surfaces */
+[class*="bg-dark-"] *:focus-visible {
+  outline: 2px solid #22d3ee;
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+

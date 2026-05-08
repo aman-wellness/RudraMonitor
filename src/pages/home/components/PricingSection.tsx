@@ -81,7 +81,7 @@ export default function PricingSection() {
                 {plan.monthlyPrice ? (
                   <div>
                     <span className="text-3xl md:text-4xl font-bold text-white">
-                      ₹{isYearly ? plan.yearlyPrice : plan.monthlyPrice}
+                      ${isYearly ? plan.yearlyPrice : plan.monthlyPrice}
                     </span>
                     <span className="text-sm text-gray-500 ml-1">/user/month</span>
                     {isYearly && (

@@ -175,16 +175,70 @@ These take precedence over `agent.json` on disk. For Windows MSI, embed via an M
 
 ---
 
-## 7. Auto-update (Optional, recommended)
+## 7. Auto-update (Required for production)
 
-See **agent/README.md** → "Auto-update (silent OTA)" for the full flow. Summary:
+### Already configured in this repo
+- ✅ Signing keypair at `~/.tauri/trackforce-update.key` (private) + `.pub` (public)
+- ✅ Public key wired in `agent/src-tauri/tauri.conf.json`
+- ✅ Manifest endpoint: `https://ttjazaxjhzvrzhptrpmd.supabase.co/storage/v1/object/public/releases/latest.json`
+- ✅ Public `releases` Supabase Storage bucket created with read policy
+- ✅ GitHub Actions workflow (`build-agent.yml`) builds + signs + publishes `latest.json` automatically
 
-1. `npm run tauri signer generate -- -w ~/.tauri/trackforce-update.key`
-2. Paste public key into `agent/src-tauri/tauri.conf.json` → `plugins.updater.pubkey`
-3. Set the manifest URL at `plugins.updater.endpoints[0]` (Supabase Storage path)
-4. On every release: `npm run tauri:build` (with the signing env var) → upload bundles + a `latest.json` manifest
+### Required GitHub repo secrets (one-time, ~3 min)
+1. **`SUPABASE_ACCESS_TOKEN`** — sbp_… token from supabase.com/dashboard/account/tokens
+2. **`TAURI_SIGNING_PRIVATE_KEY`** — paste full contents of `~/.tauri/trackforce-update.key`
+   ```bash
+   cat ~/.tauri/trackforce-update.key  # copy entire output to GitHub secret
+   ```
+3. **`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`** — empty string (we generated without password)
 
-Existing agents check on launch and every 6 hours; updates install silently.
+### Releasing a new version
+1. Bump version in `agent/src-tauri/tauri.conf.json` AND `agent/package.json`
+2. Push tag: `git tag v0.1.1 && git push --tags`
+3. GitHub Actions builds macOS (Intel + ARM) + Windows + Linux in parallel, signs each, uploads, then publishes `latest.json`
+4. Existing agents poll every **30 minutes** — within 30 min of `latest.json` going live they download, verify signature, install silently, and restart
+
+### Platform coverage
+- ✅ macOS auto-update (.app.tar.gz)
+- ✅ Windows auto-update (.msi.zip)
+- ⚠️ Linux: .deb installs OK, but no auto-update (deb format doesn't support updater bundles — switch to AppImage if Linux auto-update needed)
+
+### One-time bootstrap
+The currently-deployed agent on your test machine has placeholder updater config (pre-fix). It must be reinstalled ONCE with the new build to become updateable. After that one install, all future releases are silent.
+
+### Disaster recovery
+**Never lose `~/.tauri/trackforce-update.key`** — without it you can't sign future updates and deployed agents stay frozen. Back it up to a password manager.
+
+---
+
+## 7.1 Persistence / auto-restart (Required for production)
+
+Two-layer setup so a Task Manager kill is recovered within 5 seconds:
+
+**Layer 1 — In-process guardian** (automatic, no setup):
+The agent spawns a sibling watchdog process at startup. If the main process is killed, the watchdog respawns it within ~2-5s. No admin rights required, works on every platform.
+
+**Layer 2 — OS service / daemon** (recommended for production):
+Survives reboots and full process-pair kills.
+
+```bash
+# Windows (run from elevated PowerShell after MSI install)
+powershell -ExecutionPolicy Bypass -File agent/scripts/install-service-windows.ps1
+
+# macOS (after .pkg/.dmg install)
+sudo bash agent/scripts/install-service-macos.sh
+
+# Linux (TODO — systemd unit template available on request)
+```
+
+Both scripts are idempotent and ship a clean uninstaller (`-Uninstall` / `--uninstall`).
+
+**Acceptable use checklist** before deploying with both layers:
+- [ ] Customer org has a written workforce monitoring policy
+- [ ] Employees consent (signed agreement / policy acknowledgment)
+- [ ] Devices are company-owned (not BYOD without explicit per-user consent)
+- [ ] Visible system tray icon stays on by default (already enforced)
+- [ ] Self-uninstall via `--uninstall` flag is documented and reachable
 
 ---
 

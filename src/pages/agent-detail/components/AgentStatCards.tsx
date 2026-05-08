@@ -6,6 +6,7 @@ interface Props {
   logouts: number;
   systemOn: string;
   activeWorked: string;
+  idleTime: string;
   screenshotsEnabled: boolean;
   videosEnabled: boolean;
 }
@@ -18,6 +19,7 @@ export default function AgentStatCards({
   logouts,
   systemOn,
   activeWorked,
+  idleTime,
   screenshotsEnabled,
   videosEnabled,
 }: Props) {
@@ -102,8 +104,8 @@ export default function AgentStatCards({
             <span className="w-3 h-3 flex items-center justify-center"><i className="ri-timer-line" /></span>
             Idle
           </p>
-          <p className="text-sm font-bold text-white">—</p>
-          <p className="text-[10px] text-gray-500 mt-0.5">sum of idle_start → idle_end gaps</p>
+          <p className="text-sm font-bold text-white">{idleTime}</p>
+          <p className="text-[10px] text-gray-500 mt-0.5">sum of idle gaps in window</p>
         </div>
       </div>
 

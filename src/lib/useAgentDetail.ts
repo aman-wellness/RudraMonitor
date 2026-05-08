@@ -6,6 +6,7 @@ import type { AlertRow } from './dataHooks';
 // so we don't have to touch the JSX.
 export type AgentDetail = {
   id: string;
+  orgId: string | null;
   name: string;
   machine: string;
   department: string;
@@ -28,7 +29,7 @@ export type AgentDetail = {
   screenshotsCount: number;
   alertsCount: number;
   sessionsCount: number;
-  idleTime: string | null;
+  idleTime: string;
   timeline: { time: string; events: number; active: number; idle: number }[];
   appsTime: { name: string; percent: number; time: string; color: string }[];
 };
@@ -63,15 +64,34 @@ const formatDateTime = (iso: string | null) => {
 };
 
 type ActivityRow = {
-  activity_type: 'app' | 'browser' | 'idle' | 'screenshot' | 'alert' | 'session_start';
+  activity_type: 'app' | 'browser' | 'idle' | 'screenshot' | 'video' | 'alert' | 'session_start';
   application_name: string | null;
   url: string | null;
+  page_title: string | null;
   duration: number | null;
   screenshot_url: string | null;
+  video_url: string | null;
   created_at: string;
 };
 
-export function useAgentDetail(agentId: string | undefined) {
+export type DateRange = 'today' | 'yesterday' | '7d' | '30d' | 'all';
+
+function rangeBounds(r: DateRange): { since: Date; until: Date } {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  switch (r) {
+    case 'today':     return { since: startOfToday, until: now };
+    case 'yesterday': {
+      const startOfYesterday = new Date(startOfToday); startOfYesterday.setDate(startOfYesterday.getDate() - 1);
+      return { since: startOfYesterday, until: startOfToday };
+    }
+    case '7d':  { const s = new Date(startOfToday); s.setDate(s.getDate() - 6); return { since: s, until: now }; }
+    case '30d': { const s = new Date(startOfToday); s.setDate(s.getDate() - 29); return { since: s, until: now }; }
+    case 'all': return { since: new Date(0), until: now };
+  }
+}
+
+export function useAgentDetail(agentId: string | undefined, range: DateRange = 'today') {
   const [agent, setAgent] = useState<AgentDetail | null>(null);
   const [activity, setActivity] = useState<ActivityRow[]>([]);
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
@@ -96,16 +116,16 @@ export function useAgentDetail(agentId: string | undefined) {
       return;
     }
 
-    // Pull last 24h of activity for timeline / aggregates.
-    const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const { since, until } = rangeBounds(range);
     const [{ data: actData }, { data: alertData }] = await Promise.all([
       supabase
         .from('activity_logs')
-        .select('activity_type, application_name, url, duration, screenshot_url, created_at')
+        .select('activity_type, application_name, url, page_title, duration, screenshot_url, video_url, created_at')
         .eq('agent_id', agentId)
-        .gte('created_at', since)
+        .gte('created_at', since.toISOString())
+        .lte('created_at', until.toISOString())
         .order('created_at', { ascending: true })
-        .limit(2000),
+        .limit(5000),
       supabase
         .from('alerts')
         .select('*')
@@ -127,9 +147,9 @@ export function useAgentDetail(agentId: string | undefined) {
         created_at: r.created_at as string,
       })),
     );
-    setAgent(buildDetail(agentRow, (actData ?? []) as ActivityRow[], (alertData ?? []).length));
+    setAgent(buildDetail(agentRow, (actData ?? []) as ActivityRow[], (alertData ?? []).length, since, until));
     setLoading(false);
-  }, [agentId]);
+  }, [agentId, range]);
 
   useEffect(() => {
     void refresh();
@@ -142,6 +162,8 @@ function buildDetail(
   agentRow: Record<string, unknown>,
   activity: ActivityRow[],
   alertCount: number,
+  rangeStart?: Date,
+  rangeEnd?: Date,
 ): AgentDetail {
   const apps = activity.filter((a) => a.activity_type === 'app');
   const browser = activity.filter((a) => a.activity_type === 'browser');
@@ -149,11 +171,31 @@ function buildDetail(
   const screenshots = activity.filter((a) => a.activity_type === 'screenshot');
   const sessions = activity.filter((a) => a.activity_type === 'session_start');
 
-  const totalActiveSec = apps.concat(browser).reduce((s, r) => s + (r.duration ?? 0), 0);
+  // Focus session durations include time the user was idle on that window
+  // (the agent emits the focus row when the window changes; idle is tracked
+  // separately and overlaps with the focus row). So focus-row sums double-count
+  // idle time. Real time the user was actively using the keyboard/mouse =
+  // focus minus idle, both clamped to the wall-clock window so we never report
+  // > 24h for a "today" view.
+  const rawFocusSec = apps.concat(browser).reduce((s, r) => s + (r.duration ?? 0), 0);
   const totalIdleSec = idle.reduce((s, r) => s + (r.duration ?? 0), 0);
 
   const firstActivity = activity[0]?.created_at ?? null;
   const lastActivity = activity[activity.length - 1]?.created_at ?? null;
+
+  // Cap "system on" to wall-clock between first→last activity (or the selected
+  // range if narrower). Without this cap, overlapping focus + idle rows can
+  // sum to > 24h for a "today" view.
+  const wallStart = firstActivity ? new Date(firstActivity).getTime() : null;
+  const wallEnd = lastActivity ? new Date(lastActivity).getTime() : null;
+  const wallSec = wallStart != null && wallEnd != null
+    ? Math.max(0, Math.floor((wallEnd - wallStart) / 1000))
+    : 0;
+  const rangeCapSec = rangeStart && rangeEnd
+    ? Math.max(0, Math.floor((rangeEnd.getTime() - rangeStart.getTime()) / 1000))
+    : Infinity;
+  const systemOnSec = Math.min(rawFocusSec, wallSec || rawFocusSec, rangeCapSec);
+  const totalActiveSec = Math.max(0, systemOnSec - totalIdleSec);
 
   const appBuckets = new Map<string, number>();
   for (const r of apps) {
@@ -176,14 +218,21 @@ function buildDetail(
     if (r.url) sites.add(extractHost(r.url));
   }
 
-  // 30-min buckets across the day for the timeline chart.
+  // ~16-bucket timeline. We always cover the full [firstActivity, lastActivity]
+  // span by sizing the slot adaptively (min 30 min, larger if the span is wide).
+  // Prior bug: fixed 30-min slots × cap-16 silently truncated a 24h window to the
+  // FIRST 8h, hiding all recent activity.
   const timeline: AgentDetail['timeline'] = [];
   if (firstActivity) {
     const startMs = new Date(firstActivity).getTime();
-    const endMs = lastActivity ? new Date(lastActivity).getTime() : Date.now();
-    const slotMs = 30 * 60 * 1000;
-    const slots = Math.max(1, Math.ceil((endMs - startMs) / slotMs));
-    const cap = Math.min(slots, 16);
+    const endMs = Math.max(
+      lastActivity ? new Date(lastActivity).getTime() : Date.now(),
+      startMs + 60_000,
+    );
+    const TARGET_BUCKETS = 16;
+    const minSlot = 30 * 60 * 1000;
+    const slotMs = Math.max(minSlot, Math.ceil((endMs - startMs) / TARGET_BUCKETS));
+    const cap = Math.max(1, Math.ceil((endMs - startMs) / slotMs));
     for (let i = 0; i < cap; i++) {
       const slotStart = startMs + i * slotMs;
       const slotEnd = slotStart + slotMs;
@@ -211,6 +260,7 @@ function buildDetail(
 
   return {
     id: agentRow.id as string,
+    orgId: (agentRow.org_id as string | null) ?? null,
     name: (agentRow.agent_name as string) ?? '—',
     machine: (agentRow.machine_name as string) ?? (agentRow.agent_name as string) ?? '—',
     department: (agentRow.department as string) ?? 'Unassigned',
@@ -223,7 +273,7 @@ function buildDetail(
     stillActive: status === 'online',
     logins: sessions.length || (activity.length > 0 ? 1 : 0),
     logouts: 0,
-    systemOn: formatHM(totalActiveSec + totalIdleSec),
+    systemOn: formatHM(systemOnSec),
     activeWorked: formatHM(totalActiveSec),
     screenshotsEnabled: (agentRow.screenshots_enabled as boolean | undefined) ?? true,
     videosEnabled: (agentRow.videos_enabled as boolean | undefined) ?? false,
@@ -233,7 +283,7 @@ function buildDetail(
     screenshotsCount: screenshots.length,
     alertsCount: alertCount,
     sessionsCount: apps.length + browser.length,
-    idleTime: totalIdleSec > 0 ? formatHM(totalIdleSec) : null,
+    idleTime: formatHM(totalIdleSec),
     timeline,
     appsTime,
   };

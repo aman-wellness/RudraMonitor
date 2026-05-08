@@ -58,6 +58,12 @@ export default function Navbar() {
           {/* Desktop Buttons */}
           <div className="hidden md:flex items-center gap-3">
             <Link
+              to="/partner/login"
+              className="text-sm text-violet-400 hover:text-violet-300 px-3 py-2 rounded-md transition-all duration-200 whitespace-nowrap"
+            >
+              Partner Login
+            </Link>
+            <Link
               to="/login"
               className="text-sm text-white border border-dark-600 hover:border-emerald-500 hover:text-emerald-400 px-5 py-2 rounded-md transition-all duration-200 whitespace-nowrap"
             >
@@ -97,6 +103,12 @@ export default function Navbar() {
               </a>
             ))}
             <div className="pt-3 border-t border-dark-700 space-y-2">
+              <Link
+                to="/partner/login"
+                className="block text-center text-sm text-violet-400 border border-violet-500/30 py-2 rounded-md"
+              >
+                Partner Login
+              </Link>
               <Link
                 to="/login"
                 className="block text-center text-sm text-white border border-dark-600 py-2 rounded-md"

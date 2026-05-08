@@ -13,6 +13,9 @@ pub struct AgentConfig {
     pub supabase_url: Option<String>,
     pub supabase_anon_key: Option<String>,
     pub enrollment: Option<Enrollment>,
+    /// License key entered at setup. If present, the agent revalidates it
+    /// periodically and stops capturing if it becomes invalid/expired.
+    pub license_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +32,35 @@ pub fn config_path() -> Result<PathBuf> {
     let dir = base.join("TrackForceAgent");
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {:?}", dir))?;
     Ok(dir.join("agent.json"))
+}
+
+/// Read the optional pre-fill file dropped by the personalized launcher script
+/// (Install-<Name>.command / .bat / .sh). When present, the UI hides the agent
+/// name input and only asks the employee for the license key.
+///
+/// File location matches the launcher scripts:
+///   macOS:   ~/Library/Application Support/TrackForceAgent/prefill.json
+///   Windows: %APPDATA%/TrackForceAgent/prefill.json
+///   Linux:   ~/.local/share/TrackForceAgent/prefill.json
+/// All map to `dirs::data_dir()/TrackForceAgent/prefill.json`.
+pub fn read_prefill_name() -> Option<String> {
+    let base = dirs::data_dir()?;
+    let path = base.join("TrackForceAgent").join("prefill.json");
+    if !path.exists() {
+        return None;
+    }
+    let raw = std::fs::read_to_string(&path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let name = v.get("agent_name")?.as_str()?.trim().to_string();
+    if name.is_empty() { None } else { Some(name) }
+}
+
+/// After successful enrollment the prefill file is no longer needed; remove it
+/// so it isn't confused with a fresh registration on subsequent launches.
+pub fn consume_prefill() {
+    if let Some(base) = dirs::data_dir() {
+        let _ = std::fs::remove_file(base.join("TrackForceAgent").join("prefill.json"));
+    }
 }
 
 pub fn load() -> Result<AgentConfig> {

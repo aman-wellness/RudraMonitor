@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import { useAgents } from '@/lib/dataHooks';
+import { supabase } from '@/lib/supabase';
 
 const departments = ['All', 'Development', 'HR', 'Finance', 'Design', 'Sales', 'Support', 'Marketing', 'Unassigned'];
 const deptOptions = departments.filter((d) => d !== 'All');
@@ -9,7 +10,57 @@ const statuses = ['All', 'online', 'idle', 'offline'];
 
 export default function AgentsPage() {
   const navigate = useNavigate();
-  const { agents, loading, updateDepartment } = useAgents();
+  const { agents, loading, updateDepartment, deleteAgent, refresh: refreshAgents } = useAgents();
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+
+  const handleDelete = async (e: React.MouseEvent, agentId: string, agentName: string) => {
+    e.stopPropagation();
+    if (!confirm(`Remove agent "${agentName}"? This frees the license but keeps historical data.`)) return;
+    setRemoving(agentId);
+    try {
+      await deleteAgent(agentId);
+    } catch (err) {
+      alert(`Failed to remove agent: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setRemoving(null);
+    }
+  };
+
+  const handleBulkCapture = async (column: 'screenshots_enabled' | 'videos_enabled', value: boolean) => {
+    if (selected.size === 0) return;
+    setBulkBusy(true);
+    setBulkActionOpen(false);
+    try {
+      const { error } = await supabase
+        .from('agents')
+        .update({ [column]: value })
+        .in('id', Array.from(selected));
+      if (error) throw error;
+      await refreshAgents();
+    } catch (err) {
+      alert(`Bulk update failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const handleBulkRemove = async () => {
+    if (selected.size === 0) return;
+    if (!confirm(`Remove ${selected.size} agent${selected.size === 1 ? '' : 's'}? This frees ${selected.size} license${selected.size === 1 ? '' : 's'} but keeps historical data.`)) return;
+    setBulkBusy(true);
+    setBulkActionOpen(false);
+    try {
+      const { error } = await supabase.from('agents').delete().in('id', Array.from(selected));
+      if (error) throw error;
+      setSelected(new Set());
+      await refreshAgents();
+    } catch (err) {
+      alert(`Bulk remove failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
   const [search, setSearch] = useState('');
   const [deptFilter, setDeptFilter] = useState('All');
   const [statusFilter, setStatusFilter] = useState('All');
@@ -193,27 +244,49 @@ export default function AgentsPage() {
                 Clear
               </button>
               {bulkActionOpen && (
-                <div className="absolute mt-24 right-6 md:right-auto bg-dark-800 border border-dark-700 rounded-lg shadow-xl z-40 overflow-hidden min-w-[160px]">
-                  <button className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-dark-700 transition-colors flex items-center gap-2">
+                <div className="absolute mt-24 right-6 md:right-auto bg-dark-800 border border-dark-700 rounded-lg shadow-xl z-40 overflow-hidden min-w-[180px]">
+                  <button
+                    onClick={() => handleBulkCapture('screenshots_enabled', true)}
+                    disabled={bulkBusy}
+                    className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-dark-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+                  >
                     <span className="w-3.5 h-3.5 flex items-center justify-center"><i className="ri-image-line text-xs" /></span>
                     Enable Screenshots
                   </button>
-                  <button className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-dark-700 transition-colors flex items-center gap-2">
+                  <button
+                    onClick={() => handleBulkCapture('screenshots_enabled', false)}
+                    disabled={bulkBusy}
+                    className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-dark-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+                  >
                     <span className="w-3.5 h-3.5 flex items-center justify-center"><i className="ri-eye-off-line text-xs" /></span>
                     Disable Screenshots
                   </button>
-                  <button className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-dark-700 transition-colors flex items-center gap-2">
+                  <button
+                    onClick={() => handleBulkCapture('videos_enabled', true)}
+                    disabled={bulkBusy}
+                    className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-dark-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+                  >
                     <span className="w-3.5 h-3.5 flex items-center justify-center"><i className="ri-video-line text-xs" /></span>
                     Enable Videos
                   </button>
-                  <button className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-dark-700 transition-colors flex items-center gap-2">
+                  <button
+                    onClick={() => handleBulkCapture('videos_enabled', false)}
+                    disabled={bulkBusy}
+                    className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-dark-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+                  >
                     <span className="w-3.5 h-3.5 flex items-center justify-center"><i className="ri-eye-off-line text-xs" /></span>
                     Disable Videos
                   </button>
                   <div className="border-t border-dark-700" />
-                  <button className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-red-500/10 transition-colors flex items-center gap-2">
-                    <span className="w-3.5 h-3.5 flex items-center justify-center"><i className="ri-delete-bin-line text-xs" /></span>
-                    Remove Selected
+                  <button
+                    onClick={handleBulkRemove}
+                    disabled={bulkBusy}
+                    className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-red-500/10 transition-colors flex items-center gap-2 disabled:opacity-50"
+                  >
+                    <span className="w-3.5 h-3.5 flex items-center justify-center">
+                      <i className={`${bulkBusy ? 'ri-loader-4-line animate-spin' : 'ri-delete-bin-line'} text-xs`} />
+                    </span>
+                    Remove Selected ({selected.size})
                   </button>
                 </div>
               )}
@@ -284,6 +357,7 @@ export default function AgentsPage() {
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3">Productivity</th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3">Active Hours</th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3">Department</th>
+                    <th className="text-right text-xs text-gray-500 font-medium px-4 py-3 w-12"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -343,6 +417,16 @@ export default function AgentsPage() {
                         </button>
                         {editingDeptId === agent.id && <DeptDropdown agentId={agent.id} currentDept={agent.department} />}
                       </td>
+                      <td className="px-4 py-3 text-right">
+                        <button
+                          onClick={(e) => handleDelete(e, agent.id, agent.name)}
+                          disabled={removing === agent.id}
+                          title="Remove agent (frees license)"
+                          className="w-7 h-7 inline-flex items-center justify-center rounded-md text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50"
+                        >
+                          <i className={`${removing === agent.id ? 'ri-loader-4-line animate-spin' : 'ri-delete-bin-line'} text-sm`} />
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -357,7 +441,7 @@ export default function AgentsPage() {
             {filtered.map((agent) => (
               <div
                 key={agent.id}
-                className={`bg-dark-800 border rounded-xl p-5 cursor-pointer transition-all duration-300 hover:border-dark-600 hover:scale-[1.01] relative ${
+                className={`group bg-dark-800 border rounded-xl p-5 cursor-pointer transition-all duration-300 hover:border-dark-600 hover:scale-[1.01] relative ${
                   selected.has(agent.id) ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-dark-700'
                 }`}
               >
@@ -369,6 +453,16 @@ export default function AgentsPage() {
                   <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${selected.has(agent.id) ? 'bg-emerald-500 border-emerald-500' : 'border-gray-600 hover:border-gray-400'}`}>
                     {selected.has(agent.id) && <i className="ri-check-line text-[10px] text-white" />}
                   </div>
+                </button>
+
+                {/* Remove button - bottom-right, hover-reveal so it doesn't fight the status badge */}
+                <button
+                  onClick={(e) => handleDelete(e, agent.id, agent.name)}
+                  disabled={removing === agent.id}
+                  title="Remove agent (frees license)"
+                  className="absolute bottom-3 right-3 w-7 h-7 flex items-center justify-center rounded-md bg-dark-900/80 border border-dark-700 text-gray-500 hover:text-red-400 hover:border-red-500/30 hover:bg-red-500/10 transition-all z-10 opacity-0 group-hover:opacity-100 disabled:opacity-50"
+                >
+                  <i className={`${removing === agent.id ? 'ri-loader-4-line animate-spin' : 'ri-delete-bin-line'} text-sm`} />
                 </button>
 
                 <div onClick={() => navigate(`/agents/${agent.id}`)} className="pl-7">

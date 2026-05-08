@@ -15,7 +15,10 @@ export default function ProtectedRoute({ children }: { children: ReactNode }) {
   }
 
   if (!session) {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+    // Send unauthenticated visitors to the public landing page rather than the
+    // customer login. The landing page exposes login + partner-login + signup,
+    // so users can pick whichever flow they need without us guessing for them.
+    return <Navigate to="/" replace state={{ from: location.pathname }} />;
   }
 
   return <>{children}</>;

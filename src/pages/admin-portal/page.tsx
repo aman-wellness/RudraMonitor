@@ -3,6 +3,7 @@ import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import { useAuth } from '@/context/AuthContext';
 import { useAgents, useOrgMembers } from '@/lib/dataHooks';
 import { supabase } from '@/lib/supabase';
+import DepartmentsTab from './components/DepartmentsTab';
 
 interface OrgUser {
   id: string;
@@ -17,6 +18,7 @@ const adminTabs = [
   { id: 'org', label: 'Organization', icon: 'ri-building-line' },
   { id: 'subscription', label: 'Subscription', icon: 'ri-vip-crown-line' },
   { id: 'users', label: 'Users', icon: 'ri-team-line' },
+  { id: 'departments', label: 'Departments', icon: 'ri-organization-chart' },
   { id: 'settings', label: 'Settings', icon: 'ri-settings-3-line' },
 ];
 
@@ -28,6 +30,56 @@ export default function AdminPortalPage() {
   const { members, inviteMember, removeMember } = useOrgMembers();
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteBusy, setInviteBusy] = useState(false);
+
+  // If the org is partner-routed, fetch the partner's billing details so we show
+  // them (not TrackForce) as the "billed by" entity in the customer's portal.
+  const [billingEntity, setBillingEntity] = useState<null | {
+    name: string; gst_number: string | null; pan_number: string | null;
+    address: string | null; city: string | null; state: string | null;
+    postal_code: string | null; country: string | null;
+    contact_email: string | null; phone: string | null;
+    is_partner: boolean;
+  }>(null);
+  const [orgInvoices, setOrgInvoices] = useState<Array<{
+    id: string; invoice_number: string; total_inr: number; status: string;
+    invoice_date: string; bill_from: string;
+  }>>([]);
+  useEffect(() => {
+    if (!organization) return;
+    (async () => {
+      if (organization.partner_id) {
+        const { data } = await supabase
+          .from('partners')
+          .select('name, gst_number, pan_number, address, city, state, postal_code, country, contact_email, phone')
+          .eq('id', organization.partner_id)
+          .maybeSingle();
+        if (data) {
+          setBillingEntity({ ...(data as never), is_partner: true });
+        }
+      } else {
+        // Direct customer — billed by TrackForce. These are the SaaS vendor's own details
+        // (could be moved to an `app_settings` table later for editability).
+        setBillingEntity({
+          is_partner: false,
+          name: 'TrackForce Technologies Pvt Ltd',
+          gst_number: null, pan_number: null,
+          address: 'Floor 4, Tower B, iThum Business Park',
+          city: 'Noida', state: 'Uttar Pradesh', postal_code: '201309', country: 'IN',
+          contact_email: 'billing@trackforce.io', phone: null,
+        });
+      }
+      // Real invoices, partner-routed orgs only see the bill_from='partner' invoices
+      // (the wholesale TF→partner leg is hidden — that's between TrackForce and the partner).
+      const { data: invs } = await supabase
+        .from('invoices')
+        .select('id, invoice_number, total_inr, status, invoice_date, bill_from')
+        .eq('organization_id', organization.id)
+        .eq('bill_from', organization.partner_id ? 'partner' : 'trackforce')
+        .order('invoice_date', { ascending: false })
+        .limit(10);
+      setOrgInvoices((invs as never) ?? []);
+    })();
+  }, [organization]);
 
   const [editingProfile, setEditingProfile] = useState(false);
   const [profileBusy, setProfileBusy] = useState(false);
@@ -68,7 +120,12 @@ export default function AdminPortalPage() {
     setEditingProfile(false);
   };
 
-  const [activeTab, setActiveTab] = useState('org');
+  const initialTab = (() => {
+    if (typeof window === 'undefined') return 'org';
+    const t = new URLSearchParams(window.location.search).get('tab') ?? 'org';
+    return adminTabs.some((x) => x.id === t) ? t : 'org';
+  })();
+  const [activeTab, setActiveTab] = useState(initialTab);
   const [showAddUser, setShowAddUser] = useState(false);
   const [showEditUser, setShowEditUser] = useState(false);
   const [showResetPassword, setShowResetPassword] = useState(false);
@@ -399,6 +456,41 @@ export default function AdminPortalPage() {
               </div>
             </div>
 
+            {/* Billed By — partner if partner-routed, TrackForce otherwise */}
+            {billingEntity && (
+              <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <span className="w-5 h-5 flex items-center justify-center"><i className="ri-store-2-line text-cyan-400 text-sm" /></span>
+                    <h3 className="text-sm font-semibold text-white">Billed By</h3>
+                  </div>
+                  <span className={`px-2 py-0.5 text-[10px] rounded-md border ${billingEntity.is_partner ? 'bg-violet-500/15 text-violet-400 border-violet-500/30' : 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30'}`}>
+                    {billingEntity.is_partner ? 'Channel Partner' : 'Direct (TrackForce)'}
+                  </span>
+                </div>
+                <div className="space-y-2 text-xs">
+                  <div className="flex justify-between"><span className="text-gray-500">Name</span><span className="text-white font-medium">{billingEntity.name}</span></div>
+                  {billingEntity.gst_number && <div className="flex justify-between"><span className="text-gray-500">GST</span><span className="text-gray-300">{billingEntity.gst_number}</span></div>}
+                  {billingEntity.pan_number && <div className="flex justify-between"><span className="text-gray-500">PAN</span><span className="text-gray-300">{billingEntity.pan_number}</span></div>}
+                  {(billingEntity.address || billingEntity.city) && (
+                    <div className="flex justify-between gap-3">
+                      <span className="text-gray-500 flex-shrink-0">Address</span>
+                      <span className="text-gray-300 text-right">
+                        {[billingEntity.address, billingEntity.city, billingEntity.state, billingEntity.postal_code].filter(Boolean).join(', ')}
+                      </span>
+                    </div>
+                  )}
+                  {billingEntity.contact_email && <div className="flex justify-between"><span className="text-gray-500">Email</span><span className="text-gray-300">{billingEntity.contact_email}</span></div>}
+                  {billingEntity.phone && <div className="flex justify-between"><span className="text-gray-500">Phone</span><span className="text-gray-300">{billingEntity.phone}</span></div>}
+                </div>
+                {billingEntity.is_partner && (
+                  <p className="text-[11px] text-gray-500 mt-3 pt-3 border-t border-dark-700">
+                    Your subscription is managed by this partner. All invoices and support requests are routed through them.
+                  </p>
+                )}
+              </div>
+            )}
+
             {/* Invoice History */}
             <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
               <div className="flex items-center justify-between mb-4">
@@ -407,15 +499,34 @@ export default function AdminPortalPage() {
                   <h3 className="text-sm font-semibold text-white">Invoice History</h3>
                 </div>
               </div>
-              <div className="bg-dark-900 rounded-lg border border-dark-700 p-6 text-center">
-                <span className="w-10 h-10 mx-auto mb-2 flex items-center justify-center text-gray-600">
-                  <i className="ri-bill-line text-2xl" />
-                </span>
-                <p className="text-xs text-gray-400 font-medium">No invoices yet</p>
-                <p className="text-[11px] text-gray-600 mt-1">
-                  Invoices will appear here once your trial converts to a paid plan.
-                </p>
-              </div>
+              {orgInvoices.length === 0 ? (
+                <div className="bg-dark-900 rounded-lg border border-dark-700 p-6 text-center">
+                  <span className="w-10 h-10 mx-auto mb-2 flex items-center justify-center text-gray-600">
+                    <i className="ri-bill-line text-2xl" />
+                  </span>
+                  <p className="text-xs text-gray-400 font-medium">No invoices yet</p>
+                  <p className="text-[11px] text-gray-600 mt-1">
+                    Invoices appear here once your subscription is billed.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {orgInvoices.map((inv) => (
+                    <div key={inv.id} className="flex items-center justify-between bg-dark-900 rounded-lg border border-dark-700 p-3">
+                      <div>
+                        <p className="text-xs text-white font-medium">{inv.invoice_number}</p>
+                        <p className="text-[11px] text-gray-500">
+                          {new Date(inv.invoice_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-xs text-white font-medium">₹ {Number(inv.total_inr).toLocaleString('en-IN')}</p>
+                        <p className={`text-[10px] ${inv.status === 'paid' ? 'text-emerald-400' : inv.status === 'pending' ? 'text-amber-400' : 'text-gray-500'} capitalize`}>{inv.status}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -742,6 +853,11 @@ export default function AdminPortalPage() {
               </div>
             )}
           </div>
+        )}
+
+        {/* === DEPARTMENTS TAB === */}
+        {activeTab === 'departments' && (
+          <DepartmentsTab orgId={organization?.id ?? null} />
         )}
 
         {/* === SETTINGS TAB === */}

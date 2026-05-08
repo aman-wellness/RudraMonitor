@@ -5552,6 +5552,7 @@ dependencies = [
  "env_logger",
  "hostname",
  "image",
+ "libc",
  "log",
  "once_cell",
  "reqwest 0.12.28",

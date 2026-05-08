@@ -5,6 +5,9 @@ import { useAuth } from '@/context/AuthContext';
 import { useAgents } from '@/lib/dataHooks';
 
 const RELEASES_BASE = 'https://ttjazaxjhzvrzhptrpmd.supabase.co/storage/v1/object/public/releases';
+// Builds are produced by .github/workflows/build-agent.yml on every workflow_dispatch / tag push.
+// File names embed the ref name (`main` for dev builds, `v0.1.0` for release tags).
+const BUILD_REF = 'main';
 const AGENT_VERSION = '0.1.0';
 
 const osData = [
@@ -15,18 +18,25 @@ const osData = [
     borderColor: 'border-amber-500/20',
     bgColor: 'bg-amber-500/10',
     minVersion: 'macOS 12+',
-    arch: 'Intel / Apple Silicon',
+    arch: 'Apple Silicon (M1/M2/M3) · Intel',
     downloads: [
       {
-        label: 'TrackForce Agent (.pkg)',
-        filename: `TrackForce-Agent-macOS-${AGENT_VERSION}.pkg`,
-        url: `${RELEASES_BASE}/TrackForce-Agent-macOS-${AGENT_VERSION}.pkg`,
-        size: '3.7 MB',
+        label: 'Apple Silicon (.pkg)',
+        filename: `TrackForce-Agent-macOS-arm64-${BUILD_REF}.pkg`,
+        url: `${RELEASES_BASE}/TrackForce-Agent-macOS-arm64-${BUILD_REF}.pkg`,
+        size: '~4 MB',
+        version: AGENT_VERSION,
+      },
+      {
+        label: 'Intel (.pkg)',
+        filename: `TrackForce-Agent-macOS-x64-${BUILD_REF}.pkg`,
+        url: `${RELEASES_BASE}/TrackForce-Agent-macOS-x64-${BUILD_REF}.pkg`,
+        size: '~4 MB',
         version: AGENT_VERSION,
       },
     ],
     steps: [
-      'Download the .pkg installer',
+      'Download the .pkg matching your Mac (Apple Silicon = M1/M2/M3)',
       'Double-click the .pkg and follow the installer (admin password required)',
       'Enrollment dialog opens — paste the License Key below and your name',
       'Agent goes silent in the background; auto-starts on every reboot',
@@ -42,17 +52,18 @@ const osData = [
     arch: 'x64',
     downloads: [
       {
-        label: 'TrackForce Agent (.msi) — coming soon',
-        filename: `TrackForce-Agent-Windows-${AGENT_VERSION}.msi`,
-        url: '',
-        size: '—',
+        label: 'TrackForce Agent (.msi)',
+        filename: `TrackForce-Agent-Windows-${BUILD_REF}.msi`,
+        url: `${RELEASES_BASE}/TrackForce-Agent-Windows-${BUILD_REF}.msi`,
+        size: '~12 MB',
         version: AGENT_VERSION,
       },
     ],
     steps: [
-      'Build artifact required: run `npm run tauri build -- --bundles msi` on a Windows host',
-      'Upload the .msi to the `releases` Supabase Storage bucket',
-      'Once uploaded the Download button on this card becomes live',
+      'Download the .msi installer',
+      'Double-click and follow the installer (admin/UAC prompt)',
+      'Enrollment dialog opens — paste the License Key below and your name',
+      'Agent runs hidden in the background; auto-starts on every reboot',
     ],
   },
   {
@@ -61,21 +72,22 @@ const osData = [
     color: 'text-orange-400',
     borderColor: 'border-orange-500/20',
     bgColor: 'bg-orange-500/10',
-    minVersion: 'Ubuntu 20.04+',
-    arch: 'x64 / ARM64',
+    minVersion: 'Ubuntu 22.04+',
+    arch: 'x64',
     downloads: [
       {
-        label: 'Debian Package (.deb) — coming soon',
-        filename: `trackforce-agent_${AGENT_VERSION}_amd64.deb`,
-        url: '',
-        size: '—',
+        label: 'Debian Package (.deb)',
+        filename: `trackforce-agent_${BUILD_REF}_amd64.deb`,
+        url: `${RELEASES_BASE}/trackforce-agent_${BUILD_REF}_amd64.deb`,
+        size: '~5 MB',
         version: AGENT_VERSION,
       },
     ],
     steps: [
-      'Build artifact required: run `npm run tauri build -- --bundles deb` on a Linux host',
-      'Upload the .deb to the `releases` Supabase Storage bucket',
-      'Once uploaded the Download button on this card becomes live',
+      'Download the .deb package',
+      'Run `sudo dpkg -i trackforce-agent_*.deb` (or double-click on GNOME)',
+      'Launch from app menu — enrollment dialog appears once',
+      'Agent runs in the background; relaunches on every login',
     ],
   },
 ];
@@ -118,6 +130,10 @@ export default function SetupPage() {
     setTimeout(() => setCopied(false), 1500);
   };
 
+  // After registration, the modal flips into "Send to employee" mode showing a
+  // personalized launcher script that bakes the agent name into the install flow.
+  const [postRegister, setPostRegister] = useState<{ agentName: string; os: string } | null>(null);
+
   const handleCreateAgent = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newAgentName.trim()) return;
@@ -128,13 +144,92 @@ export default function SetupPage() {
         osType: newAgentOS,
         department: newAgentDept,
       });
-      setNewAgentName('');
-      setNewAgentDept('Unassigned');
-      setNewAgentOS('Windows');
-      setAddOpen(false);
+      setPostRegister({ agentName: newAgentName.trim(), os: newAgentOS });
     } finally {
       setCreating(false);
     }
+  };
+
+  const closeAddModal = () => {
+    setAddOpen(false);
+    setPostRegister(null);
+    setNewAgentName('');
+    setNewAgentDept('Unassigned');
+    setNewAgentOS('Windows');
+  };
+
+  // Generate a tiny shell/batch script that:
+  //   1. Drops a prefill JSON containing the agent name in the agent's data dir.
+  //   2. Downloads the standard .pkg / .msi / .deb from Supabase Storage.
+  //   3. Runs the installer.
+  // The Rust agent reads this prefill on first launch, hides the name field, and only
+  // asks the employee for the license key.
+  const downloadLauncher = (os: string, agentName: string) => {
+    const safeName = agentName.replace(/'/g, "'\\''").replace(/"/g, '\\"');
+    const baseFile = `Install-${agentName.replace(/[^A-Za-z0-9]+/g, '-')}`;
+    let content = '';
+    let filename = '';
+    let mime = 'text/plain';
+
+    if (os === 'macOS') {
+      filename = `${baseFile}.command`;
+      content = `#!/bin/bash
+set -e
+APP_SUPPORT="$HOME/Library/Application Support/TrackForceAgent"
+mkdir -p "$APP_SUPPORT"
+cat > "$APP_SUPPORT/prefill.json" <<JSON
+{"agent_name":"${safeName}"}
+JSON
+PKG="$(/usr/bin/uname -m | grep -q arm64 && echo arm64 || echo x64)"
+URL="${RELEASES_BASE}/TrackForce-Agent-macOS-\${PKG}-${BUILD_REF}.pkg"
+echo "Downloading TrackForce Agent for $PKG..."
+curl -fL "$URL" -o /tmp/trackforce.pkg
+echo "Installing (admin password required)..."
+sudo installer -pkg /tmp/trackforce.pkg -target /
+echo "Done. Launch TrackForce Agent from /Applications and enter your License Key."
+`;
+    } else if (os === 'Windows') {
+      filename = `${baseFile}.bat`;
+      mime = 'application/octet-stream';
+      content = `@echo off
+setlocal
+set "APP_DATA=%APPDATA%\\TrackForceAgent"
+if not exist "%APP_DATA%" mkdir "%APP_DATA%"
+> "%APP_DATA%\\prefill.json" echo {"agent_name":"${safeName}"}
+set "URL=${RELEASES_BASE}/TrackForce-Agent-Windows-${BUILD_REF}.msi"
+echo Downloading TrackForce Agent...
+powershell -Command "Invoke-WebRequest -Uri '%URL%' -OutFile '%TEMP%\\trackforce.msi'"
+echo Installing (UAC prompt may appear)...
+msiexec /i "%TEMP%\\trackforce.msi" /qb
+echo Done. Launch TrackForce Agent and enter your License Key.
+pause
+`;
+    } else {
+      filename = `${baseFile}.sh`;
+      content = `#!/bin/bash
+set -e
+APP_SUPPORT="$HOME/.local/share/TrackForceAgent"
+mkdir -p "$APP_SUPPORT"
+cat > "$APP_SUPPORT/prefill.json" <<JSON
+{"agent_name":"${safeName}"}
+JSON
+URL="${RELEASES_BASE}/trackforce-agent_${BUILD_REF}_amd64.deb"
+echo "Downloading TrackForce Agent..."
+curl -fL "$URL" -o /tmp/trackforce.deb
+echo "Installing (sudo password required)..."
+sudo dpkg -i /tmp/trackforce.deb || sudo apt-get install -f -y
+echo "Done. Launch TrackForce Agent and enter your License Key."
+`;
+    }
+
+    const blob = new Blob([content], { type: mime });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   };
 
   return (
@@ -173,63 +268,127 @@ export default function SetupPage() {
 
         {/* Register Agent Modal */}
         {addOpen && (
-          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center px-4" onClick={() => setAddOpen(false)}>
+          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center px-4" onClick={closeAddModal}>
             <div className="bg-dark-800 border border-dark-700 rounded-xl p-6 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-base font-semibold text-white">Register New Agent</h3>
-                <button onClick={() => setAddOpen(false)} className="text-gray-500 hover:text-white">
+                <h3 className="text-base font-semibold text-white">
+                  {postRegister ? 'Send to Employee' : 'Register New Agent'}
+                </h3>
+                <button onClick={closeAddModal} className="text-gray-500 hover:text-white">
                   <i className="ri-close-line text-lg" />
                 </button>
               </div>
-              <p className="text-xs text-gray-500 mb-4">
-                Pre-register a machine. The desktop agent will use this entry on first launch with the org license key.
-              </p>
-              <form onSubmit={handleCreateAgent} className="space-y-3">
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">Agent / Employee Name</label>
-                  <input
-                    type="text"
-                    value={newAgentName}
-                    onChange={(e) => setNewAgentName(e.target.value)}
-                    placeholder="e.g. Rahul Sharma"
-                    required
-                    className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs text-gray-400 mb-1">OS</label>
-                    <select
-                      value={newAgentOS}
-                      onChange={(e) => setNewAgentOS(e.target.value)}
-                      className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+
+              {!postRegister ? (
+                <>
+                  <p className="text-xs text-gray-500 mb-4">
+                    Pre-register a machine. After registration we&apos;ll generate a personalized installer that bakes in the employee name — they only enter the license key.
+                  </p>
+                  <form onSubmit={handleCreateAgent} className="space-y-3">
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Agent / Employee Name</label>
+                      <input
+                        type="text"
+                        value={newAgentName}
+                        onChange={(e) => setNewAgentName(e.target.value)}
+                        placeholder="e.g. Rahul Sharma"
+                        required
+                        className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">OS</label>
+                        <select
+                          value={newAgentOS}
+                          onChange={(e) => setNewAgentOS(e.target.value)}
+                          className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                        >
+                          <option>Windows</option>
+                          <option>macOS</option>
+                          <option>Ubuntu</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Department</label>
+                        <select
+                          value={newAgentDept}
+                          onChange={(e) => setNewAgentDept(e.target.value)}
+                          className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                        >
+                          {['Unassigned','Development','HR','Finance','Design','Sales','Support','Marketing'].map((d) => (
+                            <option key={d}>{d}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={creating}
+                      className="w-full bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60 text-white py-2.5 rounded-lg font-medium text-sm transition-all"
                     >
-                      <option>Windows</option>
-                      <option>macOS</option>
-                      <option>Ubuntu</option>
-                    </select>
+                      {creating ? 'Registering…' : 'Register Agent'}
+                    </button>
+                  </form>
+                </>
+              ) : (
+                <>
+                  <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-3 mb-4">
+                    <p className="text-xs text-emerald-400 font-medium flex items-center gap-1.5">
+                      <i className="ri-check-line" /> Registered: {postRegister.agentName}
+                    </p>
                   </div>
-                  <div>
-                    <label className="block text-xs text-gray-400 mb-1">Department</label>
-                    <select
-                      value={newAgentDept}
-                      onChange={(e) => setNewAgentDept(e.target.value)}
-                      className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                  <p className="text-xs text-gray-500 mb-3 leading-relaxed">
+                    Download the personalized installer for <span className="text-white">{postRegister.agentName}</span> and send it to the employee. Running it will install the agent and pre-fill their name — they only enter the License Key.
+                  </p>
+
+                  <div className="space-y-2 mb-4">
+                    <button
+                      onClick={() => downloadLauncher('macOS', postRegister.agentName)}
+                      className="w-full flex items-center justify-between bg-dark-900 border border-dark-700 hover:border-amber-500/30 rounded-lg px-3 py-2.5 transition-colors group"
                     >
-                      {['Unassigned','Development','HR','Finance','Design','Sales','Support','Marketing'].map((d) => (
-                        <option key={d}>{d}</option>
-                      ))}
-                    </select>
+                      <span className="flex items-center gap-2 text-xs text-gray-300">
+                        <i className="ri-apple-line text-amber-400" /> macOS Launcher (.command)
+                      </span>
+                      <i className="ri-download-line text-amber-400 group-hover:translate-y-0.5 transition-transform" />
+                    </button>
+                    <button
+                      onClick={() => downloadLauncher('Windows', postRegister.agentName)}
+                      className="w-full flex items-center justify-between bg-dark-900 border border-dark-700 hover:border-blue-500/30 rounded-lg px-3 py-2.5 transition-colors group"
+                    >
+                      <span className="flex items-center gap-2 text-xs text-gray-300">
+                        <i className="ri-windows-line text-blue-400" /> Windows Launcher (.bat)
+                      </span>
+                      <i className="ri-download-line text-blue-400 group-hover:translate-y-0.5 transition-transform" />
+                    </button>
+                    <button
+                      onClick={() => downloadLauncher('Ubuntu', postRegister.agentName)}
+                      className="w-full flex items-center justify-between bg-dark-900 border border-dark-700 hover:border-orange-500/30 rounded-lg px-3 py-2.5 transition-colors group"
+                    >
+                      <span className="flex items-center gap-2 text-xs text-gray-300">
+                        <i className="ri-ubuntu-line text-orange-400" /> Ubuntu Launcher (.sh)
+                      </span>
+                      <i className="ri-download-line text-orange-400 group-hover:translate-y-0.5 transition-transform" />
+                    </button>
                   </div>
-                </div>
-                <button
-                  type="submit"
-                  disabled={creating}
-                  className="w-full bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60 text-white py-2.5 rounded-lg font-medium text-sm transition-all"
-                >
-                  {creating ? 'Registering…' : 'Register Agent'}
-                </button>
-              </form>
+
+                  <div className="bg-dark-900 border border-dark-700 rounded-lg p-3 mb-4">
+                    <p className="text-[11px] text-gray-500 mb-1 font-medium">Employee instructions</p>
+                    <ol className="text-[11px] text-gray-400 space-y-0.5 list-decimal list-inside">
+                      <li>Double-click the launcher file</li>
+                      <li>Approve admin / UAC prompt</li>
+                      <li>Enter the License Key when prompted</li>
+                    </ol>
+                  </div>
+
+                  <button
+                    onClick={closeAddModal}
+                    className="w-full bg-dark-700 hover:bg-dark-600 text-white py-2.5 rounded-lg font-medium text-sm transition-all"
+                  >
+                    Done
+                  </button>
+                </>
+              )}
             </div>
           </div>
         )}

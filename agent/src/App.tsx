@@ -11,6 +11,10 @@ type Status = {
   last_error: string | null;
   paused: boolean;
   autostart_enabled: boolean;
+  prefilled_agent_name: string | null;
+  license_present: boolean;
+  license_blocked: boolean;
+  license_reason: string | null;
 };
 
 export default function App() {
@@ -41,9 +45,12 @@ export default function App() {
   const onEnroll = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null); setBusy(true);
+    // If the launcher script pre-filled a name, prefer it over whatever the user typed
+    // (the input is hidden in that case anyway).
+    const effectiveName = (status?.prefilled_agent_name ?? agentName).trim();
     try {
       await invoke("enroll", {
-        args: { license_key: licenseKey.trim(), agent_name: agentName.trim() },
+        args: { license_key: licenseKey.trim(), agent_name: effectiveName },
       });
       await refresh();
     } catch (err) {
@@ -78,19 +85,25 @@ export default function App() {
 
       {!status.enrolled && (
         <div className="card">
-          <h2>Enroll This Machine</h2>
-          <p className="muted">Get the license key from your admin (Setup page in dashboard).</p>
+          <h2>{status.prefilled_agent_name ? `Welcome, ${status.prefilled_agent_name}` : 'Enroll This Machine'}</h2>
+          <p className="muted">
+            {status.prefilled_agent_name
+              ? 'Just paste the License Key your admin shared and click Enroll.'
+              : 'Get the license key from your admin (Setup page in dashboard).'}
+          </p>
           <form onSubmit={onEnroll} style={{ marginTop: 12 }}>
             <div className="field">
               <label>Organization License Key</label>
               <input value={licenseKey} onChange={(e) => setLicenseKey(e.target.value)}
                 placeholder="hex token from /setup" required />
             </div>
-            <div className="field">
-              <label>Employee / Agent name</label>
-              <input value={agentName} onChange={(e) => setAgentName(e.target.value)}
-                placeholder="e.g. Rahul Sharma" required />
-            </div>
+            {!status.prefilled_agent_name && (
+              <div className="field">
+                <label>Employee / Agent name</label>
+                <input value={agentName} onChange={(e) => setAgentName(e.target.value)}
+                  placeholder="e.g. Rahul Sharma" required />
+              </div>
+            )}
             <button type="submit" disabled={busy}>{busy ? "Enrolling…" : "Enroll"}</button>
           </form>
         </div>
@@ -98,10 +111,23 @@ export default function App() {
 
       {status.enrolled && (
         <>
+          {(status.license_blocked || !status.license_present) && (
+            <div className="card" style={{ borderColor: "var(--danger)" }}>
+              <h2 style={{ color: "var(--danger)" }}>
+                {status.license_blocked ? "License Blocked" : "License Required"}
+              </h2>
+              <p className="muted">
+                {status.license_blocked
+                  ? `Captures paused: ${status.license_reason ?? "license invalid"}.`
+                  : "Enter your license key to start monitoring. Get this from your reseller or admin."}
+              </p>
+              <LicenseInput onSet={refresh} />
+            </div>
+          )}
           <div className="card">
             <h2>
               <span className={`dot-status ${status.paused ? "dot-off" : status.last_error ? "dot-off" : "dot-on"}`} />
-              {status.paused ? "Paused" : "Active"}
+              {status.paused ? "Paused" : status.license_blocked ? "License Blocked" : "Active"}
             </h2>
             <p className="muted">
               {status.paused ? "Monitoring paused. Tray menu → Resume to continue." : "Reporting metrics every 60 seconds."}
@@ -154,6 +180,42 @@ export default function App() {
           <button className="ghost" onClick={onSignOut} disabled={busy}>Sign out</button>
         </>
       )}
+    </div>
+  );
+}
+
+function LicenseInput({ onSet }: { onSet: () => void }) {
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (!key.trim()) return;
+    setBusy(true); setErr(null);
+    try {
+      await invoke("set_license_key", { licenseKey: key.trim() });
+      setKey("");
+      onSet();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <input
+        type="text"
+        placeholder="License key"
+        value={key}
+        onChange={(e) => setKey(e.target.value)}
+        style={{ width: "100%", padding: 8, fontFamily: "monospace", fontSize: 12 }}
+      />
+      <button onClick={submit} disabled={busy || !key.trim()} style={{ marginTop: 8, width: "100%" }}>
+        {busy ? "Validating…" : "Activate"}
+      </button>
+      {err && <p className="muted" style={{ color: "var(--danger)", marginTop: 6 }}>{err}</p>}
     </div>
   );
 }

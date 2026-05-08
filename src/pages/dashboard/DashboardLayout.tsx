@@ -54,7 +54,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   const handleSignOut = async () => {
     await signOut();
-    navigate('/login');
+    navigate('/', { replace: true });
   };
 
   return (

@@ -17,3 +17,12 @@ verify_jwt = false
 
 [functions.invite-member]
 verify_jwt = false
+
+[functions.admin-invite-customer-owner]
+verify_jwt = false
+
+[functions.gst-lookup]
+verify_jwt = false
+
+[functions.admin-invite-partner]
+verify_jwt = false

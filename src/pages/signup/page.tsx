@@ -100,10 +100,11 @@ export default function Signup() {
   };
 
   return (
-    <div className="min-h-screen bg-dark-900 flex items-center justify-center px-4 py-8">
-      {/* Background effects */}
-      <div className="fixed top-0 right-0 w-[500px] h-[500px] bg-emerald-500/5 rounded-full blur-[120px]" />
-      <div className="fixed bottom-0 left-0 w-[400px] h-[400px] bg-teal-500/5 rounded-full blur-[100px]" />
+    <div className="min-h-screen relative overflow-hidden flex items-center justify-center px-4 py-8 login-bg login-bg-emerald">
+      <div className="aurora aurora-a" aria-hidden />
+      <div className="aurora aurora-b" aria-hidden />
+      <div className="aurora aurora-c" aria-hidden />
+      <div className="absolute inset-0 grid-overlay pointer-events-none" aria-hidden />
 
       <div className="relative z-10 w-full max-w-lg">
         {/* Logo */}

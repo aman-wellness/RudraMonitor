@@ -8,10 +8,17 @@
 #   - Manual dispatch (Actions tab → Run workflow)
 #   - Push of a tag matching v* (release flow)
 #
-# Required GitHub repo secret:
-#   SUPABASE_ACCESS_TOKEN  — sbp_… personal access token from supabase.com/dashboard/account/tokens
+# Required GitHub repo secrets:
+#   SUPABASE_ACCESS_TOKEN              — sbp_… personal access token
+#   TAURI_SIGNING_PRIVATE_KEY          — full contents of ~/.tauri/trackforce-update.key
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — empty string if generated without password
 # Optional:
-#   SUPABASE_PROJECT_REF   — defaults to ttjazaxjhzvrzhptrpmd
+#   SUPABASE_PROJECT_REF               — defaults to ttjazaxjhzvrzhptrpmd
+#
+# This workflow builds OS installers (.pkg/.msi/.deb) AND updater bundles
+# (.app.tar.gz/.msi.zip/.AppImage.tar.gz) signed with the Tauri updater key.
+# After all builds finish, the `manifest` job aggregates the signatures into
+# latest.json so existing agents can auto-update.
 
 name: Build & Publish Agent
 
@@ -98,7 +105,81 @@ jobs:
 
       - name: Build agent
         working-directory: agent
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- --bundles ${{ matrix.bundle }} --target ${{ matrix.target }}
+
+      # Collect the updater-format bundle (.tar.gz / .msi.zip) AND its .sig file
+      # produced by Tauri when TAURI_SIGNING_PRIVATE_KEY is set. We need both for
+      # the latest.json manifest.
+      - name: Collect updater bundle + signature
+        id: updater
+        shell: bash
+        run: |
+          BASE="agent/src-tauri/target/${{ matrix.target }}/release/bundle"
+          shopt -s nullglob
+          # Tauri picks the updater archive based on bundle type.
+          for f in "$BASE"/macos/*.app.tar.gz "$BASE"/msi/*.msi.zip "$BASE"/nsis/*.nsis.zip "$BASE"/appimage/*.AppImage.tar.gz "$BASE"/deb/*.deb.tar.gz; do
+            if [ -f "$f" ] && [ -f "${f}.sig" ]; then
+              echo "found: $f"
+              cp "$f" "agent/dist-update-$(basename "$f")"
+              cp "${f}.sig" "agent/dist-update-$(basename "$f").sig"
+              echo "bundle=agent/dist-update-$(basename "$f")" >> $GITHUB_OUTPUT
+              echo "sig=agent/dist-update-$(basename "$f").sig" >> $GITHUB_OUTPUT
+              echo "name=$(basename "$f")" >> $GITHUB_OUTPUT
+              break
+            fi
+          done
+
+      - name: Upload updater bundle to Supabase
+        if: steps.updater.outputs.bundle != ''
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          SR_KEY=$(curl -fsS \
+            -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
+            "https://api.supabase.com/v1/projects/${{ env.SUPABASE_PROJECT_REF }}/api-keys?reveal=true" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print(next(k['api_key'] for k in d if k['name']=='service_role'))")
+          for f in "${{ steps.updater.outputs.bundle }}" "${{ steps.updater.outputs.sig }}"; do
+            REMOTE=$(basename "$f")
+            URL="https://${{ env.SUPABASE_PROJECT_REF }}.supabase.co/storage/v1/object/releases/${REMOTE}"
+            HTTP=$(curl -s -o /tmp/r.json -w "%{http_code}" \
+              -X POST "$URL" \
+              -H "Authorization: Bearer $SR_KEY" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary "@$f")
+            if [ "$HTTP" = "409" ] || [ "$HTTP" = "400" ]; then
+              HTTP=$(curl -s -o /tmp/r.json -w "%{http_code}" \
+                -X PUT "$URL" \
+                -H "Authorization: Bearer $SR_KEY" \
+                -H "Content-Type: application/octet-stream" \
+                --data-binary "@$f")
+            fi
+            [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ] || { echo "updater upload $f failed: $HTTP"; cat /tmp/r.json; exit 1; }
+            echo "Uploaded $REMOTE"
+          done
+
+      # Save the signature contents + URL so the manifest job can build latest.json
+      - name: Save updater metadata
+        if: steps.updater.outputs.bundle != ''
+        shell: bash
+        run: |
+          NAME="${{ steps.updater.outputs.name }}"
+          SIG=$(cat "${{ steps.updater.outputs.sig }}")
+          URL="https://${{ env.SUPABASE_PROJECT_REF }}.supabase.co/storage/v1/object/public/releases/${NAME}"
+          mkdir -p meta
+          cat > "meta/${{ matrix.target }}.json" <<EOF
+          { "target": "${{ matrix.target }}", "url": "$URL", "signature": $(jq -Rs '.' <<<"$SIG") }
+          EOF
+
+      - name: Upload metadata as artifact
+        if: steps.updater.outputs.bundle != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-meta-${{ matrix.target }}
+          path: meta/${{ matrix.target }}.json
 
       - name: Wrap macOS .app into .pkg
         if: matrix.packager == 'pkg'
@@ -169,3 +250,72 @@ jobs:
             agent/dist-mac/${{ matrix.remote_name }}
             agent/dist/${{ matrix.remote_name }}
           if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # After all OS builds finish, gather the per-target signature metadata into a
+  # single latest.json and upload it. Existing agents poll this every 30 min;
+  # when the version changes, they download + verify + install + restart.
+  # ---------------------------------------------------------------------------
+  manifest:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all per-target metadata artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: meta-all
+          pattern: updater-meta-*
+          merge-multiple: true
+
+      - name: Build latest.json
+        id: manifest
+        run: |
+          set -e
+          VERSION=$(node -p "require('./agent/src-tauri/tauri.conf.json').version")
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          # Map target → tauri platform key
+          declare -A KEY=(
+            [aarch64-apple-darwin]=darwin-aarch64
+            [x86_64-apple-darwin]=darwin-x86_64
+            [x86_64-pc-windows-msvc]=windows-x86_64
+            [x86_64-unknown-linux-gnu]=linux-x86_64
+          )
+          PLATFORMS_JSON=""
+          for f in meta-all/*.json; do
+            [ -f "$f" ] || continue
+            TARGET=$(jq -r '.target' "$f")
+            URL=$(jq -r '.url' "$f")
+            SIG=$(jq -r '.signature' "$f")
+            PKEY="${KEY[$TARGET]:-}"
+            [ -z "$PKEY" ] && continue
+            ENTRY=$(jq -n --arg s "$SIG" --arg u "$URL" '{signature:$s,url:$u}')
+            if [ -z "$PLATFORMS_JSON" ]; then PLATFORMS_JSON="\"$PKEY\":$ENTRY"
+            else PLATFORMS_JSON+=",\"$PKEY\":$ENTRY"; fi
+          done
+          cat > /tmp/latest.json <<EOF
+          { "version": "$VERSION", "notes": "TrackForce Agent v$VERSION", "pub_date": "$PUB_DATE", "platforms": { $PLATFORMS_JSON } }
+          EOF
+          jq . /tmp/latest.json
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Upload latest.json
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          SR_KEY=$(curl -fsS \
+            -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
+            "https://api.supabase.com/v1/projects/${{ env.SUPABASE_PROJECT_REF }}/api-keys?reveal=true" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print(next(k['api_key'] for k in d if k['name']=='service_role'))")
+          URL="https://${{ env.SUPABASE_PROJECT_REF }}.supabase.co/storage/v1/object/releases/latest.json"
+          HTTP=$(curl -s -o /tmp/r.json -w "%{http_code}" \
+            -X POST "$URL" -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/json" --data-binary "@/tmp/latest.json")
+          if [ "$HTTP" = "409" ] || [ "$HTTP" = "400" ]; then
+            HTTP=$(curl -s -o /tmp/r.json -w "%{http_code}" \
+              -X PUT "$URL" -H "Authorization: Bearer $SR_KEY" \
+              -H "Content-Type: application/json" --data-binary "@/tmp/latest.json")
+          fi
+          [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ] || { echo "upload failed: $HTTP"; cat /tmp/r.json; exit 1; }
+          echo "✅ latest.json published → https://${{ env.SUPABASE_PROJECT_REF }}.supabase.co/storage/v1/object/public/releases/latest.json"

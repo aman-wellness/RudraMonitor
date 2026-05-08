@@ -37,6 +37,9 @@ base64 = "0.22"
 user-idle = "0.5"
 starship-battery = "0.10"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

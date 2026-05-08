@@ -1,10 +1,13 @@
+// Marketing site (public) prices are shown in USD. Internal billing/invoices for
+// Indian customers run in INR (GST-locked) — the admin plans page exposes both.
 export const pricingPlans = [
   {
     id: 'starter',
     name: 'Starter',
     description: 'Perfect for small teams',
-    monthlyPrice: 499,
-    yearlyPrice: 399,
+    currency: 'USD',
+    monthlyPrice: 9,
+    yearlyPrice: 7,
     highlighted: false,
     features: [
       'Up to 5 Agents',
@@ -20,8 +23,9 @@ export const pricingPlans = [
     id: 'professional',
     name: 'Professional',
     description: 'Most popular choice',
-    monthlyPrice: 899,
-    yearlyPrice: 719,
+    currency: 'USD',
+    monthlyPrice: 19,
+    yearlyPrice: 15,
     highlighted: true,
     features: [
       'Unlimited Agents',
@@ -40,6 +44,7 @@ export const pricingPlans = [
     id: 'enterprise',
     name: 'Enterprise',
     description: 'For large organizations',
+    currency: 'USD',
     monthlyPrice: null,
     yearlyPrice: null,
     highlighted: false,

@@ -31,7 +31,7 @@ const ALLOWED_FIELDS: Record<string, Set<string>> = {
     "cpu_usage", "ram_usage", "disk_usage", "battery_level", "network_speed", "recorded_at",
   ]),
   activity_logs: new Set([
-    "activity_type", "application_name", "url", "duration", "screenshot_url", "video_url", "created_at",
+    "activity_type", "application_name", "url", "page_title", "duration", "screenshot_url", "video_url", "created_at",
   ]),
   alerts: new Set([
     "alert_type", "message", "ai_resolved", "resolution", "created_at",

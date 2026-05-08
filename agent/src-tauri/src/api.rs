@@ -68,6 +68,41 @@ pub async fn fetch_settings(
     Ok(resp.json::<AgentSettings>().await?)
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ValidateLicenseResponse {
+    pub valid: bool,
+    pub status: Option<String>,
+    pub expires_at: Option<String>,
+    pub organization_id: Option<String>,
+    pub seat_count: Option<i32>,
+    pub seats_used: Option<i32>,
+    pub plan_code: Option<String>,
+    pub reason: Option<String>,
+}
+
+pub async fn validate_license(
+    client: &Client,
+    supabase_url: &str,
+    anon_key: &str,
+    license_key: &str,
+    org_id: Option<&str>,
+) -> Result<ValidateLicenseResponse> {
+    let url = format!("{}/functions/v1/validate-license", supabase_url.trim_end_matches('/'));
+    let mut body = serde_json::json!({ "license_key": license_key });
+    if let Some(o) = org_id { body["org_id"] = serde_json::json!(o); }
+    let resp = client
+        .post(&url)
+        .bearer_auth(anon_key)
+        .header("apikey", anon_key)
+        .json(&body)
+        .send()
+        .await?;
+    let status = resp.status();
+    let json = resp.json::<ValidateLicenseResponse>().await
+        .map_err(|e| anyhow!("validate-license parse: {} (http {})", e, status))?;
+    Ok(json)
+}
+
 pub fn build_client() -> Result<Client> {
     Ok(Client::builder()
         .timeout(Duration::from_secs(20))
