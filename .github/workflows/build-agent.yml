@@ -43,7 +43,9 @@ jobs:
             artifact_glob: agent/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
             remote_name: TrackForce-Agent-macOS-arm64-${{ github.ref_name }}.pkg
             packager: pkg
-          - os: macos-13
+          # macOS Intel: cross-compile from macos-14 (ARM) using rust target.
+          # macos-13 (Intel) GitHub runners are deprecated and pool is unreliable.
+          - os: macos-14
             target: x86_64-apple-darwin
             bundle: app
             artifact_glob: agent/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
@@ -97,7 +99,11 @@ jobs:
             libxcb-xfixes0-dev \
             libpipewire-0.3-dev \
             libspa-0.2-dev \
-            libdbus-1-dev
+            libdbus-1-dev \
+            libgbm-dev \
+            libegl-dev \
+            libwayland-dev \
+            libdrm-dev
 
       - name: Install agent JS deps
         working-directory: agent
