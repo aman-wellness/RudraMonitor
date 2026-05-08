@@ -256,3 +256,106 @@ pub fn to_payload(ev: &DlpFileEvent, active_window: Option<String>) -> serde_jso
         "occurred_at":     chrono::Utc::now().to_rfc3339(),
     })
 }
+
+// ---------------------------------------------------------------------------
+// Email-compose session tracker
+// ---------------------------------------------------------------------------
+//
+// Watches whether the user is on a personal-mail compose page for an extended
+// duration (default 30s). When the threshold is crossed we emit ONE
+// dlp_events row (event_type=email_attachment) per session — the AI classifier
+// scores it based on the policy + authorized_domains. This is intentionally
+// conservative: better to emit one session-level event than spam events for
+// every focus tick.
+//
+// A single session = continuous focus on the same mail provider URL, broken
+// when the user navigates away for > 60 seconds or focuses a different app.
+
+use std::time::Instant;
+
+#[derive(Debug, Clone)]
+pub struct EmailSession {
+    pub provider: String,
+    pub url: String,
+    pub started_at: Instant,
+    pub last_seen: Instant,
+    pub emitted: bool,
+}
+
+pub struct EmailComposeTracker {
+    current: Option<EmailSession>,
+    /// Threshold (seconds) — only emit events for sessions longer than this.
+    pub min_session_secs: u64,
+}
+
+impl Default for EmailComposeTracker {
+    fn default() -> Self { Self { current: None, min_session_secs: 30 } }
+}
+
+#[derive(Debug, Clone)]
+pub struct EmailEvent {
+    pub provider: String,
+    pub url: String,
+    pub session_secs: u64,
+}
+
+impl EmailComposeTracker {
+    /// Call on every focus tick. `current_url` is the active browser tab URL
+    /// (None if not a browser). Returns Some(EmailEvent) the first time a
+    /// personal-mail session crosses the threshold; subsequent ticks of the
+    /// same session return None.
+    pub fn observe(&mut self, current_url: Option<&str>) -> Option<EmailEvent> {
+        let now = Instant::now();
+        let provider = current_url.and_then(crate::browser_url::personal_mail_provider);
+
+        match (provider, &mut self.current) {
+            // Same session continuing
+            (Some(p), Some(s)) if s.url == current_url.unwrap_or("") || s.provider == p => {
+                s.last_seen = now;
+                let dur = now.duration_since(s.started_at).as_secs();
+                if !s.emitted && dur >= self.min_session_secs {
+                    s.emitted = true;
+                    return Some(EmailEvent {
+                        provider: s.provider.clone(),
+                        url: s.url.clone(),
+                        session_secs: dur,
+                    });
+                }
+                None
+            }
+            // New mail session begins (or provider switched)
+            (Some(p), _) => {
+                self.current = Some(EmailSession {
+                    provider: p.to_string(),
+                    url: current_url.unwrap_or("").to_string(),
+                    started_at: now,
+                    last_seen: now,
+                    emitted: false,
+                });
+                None
+            }
+            // No personal-mail focus
+            (None, Some(s)) => {
+                // 60s grace — user might've alt-tabbed briefly to grab a file
+                if now.duration_since(s.last_seen).as_secs() > 60 {
+                    self.current = None;
+                }
+                None
+            }
+            (None, None) => None,
+        }
+    }
+}
+
+pub fn email_event_payload(ev: &EmailEvent, active_window: Option<String>) -> serde_json::Value {
+    json!({
+        "event_type":     "email_attachment",
+        "direction":      "to_external",
+        "mail_provider":  ev.provider,
+        "mail_url":       ev.url,
+        "active_window":  active_window,
+        // file_name / file_size are unknown without picker hooks — AI sees
+        // mail_provider + url + window context and classifies on policy.
+        "occurred_at":    chrono::Utc::now().to_rfc3339(),
+    })
+}

@@ -51,7 +51,7 @@ libc = "0.2"
 # per poll) and unreliable when PowerShell startup latency spiked.
 [target.'cfg(target_os = "windows")'.dependencies]
 uiautomation = "0.18"
-windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem"] }
 
 [features]
 default = ["custom-protocol"]

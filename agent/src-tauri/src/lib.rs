@@ -966,28 +966,53 @@ fn spawn_dlp_loop(state: AppState) {
     });
 
     // Drain loop — converts each captured file event into a dlp-ingest POST.
+    let drain_state = state.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(ev) = rx.recv().await {
-            if let Err(e) = post_dlp_event(&state, ev).await {
+            if let Err(e) = post_dlp_event(&drain_state, ev).await {
                 log::warn!("dlp post failed: {e}");
             }
         }
     });
+
+    // Email-compose tracker — every 10s checks the active browser URL. When
+    // the user spends >30s on a personal-mail compose page, one event fires.
+    tauri::async_runtime::spawn(async move {
+        sleep(Duration::from_secs(20)).await;
+        let mut tracker = dlp::EmailComposeTracker::default();
+        loop {
+            let url = active_window::current()
+                .and_then(|w| w.url.clone());
+            let evt = tracker.observe(url.as_deref());
+            if let Some(e) = evt {
+                let active_w = active_window::current()
+                    .map(|w| format!("{} — {}", w.app_name, w.window_title));
+                let payload = dlp::email_event_payload(&e, active_w);
+                if let Err(err) = post_dlp_payload(&state, &payload).await {
+                    log::warn!("dlp email post failed: {err}");
+                }
+            }
+            sleep(Duration::from_secs(10)).await;
+        }
+    });
 }
 
-async fn post_dlp_event(state: &AppState, ev: dlp::DlpFileEvent) -> Result<()> {
+/// Generic POST helper used by both USB and email watchers.
+async fn post_dlp_payload(state: &AppState, payload: &serde_json::Value) -> Result<()> {
     let cfg = state.config.lock().await.clone();
     let enrollment = cfg.enrollment.clone().ok_or_else(|| anyhow!("not enrolled"))?;
     let supabase_url = config::supabase_url(&cfg).ok_or_else(|| anyhow!("no supabase url"))?;
     let anon_key = config::supabase_anon_key(&cfg).ok_or_else(|| anyhow!("no anon key"))?;
+    let client = api::build_client()?;
+    api::dlp_ingest(&client, &supabase_url, &anon_key, &enrollment.enroll_token, payload).await
+}
 
+async fn post_dlp_event(state: &AppState, ev: dlp::DlpFileEvent) -> Result<()> {
     // Active window snapshot for context — useful for the AI classifier.
     let active_window = active_window::current()
         .map(|w| format!("{} — {}", w.app_name, w.window_title));
-
     let payload = dlp::to_payload(&ev, active_window);
-    let client = api::build_client()?;
-    api::dlp_ingest(&client, &supabase_url, &anon_key, &enrollment.enroll_token, &payload).await
+    post_dlp_payload(state, &payload).await
 }
 
 fn spawn_updater_loop(handle: tauri::AppHandle) {

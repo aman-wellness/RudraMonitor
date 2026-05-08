@@ -23,6 +23,7 @@ export type AgentDetail = {
   activeWorked: string;
   screenshotsEnabled: boolean;
   videosEnabled: boolean;
+  dlpEnabled: boolean;
   totalActiveTime: string;
   appsUsed: number;
   sitesVisited: number;
@@ -277,6 +278,7 @@ function buildDetail(
     activeWorked: formatHM(totalActiveSec),
     screenshotsEnabled: (agentRow.screenshots_enabled as boolean | undefined) ?? true,
     videosEnabled: (agentRow.videos_enabled as boolean | undefined) ?? false,
+    dlpEnabled: (agentRow.dlp_enabled as boolean | undefined) ?? false,
     totalActiveTime: formatHM(totalActiveSec),
     appsUsed: appBuckets.size,
     sitesVisited: sites.size,

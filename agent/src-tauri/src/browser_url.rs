@@ -13,6 +13,46 @@ pub struct BrowserContext {
     pub page_title: Option<String>,
 }
 
+/// Returns the canonical name of a personal mail provider if the URL is a
+/// known personal mail hostname. Used by DLP to flag email-attachment risk.
+/// Distinguishes:
+///   - "gmail" (mail.google.com — both work + personal; use authorized_domains
+///     in dlp_settings to whitelist your company's @gmail.com if needed)
+///   - "yahoo", "outlook" (outlook.live.com / hotmail.com), "rediffmail",
+///     "proton", "zoho-personal", "aol".
+/// Excludes business mail providers behind custom domains (Outlook 365 on a
+/// company tenant is at outlook.office.com — not flagged by default).
+pub fn personal_mail_provider(url: &str) -> Option<&'static str> {
+    let lower = url.to_ascii_lowercase();
+    if lower.contains("mail.google.com") || lower.contains("gmail.com") { return Some("gmail"); }
+    if lower.contains("mail.yahoo.com") || lower.contains("yahoo.com/mail") { return Some("yahoo"); }
+    if lower.contains("outlook.live.com") || lower.contains("hotmail.com")
+        || lower.contains("outlook.com") && !lower.contains("outlook.office.com") { return Some("outlook"); }
+    if lower.contains("rediffmail.com") || lower.contains("rediff.com/mail") { return Some("rediffmail"); }
+    if lower.contains("mail.proton.me") || lower.contains("protonmail.com") { return Some("proton"); }
+    if lower.contains("mail.aol.com") || lower.contains("aol.com/mail") { return Some("aol"); }
+    if lower.contains("mail.zoho.com") { return Some("zoho"); }
+    None
+}
+
+/// True if the URL looks like a "compose" / "new mail" page for one of the
+/// known personal providers — implies an in-progress outgoing message.
+pub fn is_compose_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    // Gmail compose: ?compose=new or #inbox?compose=…
+    if lower.contains("mail.google.com") && (lower.contains("compose") || lower.contains("/u/0/?cs=") ) { return true; }
+    // Yahoo compose
+    if lower.contains("mail.yahoo.com") && lower.contains("compose") { return true; }
+    // Outlook compose
+    if lower.contains("outlook.live.com") && lower.contains("deeplink/compose") { return true; }
+    // Rediff compose
+    if lower.contains("rediffmail.com") && lower.contains("compose") { return true; }
+    // Proton compose (modal — URL doesn't always change). Treat any /inbox state
+    // on Proton as risky-context once duration crosses threshold.
+    if lower.contains("mail.proton.me") { return true; }
+    false
+}
+
 #[cfg(target_os = "macos")]
 pub fn current_for_app(app_name: &str) -> Option<BrowserContext> {
     let lower = app_name.to_lowercase();

@@ -43,15 +43,32 @@ export default function AgentDetailPage() {
     return () => clearInterval(t);
   }, [refresh]);
 
-  const updateCaptureSettings = async (screenshots: boolean, videos: boolean) => {
+  const updateCaptureSettings = async (screenshots: boolean, videos: boolean, dlp?: boolean) => {
     if (!agentId) return;
-    const { error } = await supabase
-      .from('agents')
-      .update({ screenshots_enabled: screenshots, videos_enabled: videos })
-      .eq('id', agentId);
+    const patch: Record<string, boolean> = { screenshots_enabled: screenshots, videos_enabled: videos };
+    if (dlp !== undefined) patch.dlp_enabled = dlp;
+    const { error } = await supabase.from('agents').update(patch).eq('id', agentId);
     if (error) throw error;
     await refresh();
   };
+
+  // Plan-level DLP add-on price (null = DLP not available on this plan).
+  const [dlpAddonPriceInr, setDlpAddonPriceInr] = useState<number | null>(null);
+  useEffect(() => {
+    if (!agent?.orgId) return;
+    (async () => {
+      const { data: lic } = await supabase
+        .from('licenses')
+        .select('plans(dlp_addon_price_inr)')
+        .eq('organization_id', agent.orgId)
+        .eq('status', 'active')
+        .order('issued_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const price = (lic?.plans as { dlp_addon_price_inr?: number } | null)?.dlp_addon_price_inr;
+      setDlpAddonPriceInr(typeof price === 'number' ? price : null);
+    })();
+  }, [agent?.orgId]);
 
   const screenshotPaths = useMemo(
     () => activity.filter((a) => a.activity_type === 'screenshot').map((a) => a.screenshot_url).filter((p): p is string => !!p),
@@ -169,6 +186,8 @@ export default function AgentDetailPage() {
         <CaptureControls
           screenshotsEnabled={agent.screenshotsEnabled}
           videosEnabled={agent.videosEnabled}
+          dlpEnabled={agent.dlpEnabled}
+          dlpAddonPriceInr={dlpAddonPriceInr}
           onUpdate={updateCaptureSettings}
         />
 

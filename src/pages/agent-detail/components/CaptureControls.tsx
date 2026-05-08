@@ -3,12 +3,15 @@ import { useEffect, useState } from 'react';
 interface Props {
   screenshotsEnabled: boolean;
   videosEnabled: boolean;
-  onUpdate: (screenshots: boolean, videos: boolean) => Promise<void> | void;
+  dlpEnabled?: boolean;
+  dlpAddonPriceInr?: number | null;     // null = DLP not available on plan
+  onUpdate: (screenshots: boolean, videos: boolean, dlp?: boolean) => Promise<void> | void;
 }
 
-export default function CaptureControls({ screenshotsEnabled, videosEnabled, onUpdate }: Props) {
+export default function CaptureControls({ screenshotsEnabled, videosEnabled, dlpEnabled = false, dlpAddonPriceInr, onUpdate }: Props) {
   const [ss, setSs] = useState(screenshotsEnabled);
   const [vid, setVid] = useState(videosEnabled);
+  const [dlp, setDlp] = useState(dlpEnabled);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -16,12 +19,13 @@ export default function CaptureControls({ screenshotsEnabled, videosEnabled, onU
   // Sync local state when props change (e.g. agent-detail refreshes after a write).
   useEffect(() => { setSs(screenshotsEnabled); }, [screenshotsEnabled]);
   useEffect(() => { setVid(videosEnabled); }, [videosEnabled]);
+  useEffect(() => { setDlp(dlpEnabled); }, [dlpEnabled]);
 
   const handleSave = async () => {
     setError(null);
     setSaving(true);
     try {
-      await onUpdate(ss, vid);
+      await onUpdate(ss, vid, dlp);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) {
@@ -31,7 +35,8 @@ export default function CaptureControls({ screenshotsEnabled, videosEnabled, onU
     }
   };
 
-  const hasChanges = ss !== screenshotsEnabled || vid !== videosEnabled;
+  const hasChanges = ss !== screenshotsEnabled || vid !== videosEnabled || dlp !== dlpEnabled;
+  const dlpAvailable = dlpAddonPriceInr != null;
 
   return (
     <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
@@ -79,6 +84,37 @@ export default function CaptureControls({ screenshotsEnabled, videosEnabled, onU
             className={`w-10 h-5 rounded-full transition-colors relative ${vid ? 'bg-emerald-500' : 'bg-dark-700'}`}
           >
             <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${vid ? 'left-[22px]' : 'left-[2px]'}`} />
+          </button>
+        </div>
+
+        {/* DLP Toggle (paid add-on) */}
+        <div className={`flex items-center justify-between bg-dark-900 rounded-lg border p-3 ${dlpAvailable ? 'border-dark-700' : 'border-dark-700/50 opacity-60'}`}>
+          <div className="flex items-center gap-3">
+            <span className={`w-8 h-8 rounded-lg flex items-center justify-center ${dlp ? 'bg-cyan-500/15' : 'bg-dark-700'}`}>
+              <i className={`ri-shield-keyhole-line ${dlp ? 'text-cyan-400' : 'text-gray-600'}`} />
+            </span>
+            <div>
+              <p className="text-xs text-white font-medium flex items-center gap-2">
+                Data Loss Prevention (DLP)
+                {dlpAvailable && (
+                  <span className="px-1.5 py-0.5 text-[9px] uppercase rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                    +₹{dlpAddonPriceInr}/mo
+                  </span>
+                )}
+              </p>
+              <p className="text-[11px] text-gray-500">
+                {dlpAvailable
+                  ? 'USB transfer + email-attachment monitoring with AI alerts'
+                  : 'DLP not available on your current plan'}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => dlpAvailable && setDlp(!dlp)}
+            disabled={!dlpAvailable}
+            className={`w-10 h-5 rounded-full transition-colors relative ${dlp ? 'bg-cyan-500' : 'bg-dark-700'} disabled:cursor-not-allowed`}
+          >
+            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${dlp ? 'left-[22px]' : 'left-[2px]'}`} />
           </button>
         </div>
       </div>
