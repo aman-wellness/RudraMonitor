@@ -91,19 +91,20 @@ pub fn current_for_app(app_name: &str) -> Option<BrowserContext> {
 #[cfg(target_os = "windows")]
 pub fn current_for_app(_app_name: &str) -> Option<BrowserContext> {
     use uiautomation::UIAutomation;
-    use uiautomation::types::{TreeScope, UIProperty};
+    use uiautomation::types::{Handle, TreeScope, UIProperty};
     use uiautomation::variants::Variant;
     use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
-    // 1. Foreground HWND
+    // 1. Foreground HWND. `windows-rs` >= 0.52 wraps the handle as `*mut c_void`,
+    //    so `hwnd.0` is a raw pointer, not an integer.
     let hwnd = unsafe { GetForegroundWindow() };
-    if hwnd.0 == 0 { return None; }
+    if hwnd.0.is_null() { return None; }
 
-    // 2. Wrap in a UIA element. `UIAutomation::new()` is cheap (cached by the
-    //    crate). `element_from_handle` returns the AutomationElement for the
-    //    window's root.
+    // 2. Wrap in a UIA element. `uiautomation::Handle` is `pub struct Handle(pub isize)`,
+    //    so we cast the raw pointer to isize before constructing it.
     let automation = UIAutomation::new().ok()?;
-    let root = automation.element_from_handle(hwnd.into()).ok()?;
+    let handle = Handle::from(hwnd.0 as isize);
+    let root = automation.element_from_handle(handle).ok()?;
 
     // Window title (used as a fallback for page title; Chromium browsers expose
     // the active tab title here as "Page Title - Browser Name").
