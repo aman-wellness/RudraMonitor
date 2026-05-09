@@ -42,6 +42,11 @@ pub struct AgentSettings {
     pub videos_enabled: bool,
     #[serde(default = "default_video_interval")]
     pub video_interval_secs: u32,
+    /// DLP USB watcher + email-compose tracker. Off by default; admin enables
+    /// per-agent from the dashboard's Capture Controls. Server-driven so we can
+    /// kill DLP for a misbehaving agent without rebuilding the binary.
+    #[serde(default)]
+    pub dlp_enabled: bool,
 }
 
 fn default_video_interval() -> u32 { 1800 }

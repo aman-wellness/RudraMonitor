@@ -24,12 +24,31 @@ export type UiAgent = {
 
 const DEFAULT_DEPT = 'Unassigned';
 
+// Agent heartbeat is every 60s. We give one full miss + 30s grace before
+// marking offline — so 150s after the last `last_active` timestamp.
+const OFFLINE_STALENESS_SECS = 150;
+
+/**
+ * The agent can't reliably tell the server "I'm going offline" — laptops get
+ * suspended, networks drop, processes get killed. So we ignore the stored
+ * `status` field and derive status from `last_active` freshness:
+ *   - no last_active → offline
+ *   - >150s stale    → offline (user closed laptop / lost wifi / killed process)
+ *   - fresh          → trust the stored status (online vs user-idle, paused, etc.)
+ */
+const computeStatus = (a: Agent): UiAgent['status'] => {
+  if (!a.last_active) return 'offline';
+  const ageSecs = (Date.now() - new Date(a.last_active).getTime()) / 1000;
+  if (ageSecs > OFFLINE_STALENESS_SECS) return 'offline';
+  return (a.status as UiAgent['status']) ?? 'online';
+};
+
 const toUi = (a: Agent): UiAgent => ({
   id: a.id,
   name: a.agent_name,
   machine: a.machine_name ?? a.agent_name,
   os: a.os_type ?? 'Unknown',
-  status: (a.status as UiAgent['status']) ?? 'offline',
+  status: computeStatus(a),
   lastActive: a.last_active ?? '-',
   ipAddress: a.ip_address ?? '-',
   department: a.department ?? DEFAULT_DEPT,

@@ -160,6 +160,18 @@ impl DlpWatcher {
         Self { drives: Arc::new(StdMutex::new(HashMap::new())), sink }
     }
 
+    /// Drop every active watcher. Called when admin toggles DLP off so the
+    /// notify Debouncers (and their underlying inotify/ReadDirectoryChangesW
+    /// handles) are released — otherwise the IO load persists even when we
+    /// stop reacting to events.
+    pub fn clear(&self) {
+        let mut drives = self.drives.lock().unwrap();
+        if !drives.is_empty() {
+            log::info!("DLP disabled — dropping {} active watcher(s)", drives.len());
+            drives.clear();
+        }
+    }
+
     /// Run one reconciliation pass: start watching newly-attached drives, drop
     /// watchers for drives that were unmounted.
     pub fn reconcile(&self) {

@@ -53,6 +53,7 @@ const DEFAULT_SETTINGS: api::AgentSettings = api::AgentSettings {
     idle_threshold_secs: 300,
     videos_enabled: false,
     video_interval_secs: 1800,
+    dlp_enabled: false,
 };
 
 // Threshold-based alerts: only fired once when crossing into elevated state, cleared when metric drops.
@@ -922,14 +923,9 @@ pub fn run() {
 
             spawn_background_loop(state.clone());
             spawn_updater_loop(app.handle().clone());
-            // DLP watcher (filesystem + email tracking) is opt-in via the
-            // TRACKFORCE_ENABLE_DLP env var because on some Windows hosts the
-            // notify-debouncer-mini watcher saturates the IO subsystem and
-            // causes input-lag / mouse stutter. Default OFF until we have a
-            // proper backpressure / poll-rate fix.
-            if std::env::var("TRACKFORCE_ENABLE_DLP").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false) {
-                spawn_dlp_loop(state);
-            }
+            // DLP watcher always starts but loops short-circuit when
+            // settings.dlp_enabled is false — admin toggles from the dashboard.
+            spawn_dlp_loop(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -964,9 +960,19 @@ fn spawn_dlp_loop(state: AppState) {
 
     // Reconcile loop — discovers new USB drives, drops detached ones.
     let w_clone = watcher.clone();
+    let reconcile_state = state.clone();
     tauri::async_runtime::spawn(async move {
         sleep(Duration::from_secs(15)).await;  // let the rest of startup finish
         loop {
+            // Server-controlled gate. When admin disables DLP, we drop all
+            // currently-watched filesystem watchers (releasing IO handles) and
+            // sleep idle until the setting flips back on.
+            let enabled = reconcile_state.settings.lock().await.dlp_enabled;
+            if !enabled {
+                w_clone.clear();
+                sleep(Duration::from_secs(30)).await;
+                continue;
+            }
             w_clone.reconcile();
             sleep(Duration::from_secs(5)).await;
         }
@@ -982,24 +988,30 @@ fn spawn_dlp_loop(state: AppState) {
         }
     });
 
-    // Email-compose tracker — every 10s checks the active browser URL. When
-    // the user spends >30s on a personal-mail compose page, one event fires.
+    // Email-compose tracker — every 30s checks the active browser URL. Heavier
+    // poll interval than before (was 10s) because each call into active_window
+    // triggers a UIA tree walk on Windows which is expensive on busy browsers.
     tauri::async_runtime::spawn(async move {
         sleep(Duration::from_secs(20)).await;
         let mut tracker = dlp::EmailComposeTracker::default();
         loop {
-            let url = active_window::current()
-                .and_then(|w| w.url.clone());
+            let enabled = state.settings.lock().await.dlp_enabled;
+            if !enabled {
+                sleep(Duration::from_secs(30)).await;
+                continue;
+            }
+            // Single active_window read per cycle (was 2x — wasted UIA call).
+            let aw = active_window::current();
+            let url = aw.as_ref().and_then(|w| w.url.clone());
             let evt = tracker.observe(url.as_deref());
             if let Some(e) = evt {
-                let active_w = active_window::current()
-                    .map(|w| format!("{} — {}", w.app_name, w.window_title));
+                let active_w = aw.as_ref().map(|w| format!("{} — {}", w.app_name, w.window_title));
                 let payload = dlp::email_event_payload(&e, active_w);
                 if let Err(err) = post_dlp_payload(&state, &payload).await {
                     log::warn!("dlp email post failed: {err}");
                 }
             }
-            sleep(Duration::from_secs(10)).await;
+            sleep(Duration::from_secs(30)).await;
         }
     });
 }

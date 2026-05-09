@@ -257,7 +257,15 @@ function buildDetail(
     }
   }
 
-  const status = (agentRow.status as 'online' | 'idle' | 'offline') ?? 'offline';
+  // Derive status from last_active freshness — see dataHooks.ts comment for why
+  // we ignore the stored `status` field once the agent goes dark.
+  const lastActiveStr = agentRow.last_active as string | null;
+  const ageSecs = lastActiveStr
+    ? (Date.now() - new Date(lastActiveStr).getTime()) / 1000
+    : Infinity;
+  const status: 'online' | 'idle' | 'offline' = ageSecs > 150
+    ? 'offline'
+    : ((agentRow.status as 'online' | 'idle' | 'offline') ?? 'online');
 
   return {
     id: agentRow.id as string,

@@ -27,7 +27,7 @@ Deno.serve(async (req) => {
 
   const { data, error } = await admin
     .from("agents")
-    .select("screenshots_enabled, active_window_enabled, screenshot_interval_secs, idle_threshold_secs, videos_enabled, video_interval_secs")
+    .select("screenshots_enabled, active_window_enabled, screenshot_interval_secs, idle_threshold_secs, videos_enabled, video_interval_secs, dlp_enabled")
     .eq("enroll_token", token)
     .maybeSingle();
   if (error) return json({ error: error.message }, 500);
