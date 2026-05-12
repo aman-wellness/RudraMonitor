@@ -184,7 +184,7 @@ jobs:
 
       - name: Upload updater bundle to Supabase
         if: steps.updater.outputs.bundle != ''
-                shell: bash
+        shell: bash
         run: |
           SR_KEY="${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
           for f in "${{ steps.updater.outputs.bundle }}" "${{ steps.updater.outputs.sig }}"; do
@@ -307,7 +307,7 @@ jobs:
           echo "path=agent/dist/${{ matrix.remote_name }}" >> $GITHUB_OUTPUT
 
       - name: Upload to Supabase Storage
-                shell: bash
+        shell: bash
         run: |
           if [ "${{ matrix.packager }}" = "pkg" ]; then
             ARTIFACT="agent/dist-mac/${{ matrix.remote_name }}"
