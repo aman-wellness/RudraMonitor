@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { supabase } from '@/lib/supabase';
 import LoginLayout, { loginInputClass } from '@/components/feature/LoginLayout';
+import ForgotPasswordLink from '@/components/feature/ForgotPasswordLink';
 
 export default function PartnerLogin() {
   const navigate = useNavigate();
@@ -41,7 +42,7 @@ export default function PartnerLogin() {
   return (
     <LoginLayout
       accent="violet"
-      brandLabel="TrackForce Partners"
+      brandLabel="Rudrans Partners"
       brandIcon="ri-team-line"
       illustrationUrl="https://illustrations.popsy.co/violet/business-deal.svg"
       illustrationCaption="Grow your channel"
@@ -77,6 +78,7 @@ export default function PartnerLogin() {
             </button>
           </div>
         </div>
+        <ForgotPasswordLink email={email} accent="violet" />
         <button type="submit" disabled={submitting}
           className="w-full bg-violet-500 hover:bg-violet-600 disabled:opacity-60 text-white py-3 rounded-lg font-medium transition-all shadow-lg shadow-violet-500/30 mt-2">
           {submitting ? 'Signing in…' : 'Log In'}

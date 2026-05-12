@@ -24,5 +24,20 @@ verify_jwt = false
 [functions.gst-lookup]
 verify_jwt = false
 
+[functions.send-auth-email]
+verify_jwt = false
+
 [functions.admin-invite-partner]
+verify_jwt = false
+
+[functions.razorpay-start-signup]
+verify_jwt = false
+
+[functions.send-phone-otp]
+verify_jwt = false
+
+[functions.verify-phone-otp]
+verify_jwt = false
+
+[functions.start-trial-signup]
 verify_jwt = false

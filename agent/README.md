@@ -1,4 +1,4 @@
-# TrackForce Agent
+# Rudrans Agent
 
 Cross-platform desktop monitoring agent built with Tauri 2 + Rust.
 
@@ -83,7 +83,7 @@ Defaults: 10-second clip, 720p, H.264, no audio, every 30 minutes per agent. All
 ## Background-mode behaviour
 
 - Closing the window does **not** quit the app — it hides into the system tray.
-- Tray icon menu: **Show TrackForce / Pause monitoring / Resume monitoring / Quit**.
+- Tray icon menu: **Show Rudrans / Pause monitoring / Resume monitoring / Quit**.
 - Left-click the tray icon to bring the window back.
 - The "Settings" card inside the app exposes:
   - **Pause monitoring** — gates all background ticks (no metrics / window / screenshot / idle pushes while paused).
@@ -106,11 +106,11 @@ Output:
 For automated mass-deployment you can pre-populate Supabase config without showing the UI screen by setting:
 
 ```
-TRACKFORCE_SUPABASE_URL=https://xxx.supabase.co
-TRACKFORCE_SUPABASE_ANON_KEY=eyJhbGciOi...
+RUDRANS_SUPABASE_URL=https://xxx.supabase.co
+RUDRANS_SUPABASE_ANON_KEY=eyJhbGciOi...
 ```
 
-These take precedence over `agent.json` on disk. Stored in `~/Library/Application Support/TrackForceAgent/agent.json` (macOS), `%APPDATA%\TrackForceAgent\agent.json` (Windows), `~/.local/share/TrackForceAgent/agent.json` (Linux).
+These take precedence over `agent.json` on disk. Stored in `~/Library/Application Support/RudransAgent/agent.json` (macOS), `%APPDATA%\RudransAgent\agent.json` (Windows), `~/.local/share/RudransAgent/agent.json` (Linux).
 
 ## Code signing & distribution (production)
 
@@ -143,7 +143,7 @@ Tauri builds unsigned binaries by default. Each platform needs its own signing s
 ### Linux — `.deb` / `.rpm`
 
 1. No mandatory signing, but `apt`/`dnf` repos benefit from GPG-signed packages.
-2. The `.deb` postinst script can call `systemctl --user enable trackforce-agent` to autostart for desktop users; for headless deployment use a `LaunchAgent` or systemd user unit.
+2. The `.deb` postinst script can call `systemctl --user enable rudrans-agent` to autostart for desktop users; for headless deployment use a `LaunchAgent` or systemd user unit.
 
 ### Auto-update (silent OTA)
 
@@ -152,7 +152,7 @@ The agent already ships with `tauri-plugin-updater` wired up — it runs `update
 1. **Generate a signing keypair** (separate from your code-signing cert):
    ```bash
    cd agent
-   npm run tauri signer generate -- -w ~/.tauri/trackforce-update.key
+   npm run tauri signer generate -- -w ~/.tauri/rudrans-update.key
    ```
    It prints a public key. Keep the **private key file safe** — it's how clients verify updates.
 
@@ -165,17 +165,17 @@ The agent already ships with `tauri-plugin-updater` wired up — it runs `update
      "notes": "Bug fixes & new active-window detector",
      "pub_date": "2026-05-15T12:00:00Z",
      "platforms": {
-       "darwin-aarch64": { "signature": "<sig>", "url": "https://.../trackforce_0.2.0_aarch64.app.tar.gz" },
-       "darwin-x86_64":  { "signature": "<sig>", "url": "https://.../trackforce_0.2.0_x64.app.tar.gz" },
-       "windows-x86_64": { "signature": "<sig>", "url": "https://.../trackforce_0.2.0_x64-setup.nsis.zip" },
-       "linux-x86_64":   { "signature": "<sig>", "url": "https://.../trackforce_0.2.0_amd64.AppImage.tar.gz" }
+       "darwin-aarch64": { "signature": "<sig>", "url": "https://.../rudrans_0.2.0_aarch64.app.tar.gz" },
+       "darwin-x86_64":  { "signature": "<sig>", "url": "https://.../rudrans_0.2.0_x64.app.tar.gz" },
+       "windows-x86_64": { "signature": "<sig>", "url": "https://.../rudrans_0.2.0_x64-setup.nsis.zip" },
+       "linux-x86_64":   { "signature": "<sig>", "url": "https://.../rudrans_0.2.0_amd64.AppImage.tar.gz" }
      }
    }
    ```
 
 4. **Publish a release** every time you want fleet-wide updates:
    ```bash
-   export TAURI_SIGNING_PRIVATE_KEY=$(cat ~/.tauri/trackforce-update.key)
+   export TAURI_SIGNING_PRIVATE_KEY=$(cat ~/.tauri/rudrans-update.key)
    export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=...
    npm run tauri:build              # produces signed bundles + .sig files
    ```

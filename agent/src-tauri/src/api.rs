@@ -137,7 +137,7 @@ pub async fn dlp_ingest(
 pub fn build_client() -> Result<Client> {
     Ok(Client::builder()
         .timeout(Duration::from_secs(20))
-        .user_agent("TrackForceAgent/0.1")
+        .user_agent("RudransAgent/0.1")
         .build()?)
 }
 

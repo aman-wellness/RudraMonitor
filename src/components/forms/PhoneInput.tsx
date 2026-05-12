@@ -9,8 +9,11 @@ interface Props {
   defaultCountry?: string;
 }
 
+// `min-w-0` on the input is critical — without it browsers give <input> a
+// default intrinsic min-width that breaks `flex-1` and pushes the input out of
+// its parent column on narrow modal layouts.
 const DEFAULT_INPUT =
-  'flex-1 bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-cyan-500';
+  'flex-1 min-w-0 bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-cyan-500';
 
 // Pull a single source of truth for "+code", flag and country name out of the
 // offline country-state-city dataset, deduped by phone code so the dropdown
@@ -48,11 +51,11 @@ export default function PhoneInput({ value, onChange, className, defaultCountry 
   };
 
   return (
-    <div className="flex gap-2">
+    <div className="flex gap-2 w-full min-w-0">
       <select
         value={code}
         onChange={(e) => emit(e.target.value, number)}
-        className="bg-dark-900 border border-dark-700 rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-cyan-500 w-28"
+        className="shrink-0 bg-dark-900 border border-dark-700 rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-cyan-500 w-24"
       >
         {codes.map((c) => (
           <option key={`${c.iso}-${c.code}`} value={c.code}>

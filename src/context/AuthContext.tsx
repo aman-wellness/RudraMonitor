@@ -81,19 +81,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signInWithGoogle = async () => {
+    // After OAuth completes, land on /post-login — it resolves the role and
+    // redirects to the right dashboard (super_admin / partner / customer).
+    // First-time OAuth users with no org yet are routed to /complete-signup
+    // by that handler so they can name their org and start the trial.
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo: `${window.location.origin}/dashboard` },
+      options: { redirectTo: `${window.location.origin}/post-login` },
     });
     if (error) throw error;
   };
 
   const signInWithMicrosoft = async () => {
+    // Personal vs work/school account routing is set in two places:
+    //   1. Azure App Registration → Authentication → "Supported account types"
+    //      = Multitenant + personal Microsoft accounts.
+    //   2. Supabase → Auth → Providers → Azure → "Azure Tenant URL"
+    //      = https://login.microsoftonline.com/common
+    // Don't pass `tenant` in queryParams — it can collide with whatever
+    // Supabase already builds, producing a malformed authorize URL (404).
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'azure',
       options: {
-        redirectTo: `${window.location.origin}/dashboard`,
+        redirectTo: `${window.location.origin}/post-login`,
         scopes: 'email openid profile',
+        queryParams: { prompt: 'select_account' },
       },
     });
     if (error) throw error;

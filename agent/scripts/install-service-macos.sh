@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # install-service-macos.sh
-# Installs TrackForce Agent as a system-wide LaunchDaemon so it survives logout
+# Installs Rudrans Agent as a system-wide LaunchDaemon so it survives logout
 # and is auto-restarted on kill.
 #
 # Run with sudo. Idempotent.
@@ -10,9 +10,9 @@
 
 set -euo pipefail
 
-LABEL="com.trackforce.agent"
+LABEL="com.rudrans.agent"
 PLIST="/Library/LaunchDaemons/${LABEL}.plist"
-APP="/Applications/TrackForce Agent.app/Contents/MacOS/TrackForce Agent"
+APP="/Applications/Rudrans Agent.app/Contents/MacOS/Rudrans Agent"
 
 if [[ "${1:-}" == "--uninstall" ]]; then
   echo "Unloading $LABEL …"
@@ -43,8 +43,8 @@ cat > "$PLIST" <<EOF
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>5</integer>
   <key>ProcessType</key><string>Interactive</string>
-  <key>StandardOutPath</key><string>/var/log/trackforce-agent.log</string>
-  <key>StandardErrorPath</key><string>/var/log/trackforce-agent.err.log</string>
+  <key>StandardOutPath</key><string>/var/log/rudrans-agent.log</string>
+  <key>StandardErrorPath</key><string>/var/log/rudrans-agent.err.log</string>
 </dict>
 </plist>
 EOF
@@ -56,7 +56,7 @@ echo "Loading $LABEL …"
 /bin/launchctl bootstrap system "$PLIST"
 
 echo ""
-echo "✅ TrackForce Agent LaunchDaemon installed."
+echo "✅ Rudrans Agent LaunchDaemon installed."
 echo "   Auto-restart is active (5-second throttle)."
 echo "   In-process guardian provides additional resilience."
 echo ""

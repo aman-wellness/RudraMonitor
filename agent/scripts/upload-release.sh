@@ -7,7 +7,7 @@
 #
 # Example:
 #   SUPABASE_ACCESS_TOKEN=sbp_xxx ./scripts/upload-release.sh \
-#       dist-mac/TrackForce-Agent-0.1.0.pkg TrackForce-Agent-macOS-0.1.0.pkg
+#       dist-mac/Rudrans-Agent-0.1.0.pkg Rudrans-Agent-macOS-0.1.0.pkg
 #
 # Looks up the project's service_role key via the management API (so we don't have
 # to keep it in env / git), then PUTs the file at the canonical public URL.

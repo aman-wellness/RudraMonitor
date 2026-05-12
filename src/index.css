@@ -2,165 +2,411 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================
+   DESIGN SYSTEM — Linear / Vercel aesthetic
+   ============================================
+   Principles:
+   1. Monochrome neutrals (zinc, not slate). Warm, near-black on near-white.
+   2. Sharp 1px borders — NO box-shadows in light mode (shadows = Stripe-y).
+   3. Single muted accent (Linear violet #5e6ad2) used very sparingly.
+   4. Typography: Inter with feature settings, Plus Jakarta Sans for headers.
+      Tight letter-spacing on display, normal on body.
+   5. Hierarchy via type weight + color, not surface elevation.
+   6. Hover/active = bg color shift only, no scale or shadow.
+*/
+
 :root {
-  --bg-body: #1a1a1a;
-  --bg-primary: #1a1a1a;
-  --bg-card: #252525;
-  --bg-surface: #333333;
-  --text-primary: #ffffff;
-  --text-secondary: #9ca3af;
-  --text-muted: #6b7280;
-  --border-color: #333333;
-  --border-strong: #444444;
-  --accent-emerald: #34d399;
+  /* Surfaces (LIGHT) — zinc, warmer than slate, with optical bias to off-white */
+  --bg-body:     #fafafa;   /* zinc-50 */
+  --bg-elevated: #ffffff;
+  --bg-subtle:   #f4f4f5;   /* zinc-100 — hover, input bg */
+  --bg-muted:    #e4e4e7;   /* zinc-200 — borders */
+
+  /* Text — near-black, never pure black; never go below 600 for body */
+  --text-strong:  #18181b;  /* zinc-900 */
+  --text-default: #27272a;  /* zinc-800 */
+  --text-muted:   #52525b;  /* zinc-600 */
+  --text-faint:   #71717a;  /* zinc-500 */
+  --text-disabled:#a1a1aa;  /* zinc-400 */
+
+  /* Accent — Linear-style muted indigo. Used only on primary buttons + active
+     nav. Everything else is monochrome. */
+  --accent:        #5e6ad2;
+  --accent-hover:  #4c56b8;
+  --accent-active: #3e4799;
+  --accent-soft:   #f0f1fb;
+
+  /* Borders — thinnest acceptable contrast */
+  --border:        #e4e4e7;   /* zinc-200 */
+  --border-strong: #d4d4d8;   /* zinc-300 */
+  --border-focus:  #5e6ad2;
+
+  /* Status — Linear uses oklch but these hexes match the perceptual feel */
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-danger:  #dc2626;
+  --color-info:    #2563eb;
+
+  /* Elevation — borders, NOT shadows. Linear-grade. */
+  --ring:        inset 0 0 0 1px var(--border);
+  --ring-strong: inset 0 0 0 1px var(--border-strong);
 }
 
 :root.dark {
-  --bg-body: #1a1a1a;
-  --bg-primary: #1a1a1a;
-  --bg-card: #252525;
-  --bg-surface: #333333;
-  --text-primary: #ffffff;
-  --text-secondary: #9ca3af;
-  --text-muted: #6b7280;
-  --border-color: #333333;
-  --border-strong: #444444;
-  --accent-emerald: #34d399;
+  /* Dark — zinc again, near-black with warmth */
+  --bg-body:     #09090b;   /* zinc-950 */
+  --bg-elevated: #18181b;   /* zinc-900 — cards */
+  --bg-subtle:   #27272a;   /* zinc-800 — hover */
+  --bg-muted:    #3f3f46;   /* zinc-700 */
+
+  --text-strong:  #fafafa;
+  --text-default: #e4e4e7;
+  --text-muted:   #a1a1aa;
+  --text-faint:   #71717a;
+  --text-disabled:#52525b;
+
+  --accent:        #8b91e8;   /* lighter violet for dark bg */
+  --accent-hover:  #a3a8ee;
+  --accent-active: #6b73db;
+  --accent-soft:   #1f1f3a;
+
+  --border:        #27272a;
+  --border-strong: #3f3f46;
+  --border-focus:  #8b91e8;
+
+  --color-success: #4ade80;
+  --color-warning: #fbbf24;
+  --color-danger:  #f87171;
+  --color-info:    #60a5fa;
+
+  --ring:        inset 0 0 0 1px var(--border);
+  --ring-strong: inset 0 0 0 1px var(--border-strong);
 }
 
-:root:not(.dark) {
-  --bg-body: #f8fafc;
-  --bg-primary: #ffffff;
-  --bg-card: #ffffff;
-  --bg-surface: #f1f5f9;
-  --text-primary: #111827;
-  --text-secondary: #64748b;
-  --text-muted: #94a3b8;
-  --border-color: #e2e8f0;
-  --border-strong: #cbd5e1;
-  --accent-emerald: #10b981;
-}
+* { border-color: var(--border); }
 
 body {
-  font-family: 'Inter', sans-serif;
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-feature-settings: 'cv11', 'ss01', 'ss03', 'cv02', 'cv03', 'cv04';
+  font-variant-numeric: tabular-nums;
   background-color: var(--bg-body);
-  color: var(--text-primary);
+  color: var(--text-default);
+  font-size: 14px;
+  line-height: 1.5;
+  letter-spacing: -0.005em;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  transition: background-color 0.3s ease, color 0.3s ease;
+  text-rendering: optimizeLegibility;
 }
 
+/* Headings — Plus Jakarta for display feel, with optical adjustments */
 h1, h2, h3, h4, h5, h6 {
-  font-family: 'Poppins', sans-serif;
+  font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
+  font-weight: 700;
+  color: var(--text-strong);
+  letter-spacing: -0.025em;
 }
+h1 { font-size: 1.5rem;   line-height: 1.2; letter-spacing: -0.03em; }
+h2 { font-size: 1.125rem; line-height: 1.3; }
+h3 { font-size: 0.9375rem; line-height: 1.4; }
+
+code, pre, .font-mono {
+  font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace;
+  font-feature-settings: 'liga' 0;
+  font-size: 12.5px;
+}
+
+.font-poppins {
+  font-family: 'Plus Jakarta Sans', 'Inter', sans-serif !important;
+  letter-spacing: -0.025em;
+}
+
+/* Tabular numerals on every numeric stat (Tailwind has no built-in for this) */
+.text-2xl, .text-3xl, .text-4xl,
+.text-xl, .tabular-nums {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+}
+
+/* Polished scrollbars — subtle, themed */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--bg-muted); border-radius: 999px; border: 2px solid var(--bg-body); }
+::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+
+/* Selection */
+::selection { background: var(--accent); color: white; }
 
 /* ============================================
-   LIGHT THEME OVERRIDES (for existing classes)
-   ============================================ */
+   LIGHT THEME OVERRIDES — token-driven
+   ============================================
+   The dashboard is built with hardcoded `bg-dark-*` / `text-white` etc. We
+   re-route those classes to the design-token palette in light mode so the
+   whole app inherits the new look without per-component refactors.
+*/
 
-/* Body & root backgrounds */
-html:not(.dark) body {
-  background-color: #f8fafc !important;
-  color: #111827 !important;
-}
-
-html:not(.dark) .bg-dark-900 {
-  background-color: #f1f5f9 !important;
-}
-html:not(.dark) .bg-dark-800 {
-  background-color: #ffffff !important;
-}
-html:not(.dark) .bg-dark-700 {
-  background-color: #e2e8f0 !important;
-}
-html:not(.dark) .bg-dark-600 {
-  background-color: #cbd5e1 !important;
+/* Body bg is already driven by --bg-body in :root (light) / :root.dark — no
+   override needed here. The marketing/home pages set their own dark bg via
+   `bg-dark-900` directly, which we leave untouched since they're outside
+   any `.dashboard-shell` scope. */
+html:not(.dark) .dashboard-shell {
+  background-color: var(--bg-body) !important;
+  color: var(--text-default) !important;
 }
 
-/* Text colors */
-html:not(.dark) .text-white {
-  color: #111827 !important;
+/* === Surfaces === Linear-style: NO shadows, just borders.
+   Each `bg-dark-*` collapses to one of three tones — hierarchy comes from
+   the 1px border between surfaces, not from shadow depth. */
+html:not(.dark) .dashboard-shell .bg-dark-950 { background-color: var(--bg-body) !important; }
+html:not(.dark) .dashboard-shell .bg-dark-900 { background-color: var(--bg-body) !important; }
+html:not(.dark) .dashboard-shell .bg-dark-850 { background-color: var(--bg-elevated) !important; }
+html:not(.dark) .dashboard-shell .bg-dark-800 {
+  background-color: var(--bg-elevated) !important;
+  box-shadow: none !important;            /* override any earlier ring */
+  border-color: var(--border) !important;
 }
-html:not(.dark) .text-gray-300 {
-  color: #374151 !important;
-}
-html:not(.dark) .text-gray-400 {
-  color: #64748b !important;
-}
-html:not(.dark) .text-gray-500 {
-  color: #94a3b8 !important;
-}
-html:not(.dark) .text-gray-600 {
-  color: #64748b !important;
+html:not(.dark) .dashboard-shell .bg-dark-700 { background-color: var(--bg-subtle) !important; }
+html:not(.dark) .dashboard-shell .bg-dark-600 { background-color: var(--bg-muted) !important; }
+
+/* === Text === only 5 levels, no exceptions. Solves the "everything looks
+   the same" problem we had with too many shades. */
+html:not(.dark) .dashboard-shell .text-white,
+html:not(.dark) .dashboard-shell .text-gray-100,
+html:not(.dark) .dashboard-shell .text-gray-200  { color: var(--text-strong) !important;  font-weight: 600; }
+html:not(.dark) .dashboard-shell .text-gray-300  { color: var(--text-default) !important; font-weight: 500; }
+html:not(.dark) .dashboard-shell .text-gray-400  { color: var(--text-muted) !important;   font-weight: 500; }
+html:not(.dark) .dashboard-shell .text-gray-500  { color: var(--text-faint) !important; }
+html:not(.dark) .dashboard-shell .text-gray-600,
+html:not(.dark) .dashboard-shell .text-gray-700  { color: var(--text-faint) !important; }
+
+/* === Borders === everywhere. The Linear "look" lives in the borders. */
+html:not(.dark) .dashboard-shell .border-dark-700,
+html:not(.dark) .dashboard-shell .border-dark-600,
+html:not(.dark) .dashboard-shell .border-dark-800  { border-color: var(--border) !important; }
+html:not(.dark) .dashboard-shell .border-dark-700\/50,
+html:not(.dark) .dashboard-shell .border-dark-700\/40,
+html:not(.dark) .dashboard-shell .border-dark-700\/30 { border-color: var(--border) !important; opacity: 0.6; }
+
+/* === Sticky chrome (page header) === white with backdrop blur — Linear-style */
+html:not(.dark) .dashboard-shell .bg-dark-900\/95,
+html:not(.dark) .dashboard-shell .bg-dark-900\/80,
+html:not(.dark) .dashboard-shell .bg-dark-800\/95,
+html:not(.dark) .dashboard-shell .bg-dark-800\/80 {
+  background-color: rgba(255, 255, 255, 0.85) !important;
+  backdrop-filter: saturate(150%) blur(20px);
+  -webkit-backdrop-filter: saturate(150%) blur(20px);
+  border-color: var(--border) !important;
 }
 
-/* Borders */
-html:not(.dark) .border-dark-700 {
-  border-color: #e2e8f0 !important;
+/* === Section / card sub-headers === subtle zinc-50 tint, no blur (looked gray) */
+html:not(.dark) .dashboard-shell .bg-dark-900\/50,
+html:not(.dark) .dashboard-shell .bg-dark-900\/40,
+html:not(.dark) .dashboard-shell .bg-dark-900\/30,
+html:not(.dark) .dashboard-shell .bg-dark-800\/50,
+html:not(.dark) .dashboard-shell .bg-dark-800\/40,
+html:not(.dark) .dashboard-shell .bg-dark-800\/30 {
+  background-color: var(--bg-subtle) !important;
+  border-color: var(--border) !important;
 }
-html:not(.dark) .border-dark-600 {
-  border-color: #cbd5e1 !important;
+
+/* Subtle hover surfaces */
+html:not(.dark) .dashboard-shell .bg-dark-700\/50,
+html:not(.dark) .dashboard-shell .bg-dark-700\/40,
+html:not(.dark) .dashboard-shell .bg-dark-700\/30,
+html:not(.dark) .dashboard-shell .bg-dark-700\/20 { background-color: var(--bg-subtle) !important; }
+html:not(.dark) .dashboard-shell .hover\:bg-dark-700\/30:hover,
+html:not(.dark) .dashboard-shell .hover\:bg-dark-700\/40:hover,
+html:not(.dark) .dashboard-shell .hover\:bg-dark-700\/50:hover,
+html:not(.dark) .dashboard-shell .hover\:bg-dark-700\/60:hover,
+html:not(.dark) .dashboard-shell .hover\:bg-dark-700:hover { background-color: var(--bg-subtle) !important; }
+
+/* === Sidebar === Linear-style. Solid bg, sharp 1px right border, no shadow.
+   Active item: violet-tinted bg + violet text. Inactive: neutral. */
+html:not(.dark) .dashboard-shell aside.bg-dark-800,
+html:not(.dark) .dashboard-shell aside { background-color: var(--bg-elevated) !important; border-right: 1px solid var(--border); box-shadow: none !important; }
+html:not(.dark) .dashboard-shell aside a {
+  color: var(--text-muted);
+  border-radius: 6px;
+}
+html:not(.dark) .dashboard-shell aside a:hover { background: var(--bg-subtle) !important; color: var(--text-strong); }
+html:not(.dark) .dashboard-shell aside .text-white { color: var(--text-strong) !important; }
+
+/* Active nav (any tinted bg + colored text) — converge to the accent */
+html:not(.dark) .dashboard-shell aside .bg-emerald-500\/10,
+html:not(.dark) .dashboard-shell aside .bg-cyan-500\/10,
+html:not(.dark) .dashboard-shell aside .bg-violet-500\/10,
+html:not(.dark) .dashboard-shell aside [class*="bg-"][class*="-500/10"] {
+  background-color: var(--accent-soft) !important;
+  border-left-color: var(--accent) !important;
+}
+html:not(.dark) .dashboard-shell aside .text-emerald-400,
+html:not(.dark) .dashboard-shell aside .text-cyan-400,
+html:not(.dark) .dashboard-shell aside .text-violet-400 { color: var(--accent-active) !important; font-weight: 600; }
+
+/* === Status colors === restrained, sophisticated. Linear uses these
+   exact tones for tags. */
+html:not(.dark) .dashboard-shell .text-emerald-300,
+html:not(.dark) .dashboard-shell .text-emerald-400 { color: var(--color-success) !important; }
+html:not(.dark) .dashboard-shell .text-cyan-300,
+html:not(.dark) .dashboard-shell .text-cyan-400 { color: var(--accent-hover) !important; }
+html:not(.dark) .dashboard-shell .text-amber-300,
+html:not(.dark) .dashboard-shell .text-amber-400 { color: var(--color-warning) !important; }
+html:not(.dark) .dashboard-shell .text-rose-300,
+html:not(.dark) .dashboard-shell .text-rose-400,
+html:not(.dark) .dashboard-shell .text-red-300,
+html:not(.dark) .dashboard-shell .text-red-400 { color: var(--color-danger) !important; }
+html:not(.dark) .dashboard-shell .text-violet-300,
+html:not(.dark) .dashboard-shell .text-violet-400,
+html:not(.dark) .dashboard-shell .text-purple-400 { color: var(--accent-active) !important; }
+html:not(.dark) .dashboard-shell .text-blue-300,
+html:not(.dark) .dashboard-shell .text-blue-400 { color: var(--color-info) !important; }
+
+/* === Status pill backgrounds === pale tints, NEVER saturated bg */
+html:not(.dark) .dashboard-shell .bg-emerald-500\/15,
+html:not(.dark) .dashboard-shell .bg-emerald-500\/20 { background-color: #f0fdf4 !important; }
+html:not(.dark) .dashboard-shell .bg-amber-500\/15,
+html:not(.dark) .dashboard-shell .bg-amber-500\/20 { background-color: #fffbeb !important; }
+html:not(.dark) .dashboard-shell .bg-red-500\/15,
+html:not(.dark) .dashboard-shell .bg-red-500\/20,
+html:not(.dark) .dashboard-shell .bg-rose-500\/15 { background-color: #fef2f2 !important; }
+html:not(.dark) .dashboard-shell .bg-cyan-500\/15,
+html:not(.dark) .dashboard-shell .bg-cyan-500\/20 { background-color: #ecfeff !important; }
+html:not(.dark) .dashboard-shell .bg-violet-500\/15,
+html:not(.dark) .dashboard-shell .bg-violet-500\/20,
+html:not(.dark) .dashboard-shell .bg-purple-500\/15 { background-color: var(--accent-soft) !important; }
+html:not(.dark) .dashboard-shell .bg-blue-500\/15,
+html:not(.dark) .dashboard-shell .bg-blue-500\/20 { background-color: #eff6ff !important; }
+
+/* === Cards === No shadows. Border + bg only. Hover = subtle bg shift. */
+html:not(.dark) .dashboard-shell .rounded-xl.bg-dark-800,
+html:not(.dark) .dashboard-shell .rounded-lg.bg-dark-800 {
+  background-color: var(--bg-elevated) !important;
+  border: 1px solid var(--border);
+}
+
+/* === Tables === minimal. Header is muted bg, rows separated by borders. */
+html:not(.dark) .dashboard-shell thead.bg-dark-900\/50,
+html:not(.dark) .dashboard-shell thead.bg-dark-900\/40,
+html:not(.dark) .dashboard-shell thead .bg-dark-900\/50 {
+  background: var(--bg-subtle) !important;
+  border-bottom: 1px solid var(--border) !important;
+}
+html:not(.dark) .dashboard-shell thead th {
+  color: var(--text-faint) !important;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+html:not(.dark) .dashboard-shell tbody tr { border-bottom: 1px solid var(--border) !important; }
+html:not(.dark) .dashboard-shell tbody tr:last-child { border-bottom: none !important; }
+html:not(.dark) .dashboard-shell tbody tr:hover { background: var(--bg-subtle) !important; }
+html:not(.dark) .dashboard-shell tbody td { color: var(--text-default) !important; }
+
+/* === Buttons === Linear-grade. Primary = accent. Secondary = bordered.
+   Override the existing emerald/cyan tinted buttons. */
+html:not(.dark) .dashboard-shell .bg-emerald-500\/15.text-emerald-400,
+html:not(.dark) .dashboard-shell .bg-cyan-500\/20.text-cyan-300 {
+  background-color: var(--accent) !important;
+  color: white !important;
+  border-color: var(--accent) !important;
+  font-weight: 500;
+}
+html:not(.dark) .dashboard-shell .bg-emerald-500\/15.text-emerald-400:hover,
+html:not(.dark) .dashboard-shell .bg-cyan-500\/20.text-cyan-300:hover {
+  background-color: var(--accent-hover) !important;
+  border-color: var(--accent-hover) !important;
+}
+
+/* === Inputs === minimal — bordered, no shadow until focus */
+html:not(.dark) .dashboard-shell input,
+html:not(.dark) .dashboard-shell textarea,
+html:not(.dark) .dashboard-shell select {
+  background-color: var(--bg-elevated) !important;
+  color: var(--text-strong) !important;
+  border-color: var(--border-strong) !important;
+}
+html:not(.dark) .dashboard-shell input:focus,
+html:not(.dark) .dashboard-shell textarea:focus,
+html:not(.dark) .dashboard-shell select:focus {
+  border-color: var(--border-focus) !important;
+  box-shadow: 0 0 0 3px rgb(94 106 210 / 0.18) !important;  /* violet glow */
+  outline: none !important;
+}
+html:not(.dark) .dashboard-shell input.bg-dark-900,
+html:not(.dark) .dashboard-shell textarea.bg-dark-900,
+html:not(.dark) .dashboard-shell select.bg-dark-900 {
+  background-color: var(--bg-subtle) !important;
+}
+
+/* Input on light surface (most inputs use `bg-dark-900`) — make sure cursor
+   colour and selected text are visible against the new white-ish bg. */
+html:not(.dark) .dashboard-shell input,
+html:not(.dark) .dashboard-shell textarea,
+html:not(.dark) .dashboard-shell select {
+  color: #0f172a !important;
+  caret-color: #0891b2;
 }
 
 /* Sidebar active link */
-html:not(.dark) .bg-emerald-500\/10 {
+html:not(.dark) .dashboard-shell .bg-emerald-500\/10 {
   background-color: #ecfdf5 !important;
 }
-html:not(.dark) .text-emerald-400 {
+html:not(.dark) .dashboard-shell .text-emerald-400 {
   color: #059669 !important;
 }
 
 /* Hover states */
-html:not(.dark) .hover\:bg-dark-700\/50:hover {
+html:not(.dark) .dashboard-shell .hover\:bg-dark-700\/50:hover {
   background-color: #f1f5f9 !important;
 }
-html:not(.dark) .hover\:text-white:hover {
+html:not(.dark) .dashboard-shell .hover\:text-white:hover {
   color: #111827 !important;
 }
 
 /* Accent colors in light mode */
-html:not(.dark) .text-violet-400 {
+html:not(.dark) .dashboard-shell .text-violet-400 {
   color: #7c3aed !important;
 }
-html:not(.dark) .text-amber-400 {
+html:not(.dark) .dashboard-shell .text-amber-400 {
   color: #d97706 !important;
 }
-html:not(.dark) .text-teal-400 {
+html:not(.dark) .dashboard-shell .text-teal-400 {
   color: #0f766e !important;
 }
-html:not(.dark) .text-red-400 {
+html:not(.dark) .dashboard-shell .text-red-400 {
   color: #dc2626 !important;
 }
-html:not(.dark) .text-sky-400 {
+html:not(.dark) .dashboard-shell .text-sky-400 {
   color: #0284c7 !important;
 }
 
-html:not(.dark) .bg-violet-500\/15 {
+html:not(.dark) .dashboard-shell .bg-violet-500\/15 {
   background-color: #ede9fe !important;
 }
-html:not(.dark) .bg-amber-500\/15 {
+html:not(.dark) .dashboard-shell .bg-amber-500\/15 {
   background-color: #fef3c7 !important;
 }
-html:not(.dark) .bg-red-500\/15 {
+html:not(.dark) .dashboard-shell .bg-red-500\/15 {
   background-color: #fee2e2 !important;
 }
-html:not(.dark) .bg-sky-500\/15 {
+html:not(.dark) .dashboard-shell .bg-sky-500\/15 {
   background-color: #e0f2fe !important;
 }
-html:not(.dark) .bg-emerald-500\/15 {
+html:not(.dark) .dashboard-shell .bg-emerald-500\/15 {
   background-color: #d1fae5 !important;
 }
 
 /* Input placeholders */
-html:not(.dark) input::placeholder {
+html:not(.dark) .dashboard-shell input::placeholder {
   color: #94a3b8 !important;
 }
-html:not(.dark) textarea::placeholder {
+html:not(.dark) .dashboard-shell textarea::placeholder {
   color: #94a3b8 !important;
 }
 
 /* Progress bars / range inputs */
-html:not(.dark) input[type="range"] {
+html:not(.dark) .dashboard-shell input[type="range"] {
   accent-color: #10b981;
 }
 
@@ -171,17 +417,31 @@ html:not(.dark) input[type="range"] {
    our dark surface. Applied to every input on every theme; the inset color
    matches dark-900 (#0f172a) which is also what we use as the input bg almost
    everywhere. */
-input:-webkit-autofill,
-input:-webkit-autofill:hover,
-input:-webkit-autofill:focus,
-input:-webkit-autofill:active,
-textarea:-webkit-autofill,
-textarea:-webkit-autofill:hover,
-textarea:-webkit-autofill:focus {
+html.dark input:-webkit-autofill,
+html.dark input:-webkit-autofill:hover,
+html.dark input:-webkit-autofill:focus,
+html.dark input:-webkit-autofill:active,
+html.dark textarea:-webkit-autofill,
+html.dark textarea:-webkit-autofill:hover,
+html.dark textarea:-webkit-autofill:focus {
   -webkit-text-fill-color: #ffffff !important;
   -webkit-box-shadow: 0 0 0 1000px #1a1a1a inset !important;
   box-shadow: 0 0 0 1000px #1a1a1a inset !important;
   caret-color: #ffffff !important;
+  transition: background-color 99999s ease-in-out 0s;
+}
+
+html:not(.dark) .dashboard-shell input:-webkit-autofill,
+html:not(.dark) .dashboard-shell input:-webkit-autofill:hover,
+html:not(.dark) .dashboard-shell input:-webkit-autofill:focus,
+html:not(.dark) .dashboard-shell input:-webkit-autofill:active,
+html:not(.dark) .dashboard-shell textarea:-webkit-autofill,
+html:not(.dark) .dashboard-shell textarea:-webkit-autofill:hover,
+html:not(.dark) .dashboard-shell textarea:-webkit-autofill:focus {
+  -webkit-text-fill-color: #0f172a !important;
+  -webkit-box-shadow: 0 0 0 1000px #ffffff inset !important;
+  box-shadow: 0 0 0 1000px #ffffff inset !important;
+  caret-color: #0f172a !important;
   transition: background-color 99999s ease-in-out 0s;
 }
 
@@ -314,36 +574,49 @@ input.bg-slate-50:-webkit-autofill:focus {
 
 /* Match any element whose ANCESTOR has a `bg-dark-*` class — captures the
    entire dashboard / monitoring / agent-detail / admin / partner shells. */
-[class*="bg-dark-"] .text-gray-700,
-[class*="bg-dark-"] .text-slate-700 { color: #d1d5db !important; }
+/* These overrides ONLY fire in dark mode — `.dark` is on <html> when the user
+   has selected dark theme. In light mode the `bg-dark-*` classes are remapped
+   to white surfaces above, so the same gray-X classes need DARK text instead.
+   Without the .dark scoping, these were forcing light text on light surfaces
+   in light theme — invisible. */
+.dark [class*="bg-dark-"] .text-gray-700,
+.dark [class*="bg-dark-"] .text-slate-700 { color: #d1d5db !important; }
 
-[class*="bg-dark-"] .text-gray-600,
-[class*="bg-dark-"] .text-slate-600 { color: #cbd5e1 !important; }
+.dark [class*="bg-dark-"] .text-gray-600,
+.dark [class*="bg-dark-"] .text-slate-600 { color: #cbd5e1 !important; }
 
-[class*="bg-dark-"] .text-gray-500,
-[class*="bg-dark-"] .text-slate-500 { color: #b8c1cc !important; }
+.dark [class*="bg-dark-"] .text-gray-500,
+.dark [class*="bg-dark-"] .text-slate-500 { color: #b8c1cc !important; }
 
-[class*="bg-dark-"] .text-gray-400,
-[class*="bg-dark-"] .text-slate-400 { color: #d4dae3 !important; }
+.dark [class*="bg-dark-"] .text-gray-400,
+.dark [class*="bg-dark-"] .text-slate-400 { color: #d4dae3 !important; }
 
-[class*="bg-dark-"] .text-gray-300,
-[class*="bg-dark-"] .text-slate-300 { color: #e8ecf2 !important; }
+.dark [class*="bg-dark-"] .text-gray-300,
+.dark [class*="bg-dark-"] .text-slate-300 { color: #e8ecf2 !important; }
 
 /* Stronger card edges so panels separate from the page background */
-[class*="bg-dark-"] .border-dark-700 { border-color: #3f3f46 !important; }
-[class*="bg-dark-"] .border-dark-800 { border-color: #2e2e35 !important; }
+.dark [class*="bg-dark-"] .border-dark-700 { border-color: #3f3f46 !important; }
+.dark [class*="bg-dark-"] .border-dark-800 { border-color: #2e2e35 !important; }
 
-/* Tiny labels (10/11 px) — bump 1 px so hi-DPI screens stay legible. */
+/* Tiny labels (10/11 px) — bump 1 px so hi-DPI screens stay legible.
+   Applies to BOTH themes; that's purely a font-size concern. */
 [class*="bg-dark-"] .text-\[10px\] { font-size: 11px !important; letter-spacing: 0.02em; }
 [class*="bg-dark-"] .text-\[11px\] { font-size: 12px !important; }
 
-/* Placeholders */
-[class*="bg-dark-"] input::placeholder,
-[class*="bg-dark-"] textarea::placeholder { color: #9ca3af !important; opacity: 1; }
+/* Placeholders — only inside dark surfaces */
+.dark [class*="bg-dark-"] input::placeholder,
+.dark [class*="bg-dark-"] textarea::placeholder { color: #9ca3af !important; opacity: 1; }
 
 /* Stronger focus ring on dark surfaces */
-[class*="bg-dark-"] *:focus-visible {
+.dark [class*="bg-dark-"] *:focus-visible {
   outline: 2px solid #22d3ee;
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+/* Light-mode focus ring (cyan, less intense) */
+html:not(.dark) .dashboard-shell *:focus-visible {
+  outline: 2px solid #0891b2;
   outline-offset: 1px;
   border-radius: 4px;
 }

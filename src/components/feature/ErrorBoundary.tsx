@@ -15,7 +15,7 @@ export default class ErrorBoundary extends Component<Props, State> {
   componentDidCatch(error: Error, info: { componentStack?: string | null }) {
     // Surface to the console for the dev tools / log forwarders to pick up.
     // eslint-disable-next-line no-console
-    console.error('[trackforce] render error:', error, info.componentStack);
+    console.error('[rudrans] render error:', error, info.componentStack);
   }
 
   reset = () => this.setState({ error: null });

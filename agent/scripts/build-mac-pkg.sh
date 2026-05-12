@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Build a signed .pkg installer for macOS that ships:
-#   - /Applications/TrackForce Agent.app                 (the agent itself, hidden after enroll)
-#   - /Applications/Uninstall TrackForce Agent.app       (double-click to fully uninstall)
+#   - /Applications/Rudrans Agent.app                 (the agent itself, hidden after enroll)
+#   - /Applications/Uninstall Rudrans Agent.app       (double-click to fully uninstall)
 #
 # Why a .pkg + companion uninstaller .app?
 # macOS doesn't run "uninstall hooks" when a user drags an .app to Trash. The standard
 # way to deliver "one-click uninstall" is to ship a separate uninstaller that the user
 # runs once. .pkg lets us deploy both via MDM (Jamf/Intune) or manual install.
 #
-# Output: dist-mac/TrackForce-Agent-<version>.pkg
+# Output: dist-mac/Rudrans-Agent-<version>.pkg
 #
 # Optional signing:
 #   DEVELOPER_ID_INSTALLER="Developer ID Installer: Acme Inc (TEAMID)" ./build-mac-pkg.sh
@@ -17,9 +17,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP_NAME="TrackForce Agent"
-BUNDLE_ID="com.trackforce.agent"
-UNINSTALLER_BUNDLE_ID="com.trackforce.agent.uninstaller"
+APP_NAME="Rudrans Agent"
+BUNDLE_ID="com.rudrans.agent"
+UNINSTALLER_BUNDLE_ID="com.rudrans.agent.uninstaller"
 VERSION="$(node -p "require('${ROOT}/src-tauri/tauri.conf.json').version")"
 
 OUT_DIR="${ROOT}/dist-mac"
@@ -47,11 +47,11 @@ UNINSTALLER_SRC="${OUT_DIR}/uninstaller.applescript"
 cat > "${UNINSTALLER_SRC}" <<APPLESCRIPT
 -- Companion uninstaller. Asks for confirmation, then runs the same cleanup logic the
 -- agent's --uninstall flag does (LaunchAgent plist, app support data, both app bundles).
-set theMessage to "Uninstall TrackForce Agent? This will remove the agent, its autostart entry, and all locally stored data."
+set theMessage to "Uninstall Rudrans Agent? This will remove the agent, its autostart entry, and all locally stored data."
 display dialog theMessage buttons {"Cancel", "Uninstall"} default button "Uninstall" with icon caution
 do shell script "/Applications/${APP_NAME}.app/Contents/MacOS/${APP_NAME} --uninstall || true"
 do shell script "rm -rf '/Applications/Uninstall ${APP_NAME}.app'" with administrator privileges
-display dialog "TrackForce Agent has been removed." buttons {"OK"} default button "OK"
+display dialog "Rudrans Agent has been removed." buttons {"OK"} default button "OK"
 APPLESCRIPT
 
 osacompile -o "${STAGE}/Applications/Uninstall ${APP_NAME}.app" "${UNINSTALLER_SRC}"
@@ -74,9 +74,9 @@ cat > "${SCRIPTS_DIR}/postinstall" <<'POSTINSTALL'
 # All paths and the plist itself are public — IT admins can audit / disable through
 # normal launchctl commands. This is enterprise persistence, not a rootkit.
 
-LABEL="com.trackforce.agent"
+LABEL="com.rudrans.agent"
 DAEMON_PLIST="/Library/LaunchDaemons/${LABEL}.plist"
-APP_BIN="/Applications/TrackForce Agent.app/Contents/MacOS/TrackForce Agent"
+APP_BIN="/Applications/Rudrans Agent.app/Contents/MacOS/Rudrans Agent"
 
 # Remove any older user-level LaunchAgent we may have installed previously
 # (the autostart plugin would have written ~/Library/LaunchAgents/<label>.plist).
@@ -114,9 +114,9 @@ cat > "${DAEMON_PLIST}" <<PLIST
     <key>ProcessType</key>
     <string>Background</string>
     <key>StandardOutPath</key>
-    <string>/var/log/trackforce-agent.log</string>
+    <string>/var/log/rudrans-agent.log</string>
     <key>StandardErrorPath</key>
-    <string>/var/log/trackforce-agent.log</string>
+    <string>/var/log/rudrans-agent.log</string>
 </dict>
 </plist>
 PLIST
@@ -130,7 +130,7 @@ launchctl load -w "${DAEMON_PLIST}" 2>/dev/null || true
 # Also pop the GUI on the user's session for first-time enrollment. Once enrolled,
 # the agent hides itself and the daemon keeps it alive in the background.
 if [ -n "$LOGGED_IN_USER" ] && [ "$LOGGED_IN_USER" != "root" ]; then
-  sudo -u "$LOGGED_IN_USER" open -a "/Applications/TrackForce Agent.app" || true
+  sudo -u "$LOGGED_IN_USER" open -a "/Applications/Rudrans Agent.app" || true
 fi
 exit 0
 POSTINSTALL
@@ -168,7 +168,7 @@ cat > "${DIST_XML}" <<DIST
 </installer-gui-script>
 DIST
 
-FINAL_PKG="${OUT_DIR}/TrackForce-Agent-${VERSION}.pkg"
+FINAL_PKG="${OUT_DIR}/Rudrans-Agent-${VERSION}.pkg"
 
 if [ -n "${DEVELOPER_ID_INSTALLER:-}" ]; then
   echo "==> signing with: ${DEVELOPER_ID_INSTALLER}"

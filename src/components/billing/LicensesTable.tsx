@@ -15,11 +15,13 @@ type LicenseRow = {
   plans: { name: string; code: string } | null;
 };
 
-const statusColor: Record<LicenseStatus, string> = {
-  active:    'bg-green-500/15 text-green-400 border-green-500/30',
-  suspended: 'bg-orange-500/15 text-orange-400 border-orange-500/30',
-  expired:   'bg-red-500/15 text-red-400 border-red-500/30',
-  revoked:   'bg-red-700/30 text-red-300 border-red-600/40',
+const statusColor: Record<string, string> = {
+  active:          'bg-green-500/15 text-green-400 border-green-500/30',
+  suspended:       'bg-orange-500/15 text-orange-400 border-orange-500/30',
+  expired:         'bg-red-500/15 text-red-400 border-red-500/30',
+  revoked:         'bg-red-700/30 text-red-300 border-red-600/40',
+  pending_payment: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
+  trial:           'bg-blue-500/15 text-blue-300 border-blue-500/30',
 };
 
 interface Props {
@@ -68,6 +70,42 @@ export default function LicensesTable({ scope, partnerId }: Props) {
     setBusy(id); setError(null);
     const { error } = await supabase.rpc('set_license_status', {
       p_license_id: id, p_status: status, p_reason: reason ?? null,
+    });
+    if (error) setError(error.message); else await load();
+    setBusy(null);
+  };
+
+  // Manual extension (super_admin only). Two modes: by N billing periods, or
+  // to a custom expiry date. Both flow through extend_license_renewal which
+  // also flips the org back to active if it was trial/expired/suspended.
+  const extend = async (id: string) => {
+    const periodsStr = window.prompt(
+      'Extend renewal by how many billing periods?\n\n' +
+      '• Monthly plan → "1" adds +1 month\n' +
+      '• Yearly plan  → "1" adds +1 year\n\n' +
+      'Leave blank to set a custom expiry date instead.',
+      '1',
+    );
+    if (periodsStr === null) return;
+    let untilArg: string | null = null;
+    let periodsArg = 1;
+    if (periodsStr.trim() === '') {
+      const customDate = window.prompt('Enter the new expiry date (YYYY-MM-DD):');
+      if (!customDate) return;
+      const d = new Date(customDate);
+      if (Number.isNaN(d.getTime())) { window.alert('Invalid date'); return; }
+      untilArg = d.toISOString();
+    } else {
+      const n = parseInt(periodsStr, 10);
+      if (!Number.isFinite(n) || n < 1) { window.alert('Invalid number of periods'); return; }
+      periodsArg = n;
+    }
+    if (!window.confirm(
+      `Confirm: extend license renewal${untilArg ? ` until ${new Date(untilArg).toDateString()}` : ` by ${periodsArg} period(s)`}?\n\nThis will set status to active.`,
+    )) return;
+    setBusy(id); setError(null);
+    const { error } = await supabase.rpc('extend_license_renewal', {
+      p_license_id: id, p_periods: periodsArg, p_until: untilArg,
     });
     if (error) setError(error.message); else await load();
     setBusy(null);
@@ -140,23 +178,34 @@ export default function LicensesTable({ scope, partnerId }: Props) {
                     {new Date(l.expires_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <div className="flex justify-end gap-2">
+                    <div className="flex justify-end gap-1.5 flex-wrap">
+                      {scope === 'super_admin' && l.status !== 'revoked' && (
+                        <button
+                          onClick={() => extend(l.id)}
+                          disabled={busy === l.id}
+                          title="Manually extend renewal by N billing cycles or to a custom date. Use this for cash/cheque payments where Razorpay didn't auto-renew."
+                          className="px-2 py-1 text-[11px] rounded bg-violet-500/20 text-violet-300 border border-violet-500/30 hover:bg-violet-500/30 disabled:opacity-50"
+                        >
+                          Extend
+                        </button>
+                      )}
                       {l.status === 'active' && (
                         <button onClick={() => setStatus(l.id, 'suspended')} disabled={busy === l.id}
                           className="px-2 py-1 text-[11px] rounded bg-orange-600/20 text-orange-400 border border-orange-600/30 hover:bg-orange-600/30 disabled:opacity-50">
                           Suspend
                         </button>
                       )}
-                      {l.status === 'suspended' && (
+                      {(l.status === 'suspended' || l.status === 'expired') && (
                         <button onClick={() => setStatus(l.id, 'active')} disabled={busy === l.id}
                           className="px-2 py-1 text-[11px] rounded bg-green-600/20 text-green-400 border border-green-600/30 hover:bg-green-600/30 disabled:opacity-50">
                           Reactivate
                         </button>
                       )}
-                      {l.status === 'active' && (
+                      {(l.status === 'active' || l.status === 'expired') && (
                         <button
                           onClick={() => bill(l.id)}
                           disabled={busy === l.id}
+                          title="Generate a Razorpay invoice for this license. When the customer pays, the license auto-extends by 1 billing cycle."
                           className="px-2 py-1 text-[11px] rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/30 disabled:opacity-50">
                           Bill
                         </button>

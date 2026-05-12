@@ -54,6 +54,13 @@ Deno.serve(async (req) => {
   if (orgErr) return json({ error: orgErr.message }, 500);
   if (!org) return json({ error: "invalid license key" }, 404);
 
+  // Block fresh enrollments once subscription is dead. is_subscription_active
+  // covers expired trials, cancelled orgs, and orgs with no active license.
+  const { data: active } = await admin.rpc("is_subscription_active", { p_org_id: org.id });
+  if (!active) {
+    return json({ error: "subscription inactive — trial expired or unpaid" }, 402);
+  }
+
   // Reuse existing row for this machine (idempotent enrollment).
   const { data: existing, error: lookupErr } = await admin
     .from("agents")

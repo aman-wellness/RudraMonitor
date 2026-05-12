@@ -26,6 +26,9 @@ export default function AdminPlans() {
       price_usd: editing.price_usd != null ? Number(editing.price_usd) : null,
       partner_price_inr: Number(editing.partner_price_inr ?? Math.round((editing.price_inr ?? 0) * 0.7 * 100) / 100),
       billing_cycle: editing.billing_cycle ?? 'yearly', is_active: editing.is_active ?? true,
+      razorpay_plan_id:     (editing as { razorpay_plan_id?: string | null }).razorpay_plan_id ?? null,
+      razorpay_plan_id_usd: (editing as { razorpay_plan_id_usd?: string | null }).razorpay_plan_id_usd ?? null,
+      features_included:    (editing as { features_included?: string[] }).features_included ?? ['screenshots','productivity_reports'],
     };
     const { error } = editing.id
       ? await supabase.from('plans').update(payload).eq('id', editing.id)
@@ -45,7 +48,7 @@ export default function AdminPlans() {
         <p className="text-xs text-gray-500 max-w-2xl">
           Each plan stores three prices: <span className="text-emerald-400">List INR</span> (used for invoices &amp; GST),
           {' '}<span className="text-cyan-400">List USD</span> (shown on the marketing website), and
-          {' '}<span className="text-amber-400">Partner INR</span> (wholesale rate TrackForce charges partners).
+          {' '}<span className="text-amber-400">Partner INR</span> (wholesale rate Rudrans charges partners).
         </p>
         <button onClick={() => setEditing({ billing_cycle: 'yearly', is_active: true, seat_count: 5, price_inr: 10000, partner_price_inr: 7000 })}
           className="px-3 py-1.5 text-xs rounded-lg bg-cyan-500 hover:bg-cyan-400 text-dark-950 font-medium">
@@ -102,44 +105,148 @@ export default function AdminPlans() {
 
       {editing && (
         <div className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center p-4" onClick={() => setEditing(null)}>
-          <div className="max-w-md w-full bg-dark-800 border border-dark-700 rounded-xl" onClick={(e) => e.stopPropagation()}>
-            <div className="px-5 py-4 border-b border-dark-700 flex items-center justify-between">
+          <div
+            className="w-full max-w-5xl max-h-[90vh] bg-dark-800 border border-dark-700 rounded-xl flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* HEADER */}
+            <div className="px-6 py-4 border-b border-dark-700 flex items-center justify-between shrink-0">
               <h2 className="text-white font-semibold">{editing.id ? 'Edit Plan' : 'New Plan'}</h2>
-              <button onClick={() => setEditing(null)} className="text-gray-400 hover:text-white"><i className="ri-close-line text-lg" /></button>
+              <button onClick={() => setEditing(null)} className="text-gray-400 hover:text-white">
+                <i className="ri-close-line text-lg" />
+              </button>
             </div>
-            <div className="p-5 space-y-3">
-              {error && <p className="text-red-400 text-sm">{error}</p>}
-              <Field label="Code (e.g. starter-5)"><input value={editing.code ?? ''} onChange={(e) => setEditing({ ...editing, code: e.target.value })} className={input} /></Field>
-              <Field label="Name"><input value={editing.name ?? ''} onChange={(e) => setEditing({ ...editing, name: e.target.value })} className={input} /></Field>
-              <Field label="Description"><textarea value={editing.description ?? ''} onChange={(e) => setEditing({ ...editing, description: e.target.value })} rows={2} className={input} /></Field>
-              <Field label="Seats"><input type="number" min={1} value={editing.seat_count ?? ''} onChange={(e) => setEditing({ ...editing, seat_count: parseInt(e.target.value, 10) })} className={input} /></Field>
-              <div className="grid grid-cols-3 gap-3">
-                <Field label="List ₹ (invoicing/GST)">
-                  <input type="number" min={0} step="0.01" value={editing.price_inr ?? ''}
-                    onChange={(e) => setEditing({ ...editing, price_inr: parseFloat(e.target.value) })} className={input} />
-                </Field>
-                <Field label="List $ (website)">
-                  <input type="number" min={0} step="0.01" value={editing.price_usd ?? ''}
-                    onChange={(e) => setEditing({ ...editing, price_usd: e.target.value === '' ? null : parseFloat(e.target.value) })} className={input} />
-                </Field>
-                <Field label="Partner ₹ (wholesale)">
-                  <input type="number" min={0} step="0.01" value={editing.partner_price_inr ?? ''}
-                    onChange={(e) => setEditing({ ...editing, partner_price_inr: parseFloat(e.target.value) })} className={input} />
-                </Field>
+
+            {/* BODY — 2-column landscape layout, scrolls internally only if very small viewport */}
+            <div className="flex-1 overflow-y-auto p-6">
+              {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-5">
+                {/* ── LEFT COLUMN: identity + pricing + cycle ───────────────── */}
+                <section className="space-y-4">
+                  <p className="text-[10px] uppercase tracking-wider text-cyan-400 font-medium">Identity</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="Code">
+                      <input value={editing.code ?? ''} onChange={(e) => setEditing({ ...editing, code: e.target.value })} className={input} placeholder="starter-5" />
+                    </Field>
+                    <Field label="Name">
+                      <input value={editing.name ?? ''} onChange={(e) => setEditing({ ...editing, name: e.target.value })} className={input} />
+                    </Field>
+                  </div>
+                  <Field label="Description">
+                    <textarea value={editing.description ?? ''} onChange={(e) => setEditing({ ...editing, description: e.target.value })} rows={2} className={input} />
+                  </Field>
+
+                  <p className="text-[10px] uppercase tracking-wider text-cyan-400 font-medium pt-2">Pricing</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="Seats">
+                      <input type="number" min={1} value={editing.seat_count ?? ''}
+                        onChange={(e) => setEditing({ ...editing, seat_count: parseInt(e.target.value, 10) })}
+                        className={input} />
+                    </Field>
+                    <Field label="Billing Cycle">
+                      <select
+                        value={editing.billing_cycle ?? 'yearly'}
+                        onChange={(e) => setEditing({ ...editing, billing_cycle: e.target.value as 'monthly' | 'yearly' })}
+                        className={input}
+                      >
+                        <option value="yearly">Yearly</option>
+                        <option value="monthly">Monthly</option>
+                      </select>
+                    </Field>
+                  </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <Field label="List ₹ (invoicing)">
+                      <input type="number" min={0} step="0.01" value={editing.price_inr ?? ''}
+                        onChange={(e) => setEditing({ ...editing, price_inr: parseFloat(e.target.value) })}
+                        className={input} />
+                    </Field>
+                    <Field label="List $ (website)">
+                      <input type="number" min={0} step="0.01" value={editing.price_usd ?? ''}
+                        onChange={(e) => setEditing({ ...editing, price_usd: e.target.value === '' ? null : parseFloat(e.target.value) })}
+                        className={input} />
+                    </Field>
+                    <Field label="Partner ₹ (wholesale)">
+                      <input type="number" min={0} step="0.01" value={editing.partner_price_inr ?? ''}
+                        onChange={(e) => setEditing({ ...editing, partner_price_inr: parseFloat(e.target.value) })}
+                        className={input} />
+                    </Field>
+                  </div>
+                  {editing.price_inr && editing.partner_price_inr ? (
+                    <p className="text-[11px] text-emerald-400">
+                      Partner margin per cycle: ₹{(Number(editing.price_inr) - Number(editing.partner_price_inr)).toLocaleString('en-IN')}
+                      {' '}({Math.round(((Number(editing.price_inr) - Number(editing.partner_price_inr)) / Number(editing.price_inr)) * 100)}%)
+                    </p>
+                  ) : null}
+                </section>
+
+                {/* ── RIGHT COLUMN: features + razorpay ─────────────────────── */}
+                <section className="space-y-4">
+                  <p className="text-[10px] uppercase tracking-wider text-cyan-400 font-medium">Features Included</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      { key: 'screenshots',           label: 'Screenshots' },
+                      { key: 'productivity_reports', label: 'Productivity Reports' },
+                      { key: 'video_recording',      label: 'Video Recording' },
+                      { key: 'ai_alerts',            label: 'Smart AI Alerts' },
+                      { key: 'dlp',                  label: 'DLP (USB / Email)' },
+                    ].map((f) => {
+                      const list = ((editing as { features_included?: string[] }).features_included) ?? [];
+                      const on = list.includes(f.key);
+                      return (
+                        <label key={f.key} className="flex items-center gap-2 px-2.5 py-2 rounded-md border border-dark-700 bg-dark-900/40 cursor-pointer hover:border-cyan-500/30">
+                          <input
+                            type="checkbox"
+                            checked={on}
+                            onChange={(e) => {
+                              const next = e.target.checked ? [...list, f.key] : list.filter((k) => k !== f.key);
+                              setEditing({ ...editing, features_included: next } as typeof editing);
+                            }}
+                            className="accent-cyan-500"
+                          />
+                          <span className="text-xs text-gray-200">{f.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[11px] text-gray-500">
+                    Trial customers get <strong>all</strong> features for 14 days. After that only the ticked features are active — unless super_admin sets a per-customer override.
+                  </p>
+
+                  <p className="text-[10px] uppercase tracking-wider text-cyan-400 font-medium pt-2">Razorpay Plan IDs</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="INR plan id (India)">
+                      <input
+                        value={(editing as { razorpay_plan_id?: string | null }).razorpay_plan_id ?? ''}
+                        onChange={(e) => setEditing({ ...editing, razorpay_plan_id: e.target.value || null } as typeof editing)}
+                        className={input}
+                        placeholder="plan_xxxxxxxxxxxxx"
+                      />
+                    </Field>
+                    <Field label="USD plan id (international)">
+                      <input
+                        value={(editing as { razorpay_plan_id_usd?: string | null }).razorpay_plan_id_usd ?? ''}
+                        onChange={(e) => setEditing({ ...editing, razorpay_plan_id_usd: e.target.value || null } as typeof editing)}
+                        className={input}
+                        placeholder="plan_xxxxxxxxxxxxx"
+                      />
+                    </Field>
+                  </div>
+                  <p className="text-[11px] text-gray-500">
+                    Create matching plans in Razorpay (one in INR, one in USD) with the same amounts &amp; cycle, then paste each plan_id here.
+                  </p>
+                </section>
               </div>
-              {editing.price_inr && editing.partner_price_inr ? (
-                <p className="text-[11px] text-emerald-400 -mt-1">
-                  Partner margin per cycle: ₹{(Number(editing.price_inr) - Number(editing.partner_price_inr)).toLocaleString('en-IN')}
-                  {' '}({Math.round(((Number(editing.price_inr) - Number(editing.partner_price_inr)) / Number(editing.price_inr)) * 100)}%)
-                </p>
-              ) : null}
-              <Field label="Billing Cycle">
-                <select value={editing.billing_cycle ?? 'yearly'} onChange={(e) => setEditing({ ...editing, billing_cycle: e.target.value as 'monthly' | 'yearly' })} className={input}>
-                  <option value="yearly">Yearly</option>
-                  <option value="monthly">Monthly</option>
-                </select>
-              </Field>
-              <button onClick={save} className="w-full mt-2 bg-cyan-500 hover:bg-cyan-400 text-dark-950 font-medium py-2.5 rounded-lg">Save</button>
+            </div>
+
+            {/* FOOTER */}
+            <div className="px-6 py-4 border-t border-dark-700 flex justify-end gap-2 shrink-0">
+              <button onClick={() => setEditing(null)} className="px-4 py-2 text-xs rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-300">
+                Cancel
+              </button>
+              <button onClick={save} className="px-5 py-2 text-xs rounded-lg bg-cyan-500 hover:bg-cyan-400 text-dark-950 font-medium">
+                Save Plan
+              </button>
             </div>
           </div>
         </div>

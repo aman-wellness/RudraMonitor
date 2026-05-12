@@ -101,14 +101,40 @@ export default function NewCustomerModal({ open, onClose, onCreated, showPartner
     }
   };
 
+  // Partner discount % — when a partner is the one filling this form (i.e. the
+  // partner portal, where showPartnerPicker=false), we replace the plan-level
+  // `partner_price_inr` with `list × (1 - discount/100)` so super_admin's
+  // per-partner overrides take effect.
+  const [partnerDiscount, setPartnerDiscount] = useState<number | null>(null);
+
   useEffect(() => {
     if (!open) return;
     (async () => {
       const { data } = await supabase.from('plans').select('*').eq('is_active', true).order('seat_count');
       setPlans((data as Plan[]) ?? []);
       if (data?.[0]) set('planId', (data[0] as Plan).id);
+
+      // Partner side only — fetch the current partner's discount %.
+      if (!showPartnerPicker) {
+        const { data: u } = await supabase.auth.getUser();
+        if (u.user) {
+          const { data: au } = await supabase
+            .from('app_users')
+            .select('partner_id')
+            .eq('user_id', u.user.id)
+            .maybeSingle();
+          if (au?.partner_id) {
+            const { data: p } = await supabase
+              .from('partners')
+              .select('discount_pct')
+              .eq('id', au.partner_id)
+              .maybeSingle();
+            setPartnerDiscount(p?.discount_pct ?? 40);
+          }
+        }
+      }
     })();
-  }, [open]);
+  }, [open, showPartnerPicker]);
 
   const reset = () => {
     setForm({
@@ -312,14 +338,24 @@ export default function NewCustomerModal({ open, onClose, onCreated, showPartner
                         <select required value={form.planId} onChange={(e) => set('planId', e.target.value)} className={inputCls}>
                           {plans.map((p) => {
                             const list = `₹${p.price_inr.toLocaleString('en-IN')}`;
-                            const partner = `₹${p.partner_price_inr.toLocaleString('en-IN')}`;
-                            return (
-                              <option key={p.id} value={p.id}>
-                                {p.name} — {list} list / {partner} partner / {p.billing_cycle}
-                              </option>
-                            );
+                            // Discount-aware wholesale price for partners. Falls
+                            // back to the plan-level partner_price_inr if no
+                            // partner discount is known (super-admin view).
+                            const effectivePartnerPrice = partnerDiscount != null
+                              ? Math.round(Number(p.price_inr) * (1 - partnerDiscount / 100) * 100) / 100
+                              : Number(p.partner_price_inr);
+                            const partnerLabel = `₹${effectivePartnerPrice.toLocaleString('en-IN')}`;
+                            const label = showPartnerPicker
+                              ? `${p.name} — ${list} list / ${partnerLabel} partner / ${p.billing_cycle}`
+                              : `${p.name} — ${partnerLabel} / ${p.billing_cycle}`;
+                            return <option key={p.id} value={p.id}>{label}</option>;
                           })}
                         </select>
+                        {!showPartnerPicker && partnerDiscount != null && (
+                          <p className="text-[11px] text-violet-300/70 mt-1">
+                            Your wholesale rate = list × ({100 - partnerDiscount}% of list). Rudrans bills you this amount; you charge the customer whatever you like.
+                          </p>
+                        )}
                       </Field>
                       <Field label="Seat Override">
                         <input type="number" min={1} value={form.seatOverride} onChange={(e) => set('seatOverride', e.target.value)} className={inputCls} placeholder="Defaults to plan seats" />
@@ -372,14 +408,16 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 function Grid({ cols, children }: { cols: 2 | 3; children: React.ReactNode }) {
-  return <div className={`grid grid-cols-${cols === 3 ? '3' : '2'} gap-3`}>{children}</div>;
+  // `min-w-0` on each child cell stops <input>'s intrinsic min width from
+  // forcing the cell wider than its 1fr track and bleeding into neighbours.
+  return <div className={`grid grid-cols-${cols === 3 ? '3' : '2'} gap-3 [&>*]:min-w-0`}>{children}</div>;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="block">
+    <label className="block min-w-0">
       <span className="text-[11px] text-gray-500 uppercase tracking-wider">{label}</span>
-      <div className="mt-1">{children}</div>
+      <div className="mt-1 min-w-0">{children}</div>
     </label>
   );
 }

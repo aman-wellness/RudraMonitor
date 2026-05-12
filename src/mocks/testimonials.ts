@@ -5,7 +5,7 @@ export const testimonials = [
     position: 'IT Head',
     company: 'TechSolutions Pvt Ltd',
     rating: 5,
-    text: 'TrackForce ne hamari team ki productivity 40% badha di. Ab hume pata hai kaun kya kar raha hai aur kahan time waste ho raha hai.',
+    text: 'Rudrans ne hamari team ki productivity 40% badha di. Ab hume pata hai kaun kya kar raha hai aur kahan time waste ho raha hai.',
     avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=100&h=100&fit=crop&crop=face',
   },
   {

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import AdminLayout from '../AdminLayout';
 import { supabase, type Partner, type PartnerStatus } from '@/lib/supabase';
 import RegisterPartnerModal from '@/components/billing/RegisterPartnerModal';
@@ -67,6 +68,53 @@ export default function AdminPartners() {
     setBusy(null);
   };
 
+  const resetPassword = async (p: Partner) => {
+    if (!confirm(`Send password-reset email to ${p.contact_email}?`)) return;
+    setBusy(p.id);
+    setError(null);
+    const { error } = await supabase.auth.resetPasswordForEmail(p.contact_email, {
+      redirectTo: `${window.location.origin}/reset-password`,
+    });
+    if (error) setError(`Reset failed: ${error.message}`);
+    setBusy(null);
+  };
+
+  const deletePartner = async (p: Partner) => {
+    if (!confirm(`Delete partner "${p.name}"? This will detach all customers/licenses linked to them. Auth users + their data are NOT deleted.`)) return;
+    setBusy(p.id); setError(null);
+    const { error } = await supabase.from('partners').delete().eq('id', p.id);
+    if (error) setError(`Delete failed: ${error.message}`);
+    else await load();
+    setBusy(null);
+  };
+
+  const resendInvite = async (p: Partner) => {
+    setBusy(p.id);
+    setError(null);
+    try {
+      const { data: sess } = await supabase.auth.getSession();
+      const jwt = sess.session?.access_token;
+      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-invite-partner`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${jwt}` },
+        body: JSON.stringify({
+          partner_id: p.id,
+          email: p.contact_email,
+          full_name: p.contact_person,
+        }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error ?? `invite ${res.status}`);
+      }
+    } catch (e) {
+      setError(`Resend failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const filters: Array<'all' | PartnerStatus> = ['all', 'pending', 'active', 'suspended', 'rejected'];
 
   return (
@@ -115,7 +163,9 @@ export default function AdminPartners() {
             )}
             {rows.map((p) => (
               <tr key={p.id} className="hover:bg-dark-700/30">
-                <td className="px-4 py-3 text-white">{p.name}</td>
+                <td className="px-4 py-3 text-white">
+                  <Link to={`/admin/partners/${p.id}`} className="hover:text-cyan-400">{p.name}</Link>
+                </td>
                 <td className="px-4 py-3 text-gray-400">
                   <div>{p.contact_email}</div>
                   {p.phone && <div className="text-[11px] text-gray-600">{p.phone}</div>}
@@ -131,7 +181,39 @@ export default function AdminPartners() {
                   {new Date(p.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <div className="flex justify-end gap-2">
+                  <div className="flex justify-end gap-2 flex-wrap">
+                    <Link
+                      to={`/admin/partners/${p.id}`}
+                      className="px-3 py-1 text-[11px] rounded bg-dark-700 text-gray-300 border border-dark-600 hover:bg-dark-600 hover:text-white"
+                    >
+                      View
+                    </Link>
+                    {(p.status === 'active' || p.status === 'pending') && (
+                      <button
+                        onClick={() => resendInvite(p)}
+                        disabled={busy === p.id}
+                        title="Send a fresh magic-link invite to the partner's contact email"
+                        className="px-3 py-1 text-[11px] rounded bg-violet-600/15 text-violet-400 border border-violet-600/30 hover:bg-violet-600/25 disabled:opacity-50"
+                      >
+                        {busy === p.id ? '…' : 'Resend Invite'}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => resetPassword(p)}
+                      disabled={busy === p.id}
+                      title="Email a password-reset link to the partner's contact email"
+                      className="px-3 py-1 text-[11px] rounded bg-cyan-600/15 text-cyan-400 border border-cyan-600/30 hover:bg-cyan-600/25 disabled:opacity-50"
+                    >
+                      Reset Pwd
+                    </button>
+                    <button
+                      onClick={() => deletePartner(p)}
+                      disabled={busy === p.id}
+                      title="Permanently delete this partner row"
+                      className="px-3 py-1 text-[11px] rounded bg-red-600/15 text-red-400 border border-red-600/30 hover:bg-red-600/25 disabled:opacity-50"
+                    >
+                      Delete
+                    </button>
                     {p.status === 'pending' && (
                       <>
                         <button

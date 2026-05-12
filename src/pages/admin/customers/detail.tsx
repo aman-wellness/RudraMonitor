@@ -123,7 +123,7 @@ export default function CustomerDetail() {
   const sendPasswordReset = async (email: string) => {
     setResetState({ email, status: 'sending' });
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/login`,
+      redirectTo: `${window.location.origin}/reset-password`,
     });
     if (error) setResetState({ email, status: 'error', msg: error.message });
     else setResetState({ email, status: 'sent' });
@@ -282,33 +282,81 @@ export default function CustomerDetail() {
                   <td className="px-4 py-2 text-gray-500">{new Date(l.issued_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })}</td>
                   <td className="px-4 py-2 text-gray-500">{new Date(l.expires_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })}</td>
                   <td className="px-4 py-2">
-                    {l.status === 'pending_payment' ? (
+                    <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                      {l.status === 'pending_payment' && (
+                        <button
+                          onClick={async () => {
+                            if (!confirm('Confirm partner payment received and activate this license?')) return;
+                            const { error: actErr } = await supabase.rpc('activate_pending_license', { p_license_id: l.id });
+                            if (actErr) alert(`Activation failed: ${actErr.message}`);
+                            else if (customerId) {
+                              const { data: licRes } = await supabase.from('licenses')
+                                .select('id, license_key, status, seat_count, issued_at, expires_at, plan:plans(name)')
+                                .eq('organization_id', customerId)
+                                .order('issued_at', { ascending: false });
+                              setLicenses((licRes as unknown as LicenseRow[]) ?? []);
+                            }
+                          }}
+                          className="px-2.5 py-1 rounded-md text-[10px] font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25"
+                        >
+                          ✓ Activate (payment received)
+                        </button>
+                      )}
                       <button
                         onClick={async () => {
-                          if (!confirm('Confirm partner payment received and activate this license?')) return;
-                          const { error: actErr } = await supabase.rpc('activate_pending_license', { p_license_id: l.id });
-                          if (actErr) alert(`Activation failed: ${actErr.message}`);
+                          const periodsStr = prompt(
+                            'Extend renewal by how many billing periods? (1 = +1 month for monthly, +1 year for yearly plans)\n\nLeave blank to set a custom expiry date instead.',
+                            '1',
+                          );
+                          if (periodsStr === null) return;
+                          let untilArg: string | null = null;
+                          let periodsArg = 1;
+                          if (periodsStr.trim() === '') {
+                            const customDate = prompt('Enter the new expiry date (YYYY-MM-DD):');
+                            if (!customDate) return;
+                            const d = new Date(customDate);
+                            if (Number.isNaN(d.getTime())) { alert('Invalid date'); return; }
+                            untilArg = d.toISOString();
+                          } else {
+                            const n = parseInt(periodsStr, 10);
+                            if (!Number.isFinite(n) || n < 1) { alert('Invalid number of periods'); return; }
+                            periodsArg = n;
+                          }
+                          if (!confirm(`Confirm: payment received, extending license renewal${untilArg ? ` until ${new Date(untilArg).toDateString()}` : ` by ${periodsArg} period(s)`}?`)) return;
+                          const { error: extErr } = await supabase.rpc('extend_license_renewal', {
+                            p_license_id: l.id,
+                            p_periods: periodsArg,
+                            p_until:   untilArg,
+                          });
+                          if (extErr) alert(`Extend failed: ${extErr.message}`);
                           else if (customerId) {
                             const { data: licRes } = await supabase.from('licenses')
                               .select('id, license_key, status, seat_count, issued_at, expires_at, plan:plans(name)')
                               .eq('organization_id', customerId)
                               .order('issued_at', { ascending: false });
                             setLicenses((licRes as unknown as LicenseRow[]) ?? []);
+                            await load();
                           }
                         }}
-                        className="px-2.5 py-1 rounded-md text-[10px] font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25"
+                        className="px-2.5 py-1 rounded-md text-[10px] font-medium bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/25"
                       >
-                        ✓ Activate (payment received)
+                        Extend Renewal
                       </button>
-                    ) : (
-                      <span className="text-[10px] text-gray-600">—</span>
-                    )}
+                    </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
+      </Section>
+
+      {/* Features (super_admin override) */}
+      <Section title="Features" icon="ri-toggle-line">
+        <FeatureToggles
+          orgId={org.id}
+          isTrial={org.subscription_status === 'trial'}
+        />
       </Section>
 
       {/* Agents */}
@@ -614,4 +662,108 @@ function StatusPill({ status }: { status: string }) {
     idle:      'bg-amber-500/15 text-amber-400 border-amber-500/30',
   };
   return <span className={`px-2 py-0.5 text-[10px] rounded-md border capitalize ${map[status] ?? 'bg-dark-700 text-gray-400 border-dark-600'}`}>{status}</span>;
+}
+
+const FEATURE_LIST: Array<{ key: string; label: string; hint: string }> = [
+  { key: 'screenshots',         label: 'Screenshots',         hint: 'Periodic desktop captures' },
+  { key: 'video_recording',     label: 'Video Recording',     hint: 'Screen-recording sessions' },
+  { key: 'dlp',                 label: 'DLP (USB / Email)',   hint: 'Block unauthorized file movement' },
+  { key: 'ai_alerts',           label: 'Smart AI Alerts',     hint: 'AI-classified anomaly alerts' },
+  { key: 'productivity_reports',label: 'Productivity Reports',hint: 'Daily / weekly productivity rollups' },
+];
+
+function FeatureToggles({ orgId, isTrial }: { orgId: string; isTrial: boolean }) {
+  const [features, setFeatures] = useState<Record<string, boolean | null>>({});
+  const [planFeats, setPlanFeats] = useState<string[]>([]);
+  const [saving, setSaving] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const { data: org } = await supabase
+        .from('organizations').select('features').eq('id', orgId).maybeSingle();
+      // null = no override (= use plan default). true/false = explicit override.
+      const map: Record<string, boolean | null> = {};
+      for (const f of FEATURE_LIST) {
+        const v = (org?.features as Record<string, boolean> | null)?.[f.key];
+        map[f.key] = v === undefined ? null : v;
+      }
+      setFeatures(map);
+
+      // What does the active plan include? Used to show "Plan default" pill.
+      const { data: lic } = await supabase
+        .from('licenses').select('plans(features_included)')
+        .eq('organization_id', orgId).eq('status','active')
+        .order('issued_at', { ascending: false }).limit(1).maybeSingle();
+      type LicFlat = { plans: { features_included: string[] } | null };
+      const plan = (lic as unknown as LicFlat | null)?.plans;
+      setPlanFeats(plan?.features_included ?? []);
+    })();
+  }, [orgId]);
+
+  const save = async (key: string, value: boolean | null) => {
+    setSaving(key);
+    const { data: cur } = await supabase
+      .from('organizations').select('features').eq('id', orgId).maybeSingle();
+    const next = { ...((cur?.features as Record<string, boolean>) ?? {}) };
+    if (value === null) delete next[key];
+    else next[key] = value;
+    const { error } = await supabase
+      .from('organizations').update({ features: next }).eq('id', orgId);
+    if (!error) setFeatures((f) => ({ ...f, [key]: value }));
+    setSaving(null);
+  };
+
+  return (
+    <div className="px-5 py-4">
+      <p className="text-[11px] text-gray-500 mb-4 max-w-2xl">
+        Each feature has 3 states: <strong className="text-emerald-300">On</strong> (force enabled),
+        {' '}<strong className="text-rose-300">Off</strong> (force disabled), or
+        {' '}<strong className="text-gray-300">Plan default</strong> (use what the plan bundles).
+        {isTrial && <span className="block mt-1 text-blue-300">⓵ This customer is on trial — all features are unlocked unless explicitly set to Off below.</span>}
+      </p>
+      <div className="space-y-2">
+        {FEATURE_LIST.map((f) => {
+          const v = features[f.key];
+          const planIncludes = planFeats.includes(f.key);
+          const effective = v === null ? (isTrial || planIncludes) : v;
+          return (
+            <div key={f.key} className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-dark-900/50 border border-dark-700">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <p className="text-sm text-white">{f.label}</p>
+                  <span className={`px-1.5 py-0.5 rounded-md text-[9px] uppercase tracking-wider border ${effective ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' : 'bg-rose-500/10 text-rose-300 border-rose-500/30'}`}>
+                    {effective ? 'Active' : 'Inactive'}
+                  </span>
+                  {v === null && (
+                    <span className="px-1.5 py-0.5 rounded-md text-[9px] uppercase tracking-wider border bg-dark-700 text-gray-400 border-dark-600">
+                      Plan default {planIncludes ? '(on)' : '(off)'}
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-gray-500 mt-0.5">{f.hint}</p>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  disabled={saving === f.key}
+                  onClick={() => save(f.key, true)}
+                  className={`px-2 py-1 text-[10px] rounded ${v === true ? 'bg-emerald-500/25 text-emerald-200 border border-emerald-500/40' : 'bg-dark-800 text-gray-400 border border-dark-700 hover:text-white'}`}
+                >On</button>
+                <button
+                  disabled={saving === f.key}
+                  onClick={() => save(f.key, false)}
+                  className={`px-2 py-1 text-[10px] rounded ${v === false ? 'bg-rose-500/25 text-rose-200 border border-rose-500/40' : 'bg-dark-800 text-gray-400 border border-dark-700 hover:text-white'}`}
+                >Off</button>
+                <button
+                  disabled={saving === f.key}
+                  onClick={() => save(f.key, null)}
+                  className={`px-2 py-1 text-[10px] rounded ${v === null ? 'bg-cyan-500/25 text-cyan-200 border border-cyan-500/40' : 'bg-dark-800 text-gray-400 border border-dark-700 hover:text-white'}`}
+                  title="Use whatever the plan bundles"
+                >Plan</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }

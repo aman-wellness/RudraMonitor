@@ -700,8 +700,8 @@ async fn ready(state: &AppState) -> bool {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-/// One-shot, no-Tauri uninstall. Invoked via `TrackForce Agent --uninstall` from a packaging
-/// uninstall script (or the bundled "Uninstall TrackForce Agent.command" on macOS). Removes:
+/// One-shot, no-Tauri uninstall. Invoked via `Rudrans Agent --uninstall` from a packaging
+/// uninstall script (or the bundled "Uninstall Rudrans Agent.command" on macOS). Removes:
 ///   1. The OS-specific autolaunch entry.
 ///   2. The on-disk config / enrollment dir.
 ///   3. The installed app/binary itself (best-effort — fails silently if perms forbid).
@@ -719,7 +719,7 @@ pub fn uninstall_self() -> Result<()> {
     //    uninstall continues to run.
     let my_pid = std::process::id();
     if let Some(base) = dirs::data_dir() {
-        let dir = base.join("TrackForceAgent");
+        let dir = base.join("RudransAgent");
         for pid_file in &["agent.pid", "guardian.pid"] {
             if let Ok(raw) = std::fs::read_to_string(dir.join(pid_file)) {
                 if let Ok(pid) = raw.trim().parse::<u32>() {
@@ -748,7 +748,7 @@ pub fn uninstall_self() -> Result<()> {
         if let Some(home) = dirs::home_dir() {
             let plist = home
                 .join("Library/LaunchAgents")
-                .join("com.trackforce.agent.plist");
+                .join("com.rudrans.agent.plist");
             let _ = std::fs::remove_file(&plist);
             // Tauri-plugin-autostart uses the bundle id as launchd label.
             let _ = std::process::Command::new("launchctl")
@@ -764,7 +764,7 @@ pub fn uninstall_self() -> Result<()> {
                 "delete",
                 r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
                 "/v",
-                "TrackForce Agent",
+                "Rudrans Agent",
                 "/f",
             ])
             .status();
@@ -772,7 +772,7 @@ pub fn uninstall_self() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         if let Some(home) = dirs::home_dir() {
-            let _ = std::fs::remove_file(home.join(".config/autostart/com.trackforce.agent.desktop"));
+            let _ = std::fs::remove_file(home.join(".config/autostart/com.rudrans.agent.desktop"));
         }
     }
 
@@ -1064,7 +1064,7 @@ async fn check_for_update(handle: &tauri::AppHandle) -> Result<()> {
 // Builds a minimal system tray with a context menu. Left-click toggles the main window;
 // right-click opens the menu.
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "Show TrackForce", true, None::<&str>)?;
+    let show = MenuItem::with_id(app, "show", "Show Rudrans", true, None::<&str>)?;
     let pause = MenuItem::with_id(app, "pause", "Pause monitoring", true, None::<&str>)?;
     let resume = MenuItem::with_id(app, "resume", "Resume monitoring", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -1079,7 +1079,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 
     let _ = TrayIconBuilder::with_id("main-tray")
         .icon(icon)
-        .tooltip("TrackForce Agent")
+        .tooltip("Rudrans Agent")
         .menu(&menu)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => {

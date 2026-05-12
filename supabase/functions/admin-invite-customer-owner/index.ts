@@ -57,29 +57,71 @@ Deno.serve(async (req) => {
   if (!orgId) return json({ error: "org_id required" }, 400);
   if (!email || !email.includes("@")) return json({ error: "valid email required" }, 400);
 
-  // 3. Upsert the pending org_members row keyed by (org_id, email).
-  const { error: upsertErr } = await admin
+  // 3. Upsert the pending org_members row. The unique index is
+  //    `(org_id, lower(email)) WHERE email IS NOT NULL` — partial — so
+  //    `onConflict: "org_id,email"` can't match it. Do find-then-write.
+  const { data: existing } = await admin
     .from("org_members")
-    .upsert(
-      { org_id: orgId, email, role, full_name: fullName, user_id: null },
-      { onConflict: "org_id,email" },
-    );
-  if (upsertErr) return json({ error: `pending row: ${upsertErr.message}` }, 500);
+    .select("id")
+    .eq("org_id", orgId)
+    .ilike("email", email)
+    .maybeSingle();
+  if (existing) {
+    const { error: updErr } = await admin
+      .from("org_members")
+      .update({ role, full_name: fullName })
+      .eq("id", existing.id);
+    if (updErr) return json({ error: `pending row: ${updErr.message}` }, 500);
+  } else {
+    const { error: insErr } = await admin
+      .from("org_members")
+      .insert({ org_id: orgId, email, role, full_name: fullName, user_id: null });
+    if (insErr) return json({ error: `pending row: ${insErr.message}` }, 500);
+  }
 
-  // 4. Send the magic-link invite. "User already registered" is fine — the link trigger
-  //    will tie their existing user_id to this org's pending row on next login.
-  try {
-    await admin.auth.admin.inviteUserByEmail(email, {
-      data: fullName ? { full_name: fullName } : undefined,
+  // 4. Send the right email depending on whether the user already exists:
+  //    - New email → invite (creates auth.users + sends magic-link)
+  //    - Already registered → password recovery email (the only thing
+  //      Supabase actually delivers for an existing user; pure invite is a
+  //      no-op silently and admin sees no email arrive).
+  const appUrl = Deno.env.get("APP_URL") ?? "http://localhost:3000";
+  const { data: listed } = await admin.auth.admin.listUsers({ page: 1, perPage: 1 });
+  const existingUser = listed?.users?.find((u) => u.email?.toLowerCase() === email);
+  let mode: "invite" | "recovery" = "invite";
+  let lastErr: string | null = null;
+
+  if (existingUser) {
+    mode = "recovery";
+    const { error } = await admin.auth.admin.generateLink({
+      type: "recovery",
+      email,
+      options: { redirectTo: `${appUrl}/reset-password` },
     });
-  } catch (e) {
-    const msg = (e as Error).message ?? "";
-    if (!msg.toLowerCase().includes("already")) {
-      return json({ error: `invite failed: ${msg}` }, 500);
+    if (error) lastErr = error.message;
+  } else {
+    try {
+      await admin.auth.admin.inviteUserByEmail(email, {
+        data: { ...(fullName ? { full_name: fullName } : {}), invite_role: "customer_owner" },
+        redirectTo: `${appUrl}/post-login`,
+      });
+    } catch (e) {
+      const msg = (e as Error).message ?? "";
+      if (msg.toLowerCase().includes("already")) {
+        mode = "recovery";
+        const { error } = await admin.auth.admin.generateLink({
+          type: "recovery",
+          email,
+          options: { redirectTo: `${appUrl}/reset-password` },
+        });
+        if (error) lastErr = error.message;
+      } else {
+        lastErr = msg;
+      }
     }
   }
 
-  return json({ ok: true });
+  if (lastErr) return json({ error: `invite failed: ${lastErr}` }, 500);
+  return json({ ok: true, mode });
 });
 
 function json(body: unknown, status = 200) {

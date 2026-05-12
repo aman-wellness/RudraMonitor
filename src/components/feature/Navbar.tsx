@@ -34,11 +34,11 @@ export default function Navbar() {
           <Link to="/" className="flex items-center gap-3">
             <img
               src="https://public.readdy.ai/ai/img_res/30434500-ce14-4d0b-944f-490cb4702e27.png"
-              alt="TrackForce Logo"
+              alt="Rudrans Logo"
               className="h-8 w-8 md:h-10 md:w-10 object-contain"
             />
             <span className="text-white font-poppins font-bold text-lg md:text-xl tracking-wide">
-              TrackForce
+              Rudrans
             </span>
           </Link>
 

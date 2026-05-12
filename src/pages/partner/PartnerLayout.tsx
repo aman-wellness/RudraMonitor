@@ -1,6 +1,7 @@
 import { ReactNode } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
+import { useTheme } from '@/context/ThemeContext';
 
 const nav = [
   { to: '/partner/dashboard', label: 'Dashboard',  icon: 'ri-dashboard-line' },
@@ -14,16 +15,17 @@ export default function PartnerLayout({ children, title }: { children: ReactNode
   const loc = useLocation();
   const navigate = useNavigate();
   const { signOut, user } = useAuth();
+  const { isDark, toggleTheme } = useTheme();
 
   const handleSignOut = async () => {
     try { await signOut(); } finally { navigate('/', { replace: true }); }
   };
 
   return (
-    <div className="min-h-screen bg-dark-950 flex">
+    <div className="dashboard-shell min-h-screen bg-dark-950 flex">
       <aside className="w-60 bg-dark-900 border-r border-dark-800 flex flex-col">
         <div className="px-5 py-5 border-b border-dark-800">
-          <p className="text-[10px] uppercase tracking-widest text-cyan-400 font-semibold">TrackForce</p>
+          <p className="text-[10px] uppercase tracking-widest text-cyan-400 font-semibold">Rudrans</p>
           <p className="text-sm text-white font-semibold mt-0.5">Partner Portal</p>
         </div>
         <nav className="flex-1 p-3 space-y-1">
@@ -54,8 +56,16 @@ export default function PartnerLayout({ children, title }: { children: ReactNode
         </div>
       </aside>
       <main className="flex-1 min-w-0 overflow-y-auto">
-        <header className="px-6 py-4 border-b border-dark-800 bg-dark-900/40 sticky top-0 backdrop-blur z-10">
+        <header className="px-6 py-4 border-b border-dark-800 bg-dark-900/80 sticky top-0 backdrop-blur-md z-10 flex items-center justify-between">
           <h1 className="text-lg font-semibold text-white">{title}</h1>
+          <button
+            onClick={toggleTheme}
+            title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+            aria-label="Toggle theme"
+            className="w-9 h-9 rounded-full flex items-center justify-center text-gray-400 hover:text-white hover:bg-dark-800 transition-colors"
+          >
+            <i className={isDark ? 'ri-sun-line text-lg' : 'ri-moon-line text-lg'} />
+          </button>
         </header>
         <div className="p-6">{children}</div>
       </main>

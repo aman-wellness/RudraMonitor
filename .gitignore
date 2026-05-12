@@ -1,44 +1,38 @@
-# Dependencies
-node_modules/
-**/node_modules/
 
 # Build output
-dist/
-dist-mac/
-agent/dist/
-agent/dist-mac/
-agent/src-tauri/target/
-agent/src-tauri/gen/schemas/
-
-# Environment / secrets — never commit
-.env
-.env.local
-.env.*.local
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-npm-debug.log*
-
+# Combined SQL scratch
+# Dependencies
 # Editors
-.vscode/
-.idea/
-*.swp
-
+# Environment / secrets — never commit
+# Local secrets reference files — NEVER commit these
+# Logs
+# OS
+# Screenshots local
 # Tauri runtime config (dev only)
+**/node_modules/
+*.log
+*.secrets
+*.swp
+.DS_Store
+.env
+.env.*.local
+.env.local
+.idea/
+.vscode/
+SECRETS.local
+SECRETS.local.md
+Screenshot*.png
+Thumbs.db
+agent.pem
+agent/dist-mac/
+agent/dist/
 agent/src-tauri/.cargo/
 agent/src-tauri/WixTools/
-
-# Combined SQL scratch
+agent/src-tauri/gen/schemas/
+agent/src-tauri/target/
+dist-mac/
+dist/
+node_modules/
+npm-debug.log*
+out/
 supabase/_combined_setup.sql
-
-# Screenshots local
-Screenshot*.png
-
-# Local secrets reference files — NEVER commit these
-SECRETS.local.md
-SECRETS.local
-*.secrets

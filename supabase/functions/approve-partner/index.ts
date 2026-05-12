@@ -15,6 +15,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.4";
 import { corsHeaders } from "../_shared/cors.ts";
+import { getIntegration } from "../_shared/integrations.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -77,7 +78,7 @@ Deno.serve(async (req) => {
   try {
     await admin.auth.admin.inviteUserByEmail(email, {
       data: { partner_id: partnerId, partner_name: partner.name },
-      redirectTo: `${Deno.env.get("APP_URL") ?? "https://app.trackforce.in"}/post-login`,
+      redirectTo: `${(await getIntegration("APP_URL")) || "https://app.rudrans.com"}/post-login`,
     });
   } catch (e) {
     const msg = (e as Error).message ?? "";

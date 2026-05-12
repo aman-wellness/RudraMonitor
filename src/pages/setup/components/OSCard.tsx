@@ -42,9 +42,9 @@ export default function OSCard({ os, icon, color, borderColor, bgColor, download
 
   const copyCommand = () => {
     if (os === 'Ubuntu') {
-      navigator.clipboard.writeText('wget -qO- https://trackforce.ai/install.sh | sudo bash');
+      navigator.clipboard.writeText('wget -qO- https://rudrans.com/install.sh | sudo bash');
     } else {
-      navigator.clipboard.writeText('https://trackforce.ai/download');
+      navigator.clipboard.writeText('https://rudrans.com/download');
     }
     setShowCopied(true);
     setTimeout(() => setShowCopied(false), 2000);
@@ -112,10 +112,10 @@ export default function OSCard({ os, icon, color, borderColor, bgColor, download
           </div>
           <code className="text-[11px] text-gray-400 font-mono block break-all">
             {os === 'Ubuntu'
-              ? 'wget -qO- https://trackforce.ai/install.sh | sudo bash'
+              ? 'wget -qO- https://rudrans.com/install.sh | sudo bash'
               : os === 'macOS'
-                ? 'brew install --cask trackforce-agent'
-                : 'msiexec /i TrackForceAgent.msi /quiet /norestart'}
+                ? 'brew install --cask rudrans-agent'
+                : 'msiexec /i RudransAgent.msi /quiet /norestart'}
           </code>
         </div>
       </div>

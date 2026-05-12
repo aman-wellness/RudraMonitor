@@ -13,7 +13,7 @@
 # Required env:
 #   SUPABASE_ACCESS_TOKEN          — for upload-release.sh
 #   TAURI_SIGNING_PRIVATE_KEY      — full key string (or use _PATH below)
-#   TAURI_SIGNING_PRIVATE_KEY_PATH — path to ~/.tauri/trackforce-update.key
+#   TAURI_SIGNING_PRIVATE_KEY_PATH — path to ~/.tauri/rudrans-update.key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — empty if generated without password
 #
 # Usage:
@@ -45,7 +45,7 @@ VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
 PROJECT_REF="${SUPABASE_PROJECT_REF:-ttjazaxjhzvrzhptrpmd}"
 PUBLIC_BASE="https://${PROJECT_REF}.supabase.co/storage/v1/object/public/releases"
 
-echo "==> Building TrackForce Agent v${VERSION}"
+echo "==> Building Rudrans Agent v${VERSION}"
 npm run tauri build 2>&1 | tail -20
 
 # Build artifacts location depends on platform
@@ -98,7 +98,7 @@ PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 cat > /tmp/latest.json <<EOF
 {
   "version": "${VERSION}",
-  "notes": "TrackForce Agent v${VERSION}",
+  "notes": "Rudrans Agent v${VERSION}",
   "pub_date": "${PUB_DATE}",
   "platforms": { ${PLATFORMS_JSON} }
 }

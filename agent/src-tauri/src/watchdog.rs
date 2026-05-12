@@ -34,7 +34,7 @@ const SHUTDOWN_FLAG: &str = "shutdown.flag";
 
 fn data_dir() -> Result<PathBuf> {
     let base = dirs::data_dir().context("no data dir")?;
-    let dir = base.join("TrackForceAgent");
+    let dir = base.join("RudransAgent");
     std::fs::create_dir_all(&dir).ok();
     Ok(dir)
 }

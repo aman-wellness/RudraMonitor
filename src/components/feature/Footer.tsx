@@ -22,11 +22,11 @@ export default function Footer() {
             <div className="flex items-center gap-3 mb-4">
               <img
                 src="https://public.readdy.ai/ai/img_res/30434500-ce14-4d0b-944f-490cb4702e27.png"
-                alt="TrackForce Logo"
+                alt="Rudrans Logo"
                 className="h-8 w-8 object-contain"
               />
               <span className="text-white font-poppins font-bold text-lg">
-                TrackForce
+                Rudrans
               </span>
             </div>
             <p className="text-sm text-gray-500 mb-5 leading-relaxed">
@@ -117,7 +117,7 @@ export default function Footer() {
                 <span className="w-4 h-4 flex items-center justify-center">
                   <i className="ri-mail-line text-gray-500 text-xs" />
                 </span>
-                <span className="text-sm text-gray-500">support@trackforce.io</span>
+                <span className="text-sm text-gray-500">support@rudrans.com</span>
               </div>
               <div className="flex items-center gap-2">
                 <span className="w-4 h-4 flex items-center justify-center">
@@ -135,7 +135,7 @@ export default function Footer() {
         <div className="w-full px-4 md:px-8 lg:px-12 py-4">
           <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
             <p className="text-xs text-gray-600">
-              &copy; 2025 TrackForce. All rights reserved.
+              &copy; 2025 Rudrans. All rights reserved.
             </p>
             <div className="flex items-center gap-4">
               {['Privacy Policy', 'Terms of Service', 'Cookie Policy'].map((item) => (

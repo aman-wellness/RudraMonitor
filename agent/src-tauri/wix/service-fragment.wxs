@@ -21,13 +21,13 @@
       supported Windows version (10/11) so we don't need extra dependencies.
 
       Impersonate="no" + Execute="deferred" → runs as SYSTEM with full rights to
-      register a task in \TrackForce\Agent. The task itself runs as the
+      register a task in \Rudrans\Agent. The task itself runs as the
       *interactive user* via -RunLevel Highest with -UserId 'INTERACTIVE'.
     -->
     <CustomAction
-      Id="RegisterTrackForceTask"
+      Id="RegisterRudransTask"
       Directory="INSTALLFOLDER"
-      ExeCommand='powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "&amp; { $exe = (Get-ChildItem -Path \"[INSTALLFOLDER]\" -Filter trackforce-agent.exe -Recurse | Select-Object -First 1).FullName; if (-not $exe) { exit 0 }; $action = New-ScheduledTaskAction -Execute $exe; $boot = New-ScheduledTaskTrigger -AtStartup; $logon = New-ScheduledTaskTrigger -AtLogOn; $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration ([TimeSpan]::MaxValue); $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero); $principal = New-ScheduledTaskPrincipal -GroupId \"S-1-5-32-545\" -RunLevel Highest; Register-ScheduledTask -TaskName \"TrackForce Agent\" -TaskPath \"\\TrackForce\\\" -Action $action -Trigger @($boot,$logon,$repeat) -Settings $settings -Principal $principal -Force }"'
+      ExeCommand='powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "&amp; { $exe = (Get-ChildItem -Path \"[INSTALLFOLDER]\" -Filter rudrans-agent.exe -Recurse | Select-Object -First 1).FullName; if (-not $exe) { exit 0 }; $action = New-ScheduledTaskAction -Execute $exe; $boot = New-ScheduledTaskTrigger -AtStartup; $logon = New-ScheduledTaskTrigger -AtLogOn; $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration ([TimeSpan]::MaxValue); $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero); $principal = New-ScheduledTaskPrincipal -GroupId \"S-1-5-32-545\" -RunLevel Highest; Register-ScheduledTask -TaskName \"Rudrans Agent\" -TaskPath \"\\Rudrans\\\" -Action $action -Trigger @($boot,$logon,$repeat) -Settings $settings -Principal $principal -Force }"'
       Execute="deferred"
       Impersonate="no"
       Return="ignore" />
@@ -36,20 +36,20 @@
       Unregister the scheduled task on uninstall so we don't leave orphan task entries.
     -->
     <CustomAction
-      Id="UnregisterTrackForceTask"
+      Id="UnregisterRudransTask"
       Directory="INSTALLFOLDER"
-      ExeCommand='powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Unregister-ScheduledTask -TaskName \"TrackForce Agent\" -TaskPath \"\\TrackForce\\\" -Confirm:$false -ErrorAction SilentlyContinue"'
+      ExeCommand='powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Unregister-ScheduledTask -TaskName \"Rudrans Agent\" -TaskPath \"\\Rudrans\\\" -Confirm:$false -ErrorAction SilentlyContinue"'
       Execute="deferred"
       Impersonate="no"
       Return="ignore" />
 
     <InstallExecuteSequence>
       <!-- After install completes, register the task. -->
-      <Custom Action="RegisterTrackForceTask" After="InstallFiles">
+      <Custom Action="RegisterRudransTask" After="InstallFiles">
         NOT Installed AND NOT REMOVE
       </Custom>
       <!-- Before uninstall removes the .exe, drop the task. -->
-      <Custom Action="UnregisterTrackForceTask" Before="RemoveFiles">
+      <Custom Action="UnregisterRudransTask" Before="RemoveFiles">
         REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE
       </Custom>
     </InstallExecuteSequence>

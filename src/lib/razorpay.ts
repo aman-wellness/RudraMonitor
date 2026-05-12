@@ -62,7 +62,7 @@ export async function payInvoice(opts: {
     amount,
     currency,
     order_id,
-    name: 'TrackForce',
+    name: 'Rudrans',
     description: `Invoice ${invoice_number}`,
     prefill: {
       email: opts.customerEmail ?? '',

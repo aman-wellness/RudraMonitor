@@ -59,7 +59,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   };
 
   return (
-    <div className="min-h-screen bg-dark-900 flex overflow-x-hidden">
+    <div className="dashboard-shell min-h-screen bg-dark-900 flex overflow-x-hidden">
       {/* Desktop Sidebar */}
       <aside className="hidden md:flex flex-col w-64 bg-dark-800 border-r border-dark-700 fixed left-0 top-0 bottom-0 z-30">
         {/* Logo */}
@@ -67,11 +67,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <Link to="/" className="flex items-center gap-3">
             <img
               src="https://public.readdy.ai/ai/img_res/30434500-ce14-4d0b-944f-490cb4702e27.png"
-              alt="TrackForce"
+              alt="Rudrans"
               className="h-8 w-8 object-contain"
             />
             <span className="text-white font-poppins font-bold text-lg tracking-wide">
-              TrackForce
+              Rudrans
             </span>
           </Link>
         </div>
@@ -138,10 +138,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <Link to="/" className="flex items-center gap-3" onClick={() => setSidebarOpen(false)}>
             <img
               src="https://public.readdy.ai/ai/img_res/30434500-ce14-4d0b-944f-490cb4702e27.png"
-              alt="TrackForce"
+              alt="Rudrans"
               className="h-8 w-8 object-contain"
             />
-            <span className="text-white font-poppins font-bold text-lg">TrackForce</span>
+            <span className="text-white font-poppins font-bold text-lg">Rudrans</span>
           </Link>
           <button
             onClick={() => setSidebarOpen(false)}

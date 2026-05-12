@@ -22,11 +22,10 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.4";
 import { corsHeaders } from "../_shared/cors.ts";
+import { getIntegrations } from "../_shared/integrations.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
-const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY") ?? "";
 
 interface DlpEventBody {
   event_type: "usb_transfer" | "email_attachment" | "clipboard_exfil";
@@ -161,6 +160,11 @@ async function classify(
   ev: Record<string, unknown>,
   settings: Record<string, unknown> | null,
 ): Promise<Classification> {
+  // Read live keys from `integrations` table (admin can rotate without redeploy).
+  // Empty string = unconfigured → skip that provider.
+  const keys = await getIntegrations(["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]);
+  const ANTHROPIC_API_KEY = keys.ANTHROPIC_API_KEY;
+  const OPENAI_API_KEY = keys.OPENAI_API_KEY;
   // Default policy is intentionally STRICT — every USB transfer and every
   // attachment to a personal mail provider is treated as unauthorized data
   // movement. Customers narrow this down by adding their company's email

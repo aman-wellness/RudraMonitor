@@ -24,6 +24,64 @@ export default function Signup() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  // Email OTP state (free — delivered via Microsoft Graph). The OTP is on the
+  // email field from step 1; phone is just collected as profile data.
+  const [otpSent, setOtpSent] = useState(false);
+  const [otp, setOtp] = useState('');
+  const [otpSending, setOtpSending] = useState(false);
+  const [otpVerifying, setOtpVerifying] = useState(false);
+  const [emailVerified, setEmailVerified] = useState(false);
+  const [otpResendIn, setOtpResendIn] = useState(0);
+  const [otpMsg, setOtpMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+
+  const sendOtp = async () => {
+    setOtpMsg(null);
+    if (!formData.email.includes('@')) {
+      setOtpMsg({ kind: 'err', text: 'Enter a valid email address.' });
+      return;
+    }
+    setOtpSending(true);
+    try {
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-phone-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: import.meta.env.VITE_SUPABASE_ANON_KEY },
+        body: JSON.stringify({ email: formData.email }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error ?? `OTP send failed (${res.status})`);
+      setOtpSent(true);
+      setOtpMsg({ kind: 'ok', text: `OTP sent to ${formData.email}. It expires in 5 minutes.` });
+      setOtpResendIn(45);
+      const i = setInterval(() => {
+        setOtpResendIn((s) => { if (s <= 1) { clearInterval(i); return 0; } return s - 1; });
+      }, 1000);
+    } catch (e) {
+      setOtpMsg({ kind: 'err', text: e instanceof Error ? e.message : 'OTP send failed' });
+    } finally { setOtpSending(false); }
+  };
+
+  const verifyOtp = async () => {
+    setOtpMsg(null);
+    if (!/^\d{6}$/.test(otp)) {
+      setOtpMsg({ kind: 'err', text: 'Enter the 6-digit code from the email.' });
+      return;
+    }
+    setOtpVerifying(true);
+    try {
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/verify-phone-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: import.meta.env.VITE_SUPABASE_ANON_KEY },
+        body: JSON.stringify({ email: formData.email, otp }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error ?? 'Invalid OTP');
+      setEmailVerified(true);
+      setOtpMsg({ kind: 'ok', text: 'Email verified ✓' });
+    } catch (e) {
+      setOtpMsg({ kind: 'err', text: e instanceof Error ? e.message : 'OTP verification failed' });
+    } finally { setOtpVerifying(false); }
+  };
+
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
   };
@@ -43,61 +101,50 @@ export default function Signup() {
     setError(null);
 
     if (step === 1) {
-      if (formData.password !== formData.confirmPassword) {
-        setError('Passwords do not match');
+      if (!formData.email.includes('@')) {
+        setError('Enter a valid email');
         return;
       }
-      if (formData.password.length < 8) {
-        setError('Password must be at least 8 characters');
+      if (!formData.fullName.trim()) {
+        setError('Enter your full name');
         return;
       }
       setStep(2);
       return;
     }
 
+    if (!emailVerified) {
+      setError('Please verify your email with the OTP first.');
+      return;
+    }
+
     setSubmitting(true);
     try {
-      // 1. Create the auth user
-      const { userId } = await signUp({
-        email: formData.email,
-        password: formData.password,
-        fullName: formData.fullName,
+      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/start-trial-signup`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: import.meta.env.VITE_SUPABASE_ANON_KEY },
+        body: JSON.stringify({
+          full_name: formData.fullName,
+          email:     formData.email,
+          org_name:  formData.companyName,
+          phone:     formData.phone || null,
+          country:   formData.country,
+        }),
       });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body?.error ?? 'Signup failed');
 
-      // 2. Create the organization (RLS requires owner_user_id = auth.uid())
-      const { data: org, error: orgErr } = await supabase
-        .from('organizations')
-        .insert({
-          owner_user_id: userId,
-          name: formData.companyName,
-          gst_number: formData.gstNumber || null,
-          address: formData.address || null,
-          city: formData.city || null,
-          state: formData.state || null,
-          country: formData.country,
-          phone: formData.phone,
-        })
-        .select()
-        .single();
-      if (orgErr) throw orgErr;
-
-      // 3. Add the user as an owner member
-      const { error: memErr } = await supabase.from('org_members').insert({
-        org_id: org.id,
-        user_id: userId,
-        role: 'owner',
-        full_name: formData.fullName,
-      });
-      if (memErr) throw memErr;
-
-      await refreshOrganization();
-      navigate('/dashboard');
+      // Trial is provisioned + welcome/invite email has been sent. Land on
+      // the success screen so the user knows to check their inbox.
+      navigate(`/signup-success?email=${encodeURIComponent(formData.email)}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Signup failed');
     } finally {
       setSubmitting(false);
     }
   };
+
 
   return (
     <div className="min-h-screen relative overflow-hidden flex items-center justify-center px-4 py-8 login-bg login-bg-emerald">
@@ -112,11 +159,11 @@ export default function Signup() {
           <Link to="/" className="inline-flex items-center gap-3">
             <img
               src="https://public.readdy.ai/ai/img_res/30434500-ce14-4d0b-944f-490cb4702e27.png"
-              alt="TrackForce Logo"
+              alt="Rudrans Logo"
               className="h-10 w-10 object-contain"
             />
             <span className="text-white font-poppins font-bold text-xl">
-              TrackForce
+              Rudrans
             </span>
           </Link>
         </div>
@@ -198,70 +245,60 @@ export default function Signup() {
 
                 <div>
                   <label className="block text-sm text-gray-400 mb-1.5">
-                    Email Address
+                    Email Address {emailVerified && <span className="text-emerald-400 text-xs ml-1">✓ verified</span>}
                   </label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center text-gray-500">
-                      <i className="ri-mail-line" />
-                    </span>
-                    <input
-                      type="email"
-                      name="email"
-                      value={formData.email}
-                      onChange={handleChange}
-                      placeholder="admin@company.com"
-                      required
-                      className="w-full bg-dark-900 border border-dark-700 rounded-lg pl-10 pr-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors"
-                    />
+                  <div className="flex gap-2">
+                    <div className="relative flex-1 min-w-0">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center text-gray-500">
+                        <i className="ri-mail-line" />
+                      </span>
+                      <input
+                        type="email"
+                        name="email"
+                        value={formData.email}
+                        onChange={(e) => { handleChange(e); setEmailVerified(false); setOtpSent(false); }}
+                        disabled={emailVerified}
+                        placeholder="admin@company.com"
+                        required
+                        className="w-full bg-dark-900 border border-dark-700 rounded-lg pl-10 pr-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 disabled:opacity-60 transition-colors"
+                      />
+                    </div>
+                    {!emailVerified && (
+                      <button
+                        type="button"
+                        onClick={sendOtp}
+                        disabled={otpSending || !formData.email.includes('@') || otpResendIn > 0}
+                        className="shrink-0 px-3 py-2 text-xs rounded-lg bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/30 disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {otpSending ? 'Sending…' : otpResendIn > 0 ? `Resend ${otpResendIn}s` : otpSent ? 'Resend' : 'Send OTP'}
+                      </button>
+                    )}
                   </div>
-                </div>
-
-                <div>
-                  <label className="block text-sm text-gray-400 mb-1.5">
-                    Password
-                  </label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center text-gray-500">
-                      <i className="ri-lock-line" />
-                    </span>
-                    <input
-                      type={showPassword ? 'text' : 'password'}
-                      name="password"
-                      value={formData.password}
-                      onChange={handleChange}
-                      placeholder="Min 8 characters"
-                      required
-                      minLength={8}
-                      className="w-full bg-dark-900 border border-dark-700 rounded-lg pl-10 pr-10 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center text-gray-500 hover:text-gray-400"
-                    >
-                      <i className={showPassword ? 'ri-eye-off-line' : 'ri-eye-line'} />
-                    </button>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-sm text-gray-400 mb-1.5">
-                    Confirm Password
-                  </label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center text-gray-500">
-                      <i className="ri-lock-line" />
-                    </span>
-                    <input
-                      type="password"
-                      name="confirmPassword"
-                      value={formData.confirmPassword}
-                      onChange={handleChange}
-                      placeholder="Repeat password"
-                      required
-                      className="w-full bg-dark-900 border border-dark-700 rounded-lg pl-10 pr-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors"
-                    />
-                  </div>
+                  {otpSent && !emailVerified && (
+                    <div className="mt-2 flex gap-2">
+                      <input
+                        inputMode="numeric"
+                        maxLength={6}
+                        value={otp}
+                        onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                        placeholder="Enter 6-digit code"
+                        className="flex-1 min-w-0 bg-dark-900 border border-dark-700 rounded-lg px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 tracking-widest"
+                      />
+                      <button
+                        type="button"
+                        onClick={verifyOtp}
+                        disabled={otpVerifying || otp.length !== 6}
+                        className="shrink-0 px-4 py-2 text-xs rounded-lg bg-emerald-500 text-dark-950 hover:bg-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed font-medium"
+                      >
+                        {otpVerifying ? 'Verifying…' : 'Verify'}
+                      </button>
+                    </div>
+                  )}
+                  {otpMsg && (
+                    <p className={`mt-2 text-xs px-2.5 py-1.5 rounded-md border ${otpMsg.kind === 'ok' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' : 'bg-rose-500/10 border-rose-500/30 text-rose-300'}`}>
+                      {otpMsg.text}
+                    </p>
+                  )}
                 </div>
 
                 <div className="flex items-start gap-2">
@@ -320,9 +357,7 @@ export default function Signup() {
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm text-gray-400 mb-1.5">
-                      Phone Number
-                    </label>
+                    <label className="block text-sm text-gray-400 mb-1.5">Phone Number</label>
                     <div className="relative">
                       <span className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center text-gray-500">
                         <i className="ri-phone-line" />
@@ -417,10 +452,11 @@ export default function Signup() {
 
             <button
               type="submit"
-              disabled={submitting}
+              disabled={submitting || (step === 1 && !emailVerified)}
               className="w-full bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60 disabled:cursor-not-allowed text-white py-2.5 rounded-lg font-medium transition-all duration-200"
+              title={step === 1 && !emailVerified ? 'Verify your email with the OTP first' : undefined}
             >
-              {submitting ? 'Creating account…' : step === 1 ? 'Continue' : 'Start 14-Day Free Trial'}
+              {submitting ? 'Creating trial…' : step === 1 ? 'Continue' : 'Start 14-Day Trial'}
             </button>
           </form>
 
@@ -435,7 +471,7 @@ export default function Signup() {
 
         {/* Footer */}
         <p className="text-xs text-gray-600 text-center mt-6">
-          &copy; 2025 TrackForce. All rights reserved.
+          &copy; 2025 Rudrans. All rights reserved.
         </p>
       </div>
     </div>

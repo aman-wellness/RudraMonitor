@@ -32,7 +32,7 @@ export default function AdminPortalPage() {
   const [inviteBusy, setInviteBusy] = useState(false);
 
   // If the org is partner-routed, fetch the partner's billing details so we show
-  // them (not TrackForce) as the "billed by" entity in the customer's portal.
+  // them (not Rudrans) as the "billed by" entity in the customer's portal.
   const [billingEntity, setBillingEntity] = useState<null | {
     name: string; gst_number: string | null; pan_number: string | null;
     address: string | null; city: string | null; state: string | null;
@@ -44,6 +44,39 @@ export default function AdminPortalPage() {
     id: string; invoice_number: string; total_inr: number; status: string;
     invoice_date: string; bill_from: string;
   }>>([]);
+
+  // Real plans (from DB) + the customer's currently-active plan id (from their license).
+  const [plans, setPlans] = useState<Array<{
+    id: string; code: string; name: string; description: string | null;
+    seat_count: number; price_inr: number; price_usd: number | null;
+    billing_cycle: 'monthly' | 'yearly';
+    features_included: string[];
+  }>>([]);
+  const [currentPlanId, setCurrentPlanId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!organization) return;
+    (async () => {
+      // The 3 active plans visible to customers — same source admin/partner use.
+      const { data } = await supabase
+        .from('plans')
+        .select('id, code, name, description, seat_count, price_inr, price_usd, billing_cycle, features_included')
+        .eq('is_active', true)
+        .order('price_inr', { ascending: true });
+      setPlans((data as never) ?? []);
+
+      // Customer's active license → current plan.
+      const { data: lic } = await supabase
+        .from('licenses')
+        .select('plan_id')
+        .eq('organization_id', organization.id)
+        .eq('status', 'active')
+        .order('issued_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      setCurrentPlanId((lic as { plan_id?: string } | null)?.plan_id ?? null);
+    })();
+  }, [organization]);
   useEffect(() => {
     if (!organization) return;
     (async () => {
@@ -57,19 +90,19 @@ export default function AdminPortalPage() {
           setBillingEntity({ ...(data as never), is_partner: true });
         }
       } else {
-        // Direct customer — billed by TrackForce. These are the SaaS vendor's own details
+        // Direct customer — billed by Rudrans. These are the SaaS vendor's own details
         // (could be moved to an `app_settings` table later for editability).
         setBillingEntity({
           is_partner: false,
-          name: 'TrackForce Technologies Pvt Ltd',
+          name: 'Rudrans Technologies Pvt Ltd',
           gst_number: null, pan_number: null,
           address: 'Floor 4, Tower B, iThum Business Park',
           city: 'Noida', state: 'Uttar Pradesh', postal_code: '201309', country: 'IN',
-          contact_email: 'billing@trackforce.io', phone: null,
+          contact_email: 'billing@rudrans.com', phone: null,
         });
       }
       // Real invoices, partner-routed orgs only see the bill_from='partner' invoices
-      // (the wholesale TF→partner leg is hidden — that's between TrackForce and the partner).
+      // (the wholesale TF→partner leg is hidden — that's between Rudrans and the partner).
       const { data: invs } = await supabase
         .from('invoices')
         .select('id, invoice_number, total_inr, status, invoice_date, bill_from')
@@ -430,8 +463,13 @@ export default function AdminPortalPage() {
               <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-4 mb-4">
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="text-sm font-bold text-white capitalize">{organization?.subscription_status ?? 'trial'} Plan</h4>
+                  {/* During the trial, the badge reflects the trial length (14 days)
+                      rather than the underlying billing cycle — billing only kicks
+                      in once a paid renewal is recorded. */}
                   <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 text-[10px] font-semibold capitalize">
-                    {organization?.subscription_type ?? 'monthly'}
+                    {organization?.subscription_status === 'trial'
+                      ? '14-Day Trial'
+                      : organization?.subscription_type ?? 'monthly'}
                   </span>
                 </div>
                 <p className="text-xs text-gray-400">{organization?.license_count ?? 0} licenses</p>
@@ -441,11 +479,15 @@ export default function AdminPortalPage() {
                   const startDate = organization ? new Date(organization.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: '2-digit' }) : '—';
                   const trialEnd = organization ? new Date(organization.trial_ends_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: '2-digit' }) : '—';
                   const status = organization?.subscription_status ?? 'trial';
+                  const isTrial = status === 'trial';
                   return [
                     { label: 'Started On', value: startDate },
-                    { label: status === 'trial' ? 'Trial Ends' : 'Renews On', value: trialEnd },
+                    { label: isTrial ? 'Trial Ends' : 'Renews On', value: trialEnd },
                     { label: 'Status', value: status.charAt(0).toUpperCase() + status.slice(1) },
-                    { label: 'Billing Cycle', value: organization?.subscription_type ?? '—' },
+                    {
+                      label: 'Billing Cycle',
+                      value: isTrial ? 'Free trial (no billing)' : (organization?.subscription_type ?? '—'),
+                    },
                   ];
                 })().map((item) => (
                   <div key={item.label} className="flex items-center justify-between">
@@ -456,7 +498,7 @@ export default function AdminPortalPage() {
               </div>
             </div>
 
-            {/* Billed By — partner if partner-routed, TrackForce otherwise */}
+            {/* Billed By — partner if partner-routed, Rudrans otherwise */}
             {billingEntity && (
               <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
                 <div className="flex items-center justify-between mb-4">
@@ -465,7 +507,7 @@ export default function AdminPortalPage() {
                     <h3 className="text-sm font-semibold text-white">Billed By</h3>
                   </div>
                   <span className={`px-2 py-0.5 text-[10px] rounded-md border ${billingEntity.is_partner ? 'bg-violet-500/15 text-violet-400 border-violet-500/30' : 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30'}`}>
-                    {billingEntity.is_partner ? 'Channel Partner' : 'Direct (TrackForce)'}
+                    {billingEntity.is_partner ? 'Channel Partner' : 'Direct (Rudrans)'}
                   </span>
                 </div>
                 <div className="space-y-2 text-xs">
@@ -535,39 +577,74 @@ export default function AdminPortalPage() {
         {activeTab === 'subscription' && (
           <div className="space-y-4">
             <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
-              <h3 className="text-sm font-semibold text-white mb-4">Available Plans</h3>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {[
-                  { name: 'Starter', price: '₹ 2,999', period: '/month', agents: '5 agents', features: ['Basic monitoring', 'Email alerts', '7-day data retention'], current: false },
-                  { name: 'Business', price: '₹ 9,999', period: '/month', agents: '50 agents', features: ['AI insights', 'Video recording', '30-day retention', 'Priority support'], current: true },
-                  { name: 'Enterprise', price: 'Custom', period: '', agents: 'Unlimited', features: ['Custom integrations', 'On-premise option', '1-year retention', 'Dedicated manager'], current: false },
-                ].map((plan) => (
-                  <div key={plan.name} className={`rounded-xl border p-5 ${plan.current ? 'bg-emerald-500/5 border-emerald-500/25' : 'bg-dark-900 border-dark-700'}`}>
-                    <div className="flex items-center justify-between mb-3">
-                      <h4 className="text-sm font-bold text-white">{plan.name}</h4>
-                      {plan.current && <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-semibold">Current</span>}
-                    </div>
-                    <p className="text-lg font-bold text-white mb-1">{plan.price}<span className="text-xs text-gray-500 font-normal">{plan.period}</span></p>
-                    <p className="text-xs text-gray-500 mb-3">{plan.agents}</p>
-                    <ul className="space-y-1.5 mb-4">
-                      {plan.features.map((f) => (
-                        <li key={f} className="flex items-center gap-1.5 text-xs text-gray-400">
-                          <span className="w-3 h-3 flex items-center justify-center text-emerald-400"><i className="ri-check-line text-xs" /></span>
-                          {f}
-                        </li>
-                      ))}
-                    </ul>
-                    <button
-                      disabled={plan.current}
-                      className={`w-full py-2 rounded-lg text-xs font-medium transition-colors ${
-                        plan.current ? 'bg-dark-700 text-gray-500 cursor-not-allowed' : 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/25'
-                      }`}
-                    >
-                      {plan.current ? 'Active Plan' : 'Upgrade'}
-                    </button>
-                  </div>
-                ))}
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-semibold text-white">Available Plans</h3>
+                {organization?.subscription_status === 'trial' && (
+                  <span className="px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-300 text-[10px] font-semibold border border-blue-500/30">
+                    14-Day Trial · all features unlocked
+                  </span>
+                )}
               </div>
+
+              {plans.length === 0 ? (
+                <p className="text-xs text-gray-500">No plans available right now. Contact support to set up your subscription.</p>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {plans.map((p) => {
+                    const isCurrent = p.id === currentPlanId;
+                    const priceLabel = p.code === 'scale-100' || /enterprise/i.test(p.name)
+                      ? 'Custom'
+                      : `₹ ${Number(p.price_inr).toLocaleString('en-IN')}`;
+                    const cycleLabel = p.code === 'scale-100' || /enterprise/i.test(p.name)
+                      ? ''
+                      : `/${p.billing_cycle === 'yearly' ? 'year' : 'month'}`;
+                    const featureLabels: Record<string, string> = {
+                      productivity_reports: 'Productivity reports',
+                      screenshots: 'Screenshots',
+                      video_recording: 'Video recording',
+                      ai_alerts: 'Smart AI alerts',
+                      dlp: 'DLP (USB / Email)',
+                    };
+                    return (
+                      <div key={p.id} className={`rounded-xl border p-5 ${isCurrent ? 'bg-emerald-500/5 border-emerald-500/25' : 'bg-dark-900 border-dark-700'}`}>
+                        <div className="flex items-center justify-between mb-3">
+                          <h4 className="text-sm font-bold text-white">{p.name}</h4>
+                          {isCurrent && <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-semibold">Current</span>}
+                        </div>
+                        <p className="text-lg font-bold text-white mb-1">{priceLabel}
+                          <span className="text-xs text-gray-500 font-normal">{cycleLabel}</span>
+                        </p>
+                        <p className="text-xs text-gray-500 mb-3">{p.seat_count} agents</p>
+                        <ul className="space-y-1.5 mb-4 min-h-[6rem]">
+                          {(p.features_included ?? []).map((key) => (
+                            <li key={key} className="flex items-center gap-1.5 text-xs text-gray-400">
+                              <span className="w-3 h-3 flex items-center justify-center text-emerald-400"><i className="ri-check-line text-xs" /></span>
+                              {featureLabels[key] ?? key}
+                            </li>
+                          ))}
+                        </ul>
+                        <button
+                          disabled={isCurrent}
+                          onClick={() => {
+                            window.location.href = `mailto:itsupport@wellnessextract.com?subject=Upgrade%20to%20${encodeURIComponent(p.name)}%20—%20${encodeURIComponent(organization?.name ?? '')}`;
+                          }}
+                          className={`w-full py-2 rounded-lg text-xs font-medium transition-colors ${
+                            isCurrent
+                              ? 'bg-emerald-500/10 text-emerald-300 cursor-default border border-emerald-500/25'
+                              : 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/25'
+                          }`}
+                        >
+                          {isCurrent ? 'Active Plan' : (/enterprise/i.test(p.name) ? 'Contact Sales' : 'Upgrade')}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              <p className="text-[11px] text-gray-500 mt-4">
+                Upgrades require Rudrans admin action. Click <strong>Upgrade</strong> to email us; we&apos;ll switch your plan within one business day.
+              </p>
             </div>
           </div>
         )}

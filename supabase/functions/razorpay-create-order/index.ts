@@ -7,17 +7,22 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.4";
 import { corsHeaders } from "../_shared/cors.ts";
+import { getIntegrations } from "../_shared/integrations.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
-const RZP_KEY_ID = Deno.env.get("RAZORPAY_KEY_ID") ?? "";
-const RZP_KEY_SECRET = Deno.env.get("RAZORPAY_KEY_SECRET") ?? "";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
-  if (!RZP_KEY_ID || !RZP_KEY_SECRET) return json({ error: "razorpay not configured" }, 500);
+
+  // Live keys from `integrations` table (admin-editable, no redeploy on rotation).
+  const { RAZORPAY_KEY_ID: RZP_KEY_ID = "", RAZORPAY_KEY_SECRET: RZP_KEY_SECRET = "" } =
+    await getIntegrations(["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET"]);
+  if (!RZP_KEY_ID || !RZP_KEY_SECRET) {
+    return json({ error: "Razorpay not configured. Set keys in /admin/integrations." }, 500);
+  }
 
   const jwt = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
   if (!jwt) return json({ error: "missing user token" }, 401);

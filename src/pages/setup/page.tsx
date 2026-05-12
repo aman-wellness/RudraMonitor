@@ -1,6 +1,6 @@
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import OSCard from './components/OSCard';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useAgents } from '@/lib/dataHooks';
 
@@ -8,9 +8,12 @@ const RELEASES_BASE = 'https://ttjazaxjhzvrzhptrpmd.supabase.co/storage/v1/objec
 // Builds are produced by .github/workflows/build-agent.yml on every workflow_dispatch / tag push.
 // File names embed the ref name (`main` for dev builds, `v0.1.0` for release tags).
 const BUILD_REF = 'main';
-const AGENT_VERSION = '0.1.0';
+// Fallback if the manifest is unreachable. Real version is fetched at runtime
+// from latest.json so the Setup page always reflects the most recent release
+// without a code change.
+const FALLBACK_VERSION = '0.1.2';
 
-const osData = [
+const buildOsData = (version: string) => [
   {
     os: 'macOS',
     icon: 'ri-apple-line',
@@ -22,17 +25,17 @@ const osData = [
     downloads: [
       {
         label: 'Apple Silicon (.pkg)',
-        filename: `TrackForce-Agent-macOS-arm64-${BUILD_REF}.pkg`,
-        url: `${RELEASES_BASE}/TrackForce-Agent-macOS-arm64-${BUILD_REF}.pkg`,
+        filename: `Rudrans-Agent-macOS-arm64-${BUILD_REF}.pkg`,
+        url: `${RELEASES_BASE}/Rudrans-Agent-macOS-arm64-${BUILD_REF}.pkg`,
         size: '~4 MB',
-        version: AGENT_VERSION,
+        version,
       },
       {
         label: 'Intel (.pkg)',
-        filename: `TrackForce-Agent-macOS-x64-${BUILD_REF}.pkg`,
-        url: `${RELEASES_BASE}/TrackForce-Agent-macOS-x64-${BUILD_REF}.pkg`,
+        filename: `Rudrans-Agent-macOS-x64-${BUILD_REF}.pkg`,
+        url: `${RELEASES_BASE}/Rudrans-Agent-macOS-x64-${BUILD_REF}.pkg`,
         size: '~4 MB',
-        version: AGENT_VERSION,
+        version,
       },
     ],
     steps: [
@@ -52,11 +55,11 @@ const osData = [
     arch: 'x64',
     downloads: [
       {
-        label: 'TrackForce Agent (.msi)',
-        filename: `TrackForce-Agent-Windows-${BUILD_REF}.msi`,
-        url: `${RELEASES_BASE}/TrackForce-Agent-Windows-${BUILD_REF}.msi`,
+        label: 'Rudrans Agent (.msi)',
+        filename: `Rudrans-Agent-Windows-${BUILD_REF}.msi`,
+        url: `${RELEASES_BASE}/Rudrans-Agent-Windows-${BUILD_REF}.msi`,
         size: '~12 MB',
-        version: AGENT_VERSION,
+        version,
       },
     ],
     steps: [
@@ -77,15 +80,15 @@ const osData = [
     downloads: [
       {
         label: 'Debian Package (.deb)',
-        filename: `trackforce-agent_${BUILD_REF}_amd64.deb`,
-        url: `${RELEASES_BASE}/trackforce-agent_${BUILD_REF}_amd64.deb`,
+        filename: `rudrans-agent_${BUILD_REF}_amd64.deb`,
+        url: `${RELEASES_BASE}/rudrans-agent_${BUILD_REF}_amd64.deb`,
         size: '~5 MB',
-        version: AGENT_VERSION,
+        version,
       },
     ],
     steps: [
       'Download the .deb package',
-      'Run `sudo dpkg -i trackforce-agent_*.deb` (or double-click on GNOME)',
+      'Run `sudo dpkg -i rudrans-agent_*.deb` (or double-click on GNOME)',
       'Launch from app menu — enrollment dialog appears once',
       'Agent runs in the background; relaunches on every login',
     ],
@@ -102,6 +105,21 @@ export default function SetupPage() {
   const [creating, setCreating] = useState(false);
   const { organization } = useAuth();
   const { agents, createAgent } = useAgents();
+
+  // Pull the live release version from the same latest.json the desktop agents
+  // poll for auto-updates. This way bumping the version in tauri.conf.json (+
+  // shipping a new build) is the only step admins need — the dashboard's
+  // "Latest Version" label and per-card version chips update automatically.
+  const [agentVersion, setAgentVersion] = useState(FALLBACK_VERSION);
+  useEffect(() => {
+    let alive = true;
+    fetch(`${RELEASES_BASE}/latest.json`, { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((m) => { if (alive && m?.version) setAgentVersion(String(m.version)); })
+      .catch(() => { /* keep fallback */ });
+    return () => { alive = false; };
+  }, []);
+  const osData = buildOsData(agentVersion);
 
   const licenseKey = organization?.license_key ?? '—';
   const orgName = organization?.name ?? '—';
@@ -175,50 +193,50 @@ export default function SetupPage() {
       filename = `${baseFile}.command`;
       content = `#!/bin/bash
 set -e
-APP_SUPPORT="$HOME/Library/Application Support/TrackForceAgent"
+APP_SUPPORT="$HOME/Library/Application Support/RudransAgent"
 mkdir -p "$APP_SUPPORT"
 cat > "$APP_SUPPORT/prefill.json" <<JSON
 {"agent_name":"${safeName}"}
 JSON
 PKG="$(/usr/bin/uname -m | grep -q arm64 && echo arm64 || echo x64)"
-URL="${RELEASES_BASE}/TrackForce-Agent-macOS-\${PKG}-${BUILD_REF}.pkg"
-echo "Downloading TrackForce Agent for $PKG..."
-curl -fL "$URL" -o /tmp/trackforce.pkg
+URL="${RELEASES_BASE}/Rudrans-Agent-macOS-\${PKG}-${BUILD_REF}.pkg"
+echo "Downloading Rudrans Agent for $PKG..."
+curl -fL "$URL" -o /tmp/rudrans.pkg
 echo "Installing (admin password required)..."
-sudo installer -pkg /tmp/trackforce.pkg -target /
-echo "Done. Launch TrackForce Agent from /Applications and enter your License Key."
+sudo installer -pkg /tmp/rudrans.pkg -target /
+echo "Done. Launch Rudrans Agent from /Applications and enter your License Key."
 `;
     } else if (os === 'Windows') {
       filename = `${baseFile}.bat`;
       mime = 'application/octet-stream';
       content = `@echo off
 setlocal
-set "APP_DATA=%APPDATA%\\TrackForceAgent"
+set "APP_DATA=%APPDATA%\\RudransAgent"
 if not exist "%APP_DATA%" mkdir "%APP_DATA%"
 > "%APP_DATA%\\prefill.json" echo {"agent_name":"${safeName}"}
-set "URL=${RELEASES_BASE}/TrackForce-Agent-Windows-${BUILD_REF}.msi"
-echo Downloading TrackForce Agent...
-powershell -Command "Invoke-WebRequest -Uri '%URL%' -OutFile '%TEMP%\\trackforce.msi'"
+set "URL=${RELEASES_BASE}/Rudrans-Agent-Windows-${BUILD_REF}.msi"
+echo Downloading Rudrans Agent...
+powershell -Command "Invoke-WebRequest -Uri '%URL%' -OutFile '%TEMP%\\rudrans.msi'"
 echo Installing (UAC prompt may appear)...
-msiexec /i "%TEMP%\\trackforce.msi" /qb
-echo Done. Launch TrackForce Agent and enter your License Key.
+msiexec /i "%TEMP%\\rudrans.msi" /qb
+echo Done. Launch Rudrans Agent and enter your License Key.
 pause
 `;
     } else {
       filename = `${baseFile}.sh`;
       content = `#!/bin/bash
 set -e
-APP_SUPPORT="$HOME/.local/share/TrackForceAgent"
+APP_SUPPORT="$HOME/.local/share/RudransAgent"
 mkdir -p "$APP_SUPPORT"
 cat > "$APP_SUPPORT/prefill.json" <<JSON
 {"agent_name":"${safeName}"}
 JSON
-URL="${RELEASES_BASE}/trackforce-agent_${BUILD_REF}_amd64.deb"
-echo "Downloading TrackForce Agent..."
-curl -fL "$URL" -o /tmp/trackforce.deb
+URL="${RELEASES_BASE}/rudrans-agent_${BUILD_REF}_amd64.deb"
+echo "Downloading Rudrans Agent..."
+curl -fL "$URL" -o /tmp/rudrans.deb
 echo "Installing (sudo password required)..."
-sudo dpkg -i /tmp/trackforce.deb || sudo apt-get install -f -y
-echo "Done. Launch TrackForce Agent and enter your License Key."
+sudo dpkg -i /tmp/rudrans.deb || sudo apt-get install -f -y
+echo "Done. Launch Rudrans Agent and enter your License Key."
 `;
     }
 
@@ -249,12 +267,12 @@ echo "Done. Launch TrackForce Agent and enter your License Key."
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div>
             <h1 className="text-xl font-poppins font-bold text-white mb-1">Agent Setup</h1>
-            <p className="text-sm text-gray-500">Deploy TrackForce agents across all your employee devices</p>
+            <p className="text-sm text-gray-500">Deploy Rudrans agents across all your employee devices</p>
           </div>
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span className="text-xs text-emerald-400 font-medium">Latest Version: v2.4.1</span>
+              <span className="text-xs text-emerald-400 font-medium">Latest Version: v{agentVersion}</span>
             </span>
             <button
               onClick={() => setAddOpen(true)}

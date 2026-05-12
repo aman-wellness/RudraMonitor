@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { supabase } from '@/lib/supabase';
 import LoginLayout, { loginInputClass } from '@/components/feature/LoginLayout';
+import ForgotPasswordLink from '@/components/feature/ForgotPasswordLink';
 
 /**
  * Internal-only super-admin login. Reachable only by typing the URL directly.
@@ -50,9 +51,9 @@ export default function SuperLogin() {
       brandIcon="ri-shield-keyhole-line"
       illustrationUrl="https://illustrations.popsy.co/violet/security.svg"
       illustrationCaption="Internal access only"
-      illustrationSubtitle="This portal is restricted to TrackForce engineers and support staff. All actions are logged to the audit trail."
+      illustrationSubtitle="This portal is restricted to Rudrans engineers and support staff. All actions are logged to the audit trail."
       title="Super Admin"
-      subtitle="Internal access — sign in with your TrackForce admin credentials."
+      subtitle="Internal access — sign in with your Rudrans admin credentials."
     >
       {error && (
         <div className="mb-5 px-3 py-2 rounded-lg border border-red-200 bg-red-50 text-red-600 text-xs">{error}</div>
@@ -61,7 +62,7 @@ export default function SuperLogin() {
         <div>
           <label className="block text-xs text-slate-500 uppercase tracking-wider mb-1.5">Email</label>
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email"
-            placeholder="admin@trackforce.io"
+            placeholder="admin@rudrans.com"
             className={`${loginInputClass} focus:border-purple-500 focus:ring-purple-500`} />
         </div>
         <div>
@@ -76,6 +77,7 @@ export default function SuperLogin() {
             </button>
           </div>
         </div>
+        <ForgotPasswordLink email={email} accent="purple" />
         <button type="submit" disabled={submitting}
           className="w-full bg-purple-500 hover:bg-purple-600 disabled:opacity-60 text-white py-3 rounded-lg font-medium transition-all shadow-lg shadow-purple-500/30 mt-2">
           {submitting ? 'Signing in…' : 'Sign In'}

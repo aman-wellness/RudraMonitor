@@ -78,7 +78,7 @@ export default function App() {
     <div className="app">
       <div className="brand">
         <span className="brand-dot" />
-        TrackForce Agent
+        Rudrans Agent
       </div>
 
       {error && <div className="error">{error}</div>}

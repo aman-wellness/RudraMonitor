@@ -1,5 +1,5 @@
 # install-service-windows.ps1
-# Registers TrackForce Agent as a Windows service that auto-restarts on failure.
+# Registers Rudrans Agent as a Windows service that auto-restarts on failure.
 # Run from an elevated PowerShell. Idempotent — safe to re-run.
 #
 # Usage (after agent .msi install):
@@ -11,12 +11,12 @@
 [CmdletBinding()]
 param([switch]$Uninstall)
 
-$ServiceName = "TrackForceAgent"
-$DisplayName = "TrackForce Workforce Agent"
+$ServiceName = "RudransAgent"
+$DisplayName = "Rudrans Workforce Agent"
 $Description = "Background workforce productivity monitoring agent. Installed by IT admin per company policy."
 
 # Default install paths (update if your MSI installs elsewhere)
-$ExePath = Join-Path ${env:ProgramFiles} "TrackForce Agent\TrackForce Agent.exe"
+$ExePath = Join-Path ${env:ProgramFiles} "Rudrans Agent\Rudrans Agent.exe"
 
 if ($Uninstall) {
     Write-Host "Stopping and removing service $ServiceName..."
@@ -49,7 +49,7 @@ Write-Host "Starting service..."
 sc.exe start $ServiceName | Out-Null
 
 Write-Host ""
-Write-Host "✅ TrackForce Agent service installed."
+Write-Host "✅ Rudrans Agent service installed."
 Write-Host "   Restart-on-kill is active (5-second delay between attempts)."
 Write-Host "   In-process guardian watches the main process for instant respawn."
 Write-Host ""

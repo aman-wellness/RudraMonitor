@@ -82,7 +82,7 @@ export default function HeroSection() {
               <div className="relative rounded-xl overflow-hidden border border-dark-700 shadow-2xl">
                 <img
                   src="https://readdy.ai/api/search-image?query=modern%20dark%20dashboard%20UI%20with%20employee%20monitoring%20charts%2C%20activity%20graphs%2C%20screenshots%20grid%2C%20system%20health%20metrics%2C%20CPU%20RAM%20usage%20bars%2C%20green%20accent%20colors%2C%20dark%20charcoal%20background%2C%20clean%20minimal%20enterprise%20design%2C%20professional%20SaaS%20admin%20panel%2C%20real-time%20monitoring%20interface&width=900&height=550&seq=hero-dash-1&orientation=landscape"
-                  alt="TrackForce Dashboard Preview"
+                  alt="Rudrans Dashboard Preview"
                   className="w-full h-auto object-cover"
                 />
                 {/* Overlay gradient */}

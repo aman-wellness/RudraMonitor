@@ -12,6 +12,8 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [forgotBusy, setForgotBusy] = useState(false);
+  const [forgotMsg, setForgotMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -62,13 +64,13 @@ export default function Login() {
   return (
     <LoginLayout
       accent="indigo"
-      brandLabel="TrackForce"
+      brandLabel="Rudrans"
       brandIcon="ri-shield-check-line"
       illustrationUrl="https://illustrations.popsy.co/violet/work-from-home.svg"
       illustrationCaption="Welcome back"
       illustrationSubtitle="Sign in to manage your team's productivity, track agents, and review insights — all from one place."
       title="Sign In"
-      subtitle="Enter your credentials to access your TrackForce admin portal."
+      subtitle="Enter your credentials to access your Rudrans admin portal."
       footer={
         <p className="text-sm text-slate-500 text-center">
           Don&apos;t have an account?{' '}
@@ -104,8 +106,31 @@ export default function Login() {
               className="w-4 h-4 rounded border-slate-300 bg-white text-indigo-500 focus:ring-indigo-500 cursor-pointer" />
             <span className="text-xs text-slate-600">Remember me</span>
           </label>
-          <a href="#" className="text-xs text-indigo-600 hover:text-indigo-700 font-medium">Forgot Password</a>
+          <button
+            type="button"
+            disabled={forgotBusy}
+            onClick={async () => {
+              setForgotMsg(null);
+              const target = email.trim();
+              if (!target) { setForgotMsg({ kind: 'err', text: 'Enter your email above first.' }); return; }
+              setForgotBusy(true);
+              const { error: re } = await supabase.auth.resetPasswordForEmail(target, {
+                redirectTo: `${window.location.origin}/reset-password`,
+              });
+              setForgotBusy(false);
+              if (re) setForgotMsg({ kind: 'err', text: re.message });
+              else setForgotMsg({ kind: 'ok', text: `Reset link sent to ${target}.` });
+            }}
+            className="text-xs text-indigo-600 hover:text-indigo-700 font-medium disabled:opacity-50"
+          >
+            {forgotBusy ? 'Sending…' : 'Forgot Password'}
+          </button>
         </div>
+        {forgotMsg && (
+          <p className={`text-xs px-3 py-2 rounded-lg border ${forgotMsg.kind === 'ok' ? 'text-indigo-700 bg-indigo-50 border-indigo-200' : 'text-red-600 bg-red-50 border-red-200'}`}>
+            {forgotMsg.text}
+          </p>
+        )}
         <button type="submit" disabled={submitting}
           className="w-full bg-indigo-500 hover:bg-indigo-600 disabled:opacity-60 text-white py-3 rounded-lg font-medium transition-all shadow-lg shadow-indigo-500/30 mt-2">
           {submitting ? 'Signing in…' : 'Log In'}

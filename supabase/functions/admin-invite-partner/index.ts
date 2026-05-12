@@ -53,27 +53,77 @@ Deno.serve(async (req) => {
   if (!partnerId) return json({ error: "partner_id required" }, 400);
   if (!email || !email.includes("@")) return json({ error: "valid email required" }, 400);
 
-  // Upsert pending partner_members row so the trigger can link user_id later.
-  const { error: upsertErr } = await admin
+  // The unique index on partner_members is on (partner_id, lower(email)),
+  // which Supabase can't reference via ON CONFLICT. Find-then-upsert manually
+  // — idempotent, so repeated resends just refresh the row.
+  const { data: existing } = await admin
     .from("partner_members")
-    .upsert(
-      { partner_id: partnerId, email, role: "owner", full_name: fullName, user_id: null },
-      { onConflict: "partner_id,email" },
-    );
-  if (upsertErr) return json({ error: `pending row: ${upsertErr.message}` }, 500);
+    .select("id")
+    .eq("partner_id", partnerId)
+    .ilike("email", email)
+    .maybeSingle();
+  if (existing) {
+    const { error: updErr } = await admin
+      .from("partner_members")
+      .update({ role: "admin", full_name: fullName })
+      .eq("id", existing.id);
+    if (updErr) return json({ error: `pending row: ${updErr.message}` }, 500);
+  } else {
+    const { error: insErr } = await admin
+      .from("partner_members")
+      .insert({ partner_id: partnerId, email, role: "admin", full_name: fullName, user_id: null });
+    if (insErr) return json({ error: `pending row: ${insErr.message}` }, 500);
+  }
 
-  try {
-    await admin.auth.admin.inviteUserByEmail(email, {
-      data: fullName ? { full_name: fullName } : undefined,
+  // Two cases need different Supabase auth APIs:
+  //  - New email → inviteUserByEmail (creates the auth.users row + sends invite mail)
+  //  - Existing email → invite is a no-op silently, so fall back to a recovery
+  //    email which is what a "resend" actually means for someone who already
+  //    confirmed their account at some point.
+  const appUrl = Deno.env.get("APP_URL") ?? "http://localhost:3000";
+
+  // Detect if user already exists.
+  const { data: existingUser } = await admin.auth.admin.listUsers({
+    page: 1, perPage: 1,
+  }).then((r) => ({ data: r.data?.users?.find((u) => u.email?.toLowerCase() === email) }));
+
+  let mode: "invite" | "recovery" = "invite";
+  let lastErr: string | null = null;
+
+  if (existingUser) {
+    mode = "recovery";
+    const { error } = await admin.auth.admin.generateLink({
+      type: "recovery",
+      email,
+      options: { redirectTo: `${appUrl}/reset-password` },
     });
-  } catch (e) {
-    const msg = (e as Error).message ?? "";
-    if (!msg.toLowerCase().includes("already")) {
-      return json({ error: `invite failed: ${msg}` }, 500);
+    if (error) lastErr = error.message;
+  } else {
+    try {
+      await admin.auth.admin.inviteUserByEmail(email, {
+        data: { ...(fullName ? { full_name: fullName } : {}), invite_role: "partner" },
+        redirectTo: `${appUrl}/post-login`,
+      });
+    } catch (e) {
+      const msg = (e as Error).message ?? "";
+      // Race window: someone confirmed between listUsers and inviteUserByEmail.
+      // Fall through to recovery link in that case.
+      if (msg.toLowerCase().includes("already")) {
+        mode = "recovery";
+        const { error } = await admin.auth.admin.generateLink({
+          type: "recovery",
+          email,
+          options: { redirectTo: `${appUrl}/reset-password` },
+        });
+        if (error) lastErr = error.message;
+      } else {
+        lastErr = msg;
+      }
     }
   }
 
-  return json({ ok: true });
+  if (lastErr) return json({ error: `invite failed: ${lastErr}` }, 500);
+  return json({ ok: true, mode });
 });
 
 function json(body: unknown, status = 200) {

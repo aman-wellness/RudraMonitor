@@ -197,7 +197,7 @@ export default function ReportsPage() {
 
     const dateStr = new Date().toISOString().split('T')[0];
     const tabName = activeTab;
-    const filename = `TrackForce_${tabName}_report_${dateStr}`;
+    const filename = `Rudrans_${tabName}_report_${dateStr}`;
 
     switch (format) {
       case 'csv': {

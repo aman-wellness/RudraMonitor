@@ -76,6 +76,16 @@ Deno.serve(async (req) => {
   if (agentErr) return json({ error: agentErr.message }, 500);
   if (!agent) return json({ error: "invalid token" }, 401);
 
+  // Subscription gate — once trial expires (or org suspended/cancelled), the
+  // agent is silently rejected with 402. Authoritative check via
+  // is_subscription_active() so trial vs paid vs expired all flow through one
+  // place. Returns 402 (not 401) so the agent can distinguish "stopped paying"
+  // from "bad token" and surface a renewal hint to the user.
+  const { data: active } = await admin.rpc("is_subscription_active", { p_org_id: agent.org_id });
+  if (!active) {
+    return json({ error: "subscription_inactive", hint: "trial_expired_or_unpaid" }, 402);
+  }
+
   const table = ALLOWED_TABLES[kind];
   const fields = ALLOWED_FIELDS[kind];
   const rows = payload.map((p) => {
