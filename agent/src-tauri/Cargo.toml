@@ -1,12 +1,12 @@
 [package]
-name = "trackforce-agent"
-version = "0.1.2"
-description = "TrackForce employee monitoring agent"
+name = "rudrans-agent"
+version = "0.2.0"
+description = "Rudrans employee monitoring agent"
 edition = "2021"
 rust-version = "1.77"
 
 [lib]
-name = "trackforce_agent_lib"
+name = "rudrans_agent_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

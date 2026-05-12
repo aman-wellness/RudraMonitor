@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "TrackForce Agent",
-  "version": "0.1.2",
-  "identifier": "com.trackforce.agent",
+  "productName": "Rudrans Agent",
+  "version": "0.2.0",
+  "identifier": "com.rudrans.agent",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "TrackForce Agent",
+        "title": "Rudrans Agent",
         "width": 480,
         "height": 640,
         "resizable": false,
@@ -41,14 +41,14 @@
     ],
     "resources": ["resources/uninstall.command"],
     "category": "Productivity",
-    "shortDescription": "TrackForce employee monitoring agent",
-    "longDescription": "Background agent that reports system metrics, active applications, and screenshots to TrackForce."
+    "shortDescription": "Rudrans employee monitoring agent",
+    "longDescription": "Background agent that reports system metrics, active applications, and screenshots to Rudrans."
   },
   "plugins": {
     "updater": {
       "active": true,
       "endpoints": [
-        "https://ttjazaxjhzvrzhptrpmd.supabase.co/storage/v1/object/public/releases/latest.json"
+        "https://api.rudrans.com/storage/v1/object/public/releases/latest.json"
       ],
       "dialog": false,
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRBNjg5MEM0MDQ4MTBDMzgKUldRNERJRUV4SkJvU2d1b0JtSHE1bFAxNEZoNElIYVVBRWRNZTJrRFVpbUpBM0ZwejdFNHhaTmUK"

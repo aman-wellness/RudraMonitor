@@ -29,6 +29,7 @@ on:
       - 'v*'
 
 env:
+  SUPABASE_BASE_URL: ${{ secrets.SUPABASE_BASE_URL || 'https://api.rudrans.com' }}
   SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF || 'ttjazaxjhzvrzhptrpmd' }}
 
 jobs:
@@ -183,17 +184,12 @@ jobs:
 
       - name: Upload updater bundle to Supabase
         if: steps.updater.outputs.bundle != ''
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-        shell: bash
+                shell: bash
         run: |
-          SR_KEY=$(curl -fsS \
-            -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
-            "https://api.supabase.com/v1/projects/${{ env.SUPABASE_PROJECT_REF }}/api-keys?reveal=true" \
-            | python3 -c "import json,sys; d=json.load(sys.stdin); print(next(k['api_key'] for k in d if k['name']=='service_role'))")
+          SR_KEY="${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
           for f in "${{ steps.updater.outputs.bundle }}" "${{ steps.updater.outputs.sig }}"; do
             REMOTE=$(basename "$f")
-            URL="https://${{ env.SUPABASE_PROJECT_REF }}.supabase.co/storage/v1/object/releases/${REMOTE}"
+            URL="${{ env.SUPABASE_BASE_URL }}/storage/v1/object/releases/${REMOTE}"
             HTTP=$(curl -s -o /tmp/r.json -w "%{http_code}" \
               -X POST "$URL" \
               -H "Authorization: Bearer $SR_KEY" \
@@ -217,7 +213,7 @@ jobs:
         run: |
           NAME="${{ steps.updater.outputs.name }}"
           SIG=$(cat "${{ steps.updater.outputs.sig }}")
-          URL="https://${{ env.SUPABASE_PROJECT_REF }}.supabase.co/storage/v1/object/public/releases/${NAME}"
+          URL="${{ env.SUPABASE_BASE_URL }}/storage/v1/object/public/releases/${NAME}"
           mkdir -p meta
           cat > "meta/${{ matrix.target }}.json" <<EOF
           { "target": "${{ matrix.target }}", "url": "$URL", "signature": $(jq -Rs '.' <<<"$SIG") }
@@ -311,9 +307,7 @@ jobs:
           echo "path=agent/dist/${{ matrix.remote_name }}" >> $GITHUB_OUTPUT
 
       - name: Upload to Supabase Storage
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-        shell: bash
+                shell: bash
         run: |
           if [ "${{ matrix.packager }}" = "pkg" ]; then
             ARTIFACT="agent/dist-mac/${{ matrix.remote_name }}"
@@ -321,11 +315,8 @@ jobs:
             ARTIFACT="agent/dist/${{ matrix.remote_name }}"
           fi
           # Resolve service_role key
-          SR_KEY=$(curl -fsS \
-            -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
-            "https://api.supabase.com/v1/projects/${{ env.SUPABASE_PROJECT_REF }}/api-keys?reveal=true" \
-            | python3 -c "import json,sys; d=json.load(sys.stdin); print(next(k['api_key'] for k in d if k['name']=='service_role'))")
-          UPLOAD_URL="https://${{ env.SUPABASE_PROJECT_REF }}.supabase.co/storage/v1/object/releases/${{ matrix.remote_name }}"
+          SR_KEY="${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
+          UPLOAD_URL="${{ env.SUPABASE_BASE_URL }}/storage/v1/object/releases/${{ matrix.remote_name }}"
           # Upsert: PUT replaces if exists.
           HTTP=$(curl -s -o /tmp/r.json -w "%{http_code}" \
             -X POST "$UPLOAD_URL" \
@@ -342,7 +333,7 @@ jobs:
           if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
             echo "upload failed: HTTP $HTTP"; cat /tmp/r.json; exit 1
           fi
-          echo "Uploaded → https://${{ env.SUPABASE_PROJECT_REF }}.supabase.co/storage/v1/object/public/releases/${{ matrix.remote_name }}"
+          echo "Uploaded → ${{ env.SUPABASE_BASE_URL }}/storage/v1/object/public/releases/${{ matrix.remote_name }}"
 
       - name: Upload artifact to GitHub run (debug)
         uses: actions/upload-artifact@v4
@@ -407,11 +398,8 @@ jobs:
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         run: |
-          SR_KEY=$(curl -fsS \
-            -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
-            "https://api.supabase.com/v1/projects/${{ env.SUPABASE_PROJECT_REF }}/api-keys?reveal=true" \
-            | python3 -c "import json,sys; d=json.load(sys.stdin); print(next(k['api_key'] for k in d if k['name']=='service_role'))")
-          URL="https://${{ env.SUPABASE_PROJECT_REF }}.supabase.co/storage/v1/object/releases/latest.json"
+          SR_KEY="${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
+          URL="${{ env.SUPABASE_BASE_URL }}/storage/v1/object/releases/latest.json"
           HTTP=$(curl -s -o /tmp/r.json -w "%{http_code}" \
             -X POST "$URL" -H "Authorization: Bearer $SR_KEY" \
             -H "Content-Type: application/json" --data-binary "@/tmp/latest.json")
@@ -421,4 +409,4 @@ jobs:
               -H "Content-Type: application/json" --data-binary "@/tmp/latest.json")
           fi
           [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ] || { echo "upload failed: $HTTP"; cat /tmp/r.json; exit 1; }
-          echo "✅ latest.json published → https://${{ env.SUPABASE_PROJECT_REF }}.supabase.co/storage/v1/object/public/releases/latest.json"
+          echo "✅ latest.json published → ${{ env.SUPABASE_BASE_URL }}/storage/v1/object/public/releases/latest.json"

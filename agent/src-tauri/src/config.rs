@@ -2,7 +2,7 @@
 //   - Supabase project URL + anon key (compiled-in defaults can be overridden by env var)
 //   - The agent's enrollment record after first successful /enroll-agent call.
 //
-// Stored as JSON in the OS user data dir under "TrackForceAgent/agent.json".
+// Stored as JSON in the OS user data dir under "RudransAgent/agent.json".
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -29,7 +29,7 @@ pub struct Enrollment {
 
 pub fn config_path() -> Result<PathBuf> {
     let base = dirs::data_dir().ok_or_else(|| anyhow!("could not resolve OS data dir"))?;
-    let dir = base.join("TrackForceAgent");
+    let dir = base.join("RudransAgent");
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {:?}", dir))?;
     Ok(dir.join("agent.json"))
 }
@@ -39,13 +39,13 @@ pub fn config_path() -> Result<PathBuf> {
 /// name input and only asks the employee for the license key.
 ///
 /// File location matches the launcher scripts:
-///   macOS:   ~/Library/Application Support/TrackForceAgent/prefill.json
-///   Windows: %APPDATA%/TrackForceAgent/prefill.json
-///   Linux:   ~/.local/share/TrackForceAgent/prefill.json
-/// All map to `dirs::data_dir()/TrackForceAgent/prefill.json`.
+///   macOS:   ~/Library/Application Support/RudransAgent/prefill.json
+///   Windows: %APPDATA%/RudransAgent/prefill.json
+///   Linux:   ~/.local/share/RudransAgent/prefill.json
+/// All map to `dirs::data_dir()/RudransAgent/prefill.json`.
 pub fn read_prefill_name() -> Option<String> {
     let base = dirs::data_dir()?;
-    let path = base.join("TrackForceAgent").join("prefill.json");
+    let path = base.join("RudransAgent").join("prefill.json");
     if !path.exists() {
         return None;
     }
@@ -59,7 +59,7 @@ pub fn read_prefill_name() -> Option<String> {
 /// so it isn't confused with a fresh registration on subsequent launches.
 pub fn consume_prefill() {
     if let Some(base) = dirs::data_dir() {
-        let _ = std::fs::remove_file(base.join("TrackForceAgent").join("prefill.json"));
+        let _ = std::fs::remove_file(base.join("RudransAgent").join("prefill.json"));
     }
 }
 
@@ -82,19 +82,19 @@ pub fn save(cfg: &AgentConfig) -> Result<()> {
 
 // Compile-time embedded Supabase credentials. Bake the org's production project so
 // employees never see a setup screen — just license key + agent name on first launch.
-// To override per-build, set TRACKFORCE_SUPABASE_URL / _ANON_KEY at compile time.
-const EMBEDDED_SUPABASE_URL: &str = match option_env!("TRACKFORCE_SUPABASE_URL") {
+// To override per-build, set RUDRANS_SUPABASE_URL / _ANON_KEY at compile time.
+const EMBEDDED_SUPABASE_URL: &str = match option_env!("RUDRANS_SUPABASE_URL") {
     Some(v) => v,
-    None => "https://ttjazaxjhzvrzhptrpmd.supabase.co",
+    None => "https://api.rudrans.com",
 };
-const EMBEDDED_SUPABASE_ANON_KEY: &str = match option_env!("TRACKFORCE_SUPABASE_ANON_KEY") {
+const EMBEDDED_SUPABASE_ANON_KEY: &str = match option_env!("RUDRANS_SUPABASE_ANON_KEY") {
     Some(v) => v,
-    None => "sb_publishable_COxy0KHyEGYPjPJTwN0EZg_kvIfI8zC",
+    None => "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzc4NTUyOTU5LCJleHAiOjIwOTM5MTI5NTl9.kKjcCGveLa8gnkBcTFLBkTHZsn5II1AvQDpoKLXHFS0",
 };
 
 /// Effective Supabase URL — runtime env var first, then on-disk override, then compiled-in default.
 pub fn supabase_url(cfg: &AgentConfig) -> Option<String> {
-    std::env::var("TRACKFORCE_SUPABASE_URL")
+    std::env::var("RUDRANS_SUPABASE_URL")
         .ok()
         .filter(|s| !s.is_empty())
         .or_else(|| cfg.supabase_url.clone())
@@ -102,7 +102,7 @@ pub fn supabase_url(cfg: &AgentConfig) -> Option<String> {
 }
 
 pub fn supabase_anon_key(cfg: &AgentConfig) -> Option<String> {
-    std::env::var("TRACKFORCE_SUPABASE_ANON_KEY")
+    std::env::var("RUDRANS_SUPABASE_ANON_KEY")
         .ok()
         .filter(|s| !s.is_empty())
         .or_else(|| cfg.supabase_anon_key.clone())
