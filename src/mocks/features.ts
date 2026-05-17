@@ -53,4 +53,40 @@ export const features = [
     title: 'Secure Cloud Storage',
     description: 'All monitoring data, screenshots, and videos securely stored in cloud. Access from anywhere with enterprise-grade encryption.',
   },
+  {
+    id: 'em-provisioning',
+    icon: 'ri-user-add-line',
+    title: 'M365 / Google Provisioning',
+    description: 'One-click connect to Microsoft 365 and Google Workspace. Provision new joiners, assign licenses, and sync directory in real time — no IT script writing.',
+  },
+  {
+    id: 'em-credentials',
+    icon: 'ri-key-2-line',
+    title: 'Credentials Vault',
+    description: 'Encrypted password vault with self-service request workflow. Employee asks → manager approves → IT dispatches — every step audited.',
+  },
+  {
+    id: 'em-hardware',
+    icon: 'ri-computer-line',
+    title: 'IT Hardware Inventory',
+    description: 'Track every laptop, monitor, phone & peripheral. Assignment history, join/exit dates, depreciation — auto-reclaimed on offboarding.',
+  },
+  {
+    id: 'em-offboarding',
+    icon: 'ri-logout-box-line',
+    title: 'Offboarding Pipeline',
+    description: 'Four-stage flow: creds review → revoke access → device handover → NOC issued to HR + Accounts. No more checklists in spreadsheets.',
+  },
+  {
+    id: 'em-groups',
+    icon: 'ri-group-line',
+    title: 'Groups & Teams Manager',
+    description: 'Bulk-edit M365 group / Teams memberships from one screen. Read-only on-prem-synced groups flagged automatically.',
+  },
+  {
+    id: 'dlp-protection',
+    icon: 'ri-shield-keyhole-line',
+    title: 'DLP — USB + Email',
+    description: 'AI-classified data-loss prevention. Watches USB transfers + personal-mail attachments and alerts IT in real time with full context.',
+  },
 ];

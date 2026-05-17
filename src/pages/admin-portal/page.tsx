@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import { useAuth } from '@/context/AuthContext';
 import { useAgents, useOrgMembers } from '@/lib/dataHooks';
+import { useOrgRole } from '@/lib/useOrgRole';
 import { supabase } from '@/lib/supabase';
 import DepartmentsTab from './components/DepartmentsTab';
 
@@ -22,12 +23,13 @@ const adminTabs = [
   { id: 'settings', label: 'Settings', icon: 'ri-settings-3-line' },
 ];
 
-const roles = ['Viewer', 'Manager', 'Super Admin'];
+const roles = ['Viewer', 'Manager', 'Org Admin'];
 
 export default function AdminPortalPage() {
   const { organization, user, refreshOrganization } = useAuth();
   const { agents } = useAgents();
-  const { members, inviteMember, removeMember } = useOrgMembers();
+  const { members, inviteMember, removeMember, refresh } = useOrgMembers();
+  const { canWrite, isViewer } = useOrgRole();
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteBusy, setInviteBusy] = useState(false);
 
@@ -166,6 +168,11 @@ export default function AdminPortalPage() {
 
   // Map org_members → display rows. Email comes from session for self, the email column for
   // pending invites, and "—" for active non-self members (auth.users not exposed via anon).
+  // DB role → UI label (must round-trip cleanly through the edit modal so
+  // saving doesn't silently demote anyone).
+  //   owner  → "Owner"      (read-only; can't be changed from the UI)
+  //   admin  → "Org Admin"  (full org-level access)
+  //   viewer → "Viewer"
   const fromMembers: OrgUser[] = useMemo(
     () =>
       members.map((m) => ({
@@ -173,8 +180,8 @@ export default function AdminPortalPage() {
         name: m.full_name ?? (m.email ?? '—'),
         email: m.user_id === user?.id ? user?.email ?? '—' : (m.email ?? '—'),
         role:
-          m.role === 'owner' ? 'Super Admin' :
-          m.role === 'admin' ? 'Manager' : 'Viewer',
+          m.role === 'owner' ? 'Owner' :
+          m.role === 'admin' ? 'Org Admin' : 'Viewer',
         status: m.status,
         lastLogin: '—',
       })),
@@ -219,15 +226,26 @@ export default function AdminPortalPage() {
     setConfirmPassword('');
   };
 
-  const handleSaveUser = () => {
+  const handleSaveUser = async () => {
     if (!editingUser) return;
-    setOrgUsers((prev) =>
-      prev.map((u) =>
-        u.id === editingUser.id
-          ? { ...u, name: editName.trim() || u.name, email: editEmail.trim() || u.email, role: editRole, status: editStatus }
-          : u
-      )
-    );
+    // UI role → DB role. We never let the UI demote / promote an owner — the
+    // org creator role is permanent.
+    if (editingUser.role === 'Owner') {
+      setShowEditUser(false); setEditingUser(null);
+      return;
+    }
+    const dbRole: 'admin' | 'viewer' = editRole === 'Viewer' ? 'viewer' : 'admin';
+    const newName = editName.trim() || editingUser.name;
+
+    const { error } = await supabase
+      .from('org_members')
+      .update({ role: dbRole, full_name: newName })
+      .eq('id', editingUser.id);
+    if (error) {
+      alert(`Failed to save: ${error.message}`);
+      return;
+    }
+    await refresh();
     setShowEditUser(false);
     setEditingUser(null);
   };
@@ -240,8 +258,11 @@ export default function AdminPortalPage() {
     setInviteError(null);
     setInviteBusy(true);
     try {
-      // UI roles → DB roles. "Super Admin" can't be created via invite (only the org creator).
-      const dbRole: 'admin' | 'viewer' = addRole === 'Manager' ? 'admin' : 'viewer';
+      // UI roles → DB roles. org_members only supports admin/viewer; full
+      // platform super_admin must be granted via /admin/users (separate role).
+      // "Org Admin" + legacy "Super Admin" + "Manager" all → admin.
+      const dbRole: 'admin' | 'viewer' =
+        addRole === 'Viewer' ? 'viewer' : 'admin';
       await inviteMember({
         email: addEmail.trim(),
         role: dbRole,
@@ -276,6 +297,12 @@ export default function AdminPortalPage() {
   return (
     <DashboardLayout>
       <div className="space-y-5">
+        {isViewer && (
+          <div className="px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300 flex items-center gap-2">
+            <i className="ri-eye-line" />
+            <span><strong>Viewer mode</strong> — you have read-only access. To make changes, ask your Org Admin to upgrade your role.</span>
+          </div>
+        )}
         {/* Breadcrumb */}
         <div className="flex items-center gap-2 text-xs text-gray-500">
           <span className="flex items-center gap-1">
@@ -575,92 +602,29 @@ export default function AdminPortalPage() {
 
         {/* === SUBSCRIPTION TAB === */}
         {activeTab === 'subscription' && (
-          <div className="space-y-4">
-            <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-sm font-semibold text-white">Available Plans</h3>
-                {organization?.subscription_status === 'trial' && (
-                  <span className="px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-300 text-[10px] font-semibold border border-blue-500/30">
-                    14-Day Trial · all features unlocked
-                  </span>
-                )}
-              </div>
-
-              {plans.length === 0 ? (
-                <p className="text-xs text-gray-500">No plans available right now. Contact support to set up your subscription.</p>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  {plans.map((p) => {
-                    const isCurrent = p.id === currentPlanId;
-                    const priceLabel = p.code === 'scale-100' || /enterprise/i.test(p.name)
-                      ? 'Custom'
-                      : `₹ ${Number(p.price_inr).toLocaleString('en-IN')}`;
-                    const cycleLabel = p.code === 'scale-100' || /enterprise/i.test(p.name)
-                      ? ''
-                      : `/${p.billing_cycle === 'yearly' ? 'year' : 'month'}`;
-                    const featureLabels: Record<string, string> = {
-                      productivity_reports: 'Productivity reports',
-                      screenshots: 'Screenshots',
-                      video_recording: 'Video recording',
-                      ai_alerts: 'Smart AI alerts',
-                      dlp: 'DLP (USB / Email)',
-                    };
-                    return (
-                      <div key={p.id} className={`rounded-xl border p-5 ${isCurrent ? 'bg-emerald-500/5 border-emerald-500/25' : 'bg-dark-900 border-dark-700'}`}>
-                        <div className="flex items-center justify-between mb-3">
-                          <h4 className="text-sm font-bold text-white">{p.name}</h4>
-                          {isCurrent && <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-semibold">Current</span>}
-                        </div>
-                        <p className="text-lg font-bold text-white mb-1">{priceLabel}
-                          <span className="text-xs text-gray-500 font-normal">{cycleLabel}</span>
-                        </p>
-                        <p className="text-xs text-gray-500 mb-3">{p.seat_count} agents</p>
-                        <ul className="space-y-1.5 mb-4 min-h-[6rem]">
-                          {(p.features_included ?? []).map((key) => (
-                            <li key={key} className="flex items-center gap-1.5 text-xs text-gray-400">
-                              <span className="w-3 h-3 flex items-center justify-center text-emerald-400"><i className="ri-check-line text-xs" /></span>
-                              {featureLabels[key] ?? key}
-                            </li>
-                          ))}
-                        </ul>
-                        <button
-                          disabled={isCurrent}
-                          onClick={() => {
-                            window.location.href = `mailto:itsupport@wellnessextract.com?subject=Upgrade%20to%20${encodeURIComponent(p.name)}%20—%20${encodeURIComponent(organization?.name ?? '')}`;
-                          }}
-                          className={`w-full py-2 rounded-lg text-xs font-medium transition-colors ${
-                            isCurrent
-                              ? 'bg-emerald-500/10 text-emerald-300 cursor-default border border-emerald-500/25'
-                              : 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/25'
-                          }`}
-                        >
-                          {isCurrent ? 'Active Plan' : (/enterprise/i.test(p.name) ? 'Contact Sales' : 'Upgrade')}
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              <p className="text-[11px] text-gray-500 mt-4">
-                Upgrades require Rudrans admin action. Click <strong>Upgrade</strong> to email us; we&apos;ll switch your plan within one business day.
-              </p>
-            </div>
-          </div>
+          <SubscriptionTab
+            organization={organization}
+            plans={plans}
+            currentPlanId={currentPlanId}
+          />
         )}
-
         {/* === USERS TAB === */}
         {activeTab === 'users' && (
           <div className="bg-dark-800 border border-dark-700 rounded-xl overflow-hidden">
             <div className="p-4 md:p-5 border-b border-dark-700 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-              <h3 className="text-sm font-semibold text-white">Organization Users</h3>
-              <button
-                onClick={() => setShowAddUser(true)}
-                className="px-3 py-1.5 rounded-lg bg-emerald-500/15 text-emerald-400 text-xs font-medium border border-emerald-500/25 hover:bg-emerald-500/25 transition-colors flex items-center gap-1.5"
-              >
-                <span className="w-3.5 h-3.5 flex items-center justify-center"><i className="ri-add-line text-xs" /></span>
-                Add User
-              </button>
+              <div>
+                <h3 className="text-sm font-semibold text-white">Organization Users</h3>
+                {isViewer && <p className="text-[11px] text-amber-300 mt-0.5">Read-only — you can view users but not edit. Ask an Org Admin for changes.</p>}
+              </div>
+              {canWrite && (
+                <button
+                  onClick={() => setShowAddUser(true)}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-500/15 text-emerald-400 text-xs font-medium border border-emerald-500/25 hover:bg-emerald-500/25 transition-colors flex items-center gap-1.5"
+                >
+                  <span className="w-3.5 h-3.5 flex items-center justify-center"><i className="ri-add-line text-xs" /></span>
+                  Add User
+                </button>
+              )}
             </div>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[600px]">
@@ -709,12 +673,16 @@ export default function AdminPortalPage() {
                       </td>
                       <td className="px-4 py-3 text-xs text-gray-400">{user.lastLogin}</td>
                       <td className="px-4 py-3 text-right">
-                        <button
-                          onClick={() => openEditModal(user)}
-                          className="px-3 py-1.5 rounded-lg bg-dark-700 text-gray-300 hover:text-white text-[11px] font-medium hover:bg-dark-600 transition-colors"
-                        >
-                          Edit
-                        </button>
+                        {canWrite ? (
+                          <button
+                            onClick={() => openEditModal(user)}
+                            className="px-3 py-1.5 rounded-lg bg-dark-700 text-gray-300 hover:text-white text-[11px] font-medium hover:bg-dark-600 transition-colors"
+                          >
+                            Edit
+                          </button>
+                        ) : (
+                          <span className="text-[11px] text-gray-600">—</span>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -1058,5 +1026,327 @@ export default function AdminPortalPage() {
         )}
       </div>
     </DashboardLayout>
+  );
+}
+
+type Plan = {
+  id: string;
+  code: string;
+  name: string;
+  seat_count: number;
+  price_inr: number;
+  billing_cycle: string;
+  features_included: string[];
+};
+
+type OrgLite = {
+  name?: string | null;
+  subscription_status?: string | null;
+  subscription_type?: string | null;
+  trial_ends_at?: string | null;
+  license_count?: number | null;
+} | null;
+
+function SubscriptionTab({
+  organization, plans, currentPlanId,
+}: {
+  organization: OrgLite & { id?: string; em_subscribed?: boolean | null };
+  plans: Plan[];
+  currentPlanId: string | null;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const [emOn, setEmOn] = useState<boolean>(!!organization?.em_subscribed);
+  const [pendingReq, setPendingReq] = useState<{ plan_id: string; plan_name: string; created_at: string } | null>(null);
+
+  useEffect(() => { setEmOn(!!organization?.em_subscribed); }, [organization?.em_subscribed]);
+
+  useEffect(() => {
+    if (!organization?.id) return;
+    (async () => {
+      const { data } = await supabase
+        .from('plan_upgrade_requests')
+        .select('plan_id, status, created_at, plans(name)')
+        .eq('org_id', organization.id!)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      type Row = { plan_id: string; created_at: string; plans: { name: string } | null };
+      const row = data as Row | null;
+      if (row) setPendingReq({ plan_id: row.plan_id, plan_name: row.plans?.name ?? '—', created_at: row.created_at });
+      else setPendingReq(null);
+    })();
+  }, [organization?.id]);
+
+  const isTrial = organization?.subscription_status === 'trial';
+  const current = plans.find((p) => p.id === currentPlanId) ?? null;
+  const featureLabels: Record<string, string> = {
+    productivity_reports: 'Productivity reports',
+    screenshots: 'Screenshots',
+    video_recording: 'Video recording',
+    ai_alerts: 'Smart AI alerts',
+    dlp: 'DLP (USB / Email)',
+  };
+  const priceOf = (p: Plan) =>
+    p.code === 'scale-100' || /enterprise/i.test(p.name) ? 'Custom' : `₹ ${Number(p.price_inr).toLocaleString('en-IN')}`;
+  const cycleOf = (p: Plan) =>
+    p.code === 'scale-100' || /enterprise/i.test(p.name) ? '' : `/${p.billing_cycle === 'yearly' ? 'year' : 'month'}`;
+
+  const startUpgrade = async (p: Plan) => {
+    if (!organization?.id) { setMsg({ kind: 'err', text: 'Missing org context' }); return; }
+    if (!confirm(`Request upgrade to "${p.name}"? Our team will reach out within one business day to finalize billing and switch your plan.`)) return;
+    setBusy(`plan-${p.id}`); setMsg(null);
+    const { error, data } = await supabase
+      .from('plan_upgrade_requests')
+      .insert({ org_id: organization.id, plan_id: p.id })
+      .select('plan_id, created_at')
+      .single();
+    setBusy(null);
+    if (error) { setMsg({ kind: 'err', text: error.message }); return; }
+    setPendingReq({ plan_id: p.id, plan_name: p.name, created_at: (data as { created_at: string }).created_at });
+    setMsg({ kind: 'ok', text: `Upgrade requested — we'll reach out shortly to switch you to ${p.name}.` });
+  };
+
+  const toggleEm = async (enable: boolean) => {
+    setBusy('em'); setMsg(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const r = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/org-subscription-update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token ?? ''}` },
+        body: JSON.stringify({ action: enable ? 'enable_em' : 'disable_em' }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
+      setEmOn(enable);
+      setMsg({ kind: 'ok', text: enable ? 'Employee Management add-on enabled.' : 'Employee Management add-on disabled.' });
+    } catch (e) {
+      setMsg({ kind: 'err', text: (e as Error).message });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const cancelRequest = async () => {
+    if (!organization?.id || !confirm('Cancel the pending upgrade request?')) return;
+    setBusy('cancel');
+    await supabase.from('plan_upgrade_requests')
+      .update({ status: 'cancelled' })
+      .eq('org_id', organization.id)
+      .eq('status', 'pending');
+    setBusy(null);
+    setPendingReq(null);
+    setMsg({ kind: 'ok', text: 'Upgrade request cancelled.' });
+  };
+
+  return (
+    <div className="space-y-4">
+      {msg && (
+        <div className={`px-3 py-2 rounded-lg text-xs border ${
+          msg.kind === 'ok'
+            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+            : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+        }`}>{msg.text}</div>
+      )}
+
+      {pendingReq && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-3 min-w-0">
+            <i className="ri-time-line text-amber-400 text-xl" />
+            <div className="min-w-0">
+              <p className="text-sm text-amber-200 font-medium">Upgrade pending: <span className="text-white">{pendingReq.plan_name}</span></p>
+              <p className="text-[11px] text-amber-200/70">
+                Requested {new Date(pendingReq.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })} — our team will reach out to finalize billing.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={cancelRequest}
+            disabled={busy === 'cancel'}
+            className="px-3 py-1.5 rounded-md text-[11px] font-medium bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 disabled:opacity-40"
+          >
+            Cancel request
+          </button>
+        </div>
+      )}
+
+      {/* ===== CURRENT SUBSCRIPTION ===== */}
+      <div className="bg-gradient-to-br from-emerald-500/10 to-cyan-500/10 border border-emerald-500/25 rounded-xl p-6">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="w-5 h-5 flex items-center justify-center"><i className="ri-vip-crown-line text-emerald-400" /></span>
+              <p className="text-[11px] uppercase tracking-wider text-emerald-300 font-medium">Your Current Plan</p>
+              {isTrial && (
+                <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 text-[10px] font-semibold border border-blue-500/30">
+                  14-Day Trial · all features unlocked
+                </span>
+              )}
+            </div>
+            <h2 className="text-2xl font-poppins font-bold text-white">{current?.name ?? (isTrial ? 'Free Trial' : '—')}</h2>
+            {current && (
+              <p className="text-sm text-gray-300 mt-1">
+                <span className="text-white font-semibold">{priceOf(current)}</span>
+                <span className="text-gray-500">{cycleOf(current)}</span>
+                <span className="text-gray-500 mx-2">·</span>
+                <span>{current.seat_count} agents</span>
+              </p>
+            )}
+            {!current && organization?.license_count != null && (
+              <p className="text-sm text-gray-300 mt-1">{organization.license_count} agents · {isTrial ? 'Trial period' : 'No active plan'}</p>
+            )}
+            {isTrial && organization?.trial_ends_at && (
+              <p className="text-xs text-amber-300 mt-2">
+                Trial ends {new Date(organization.trial_ends_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                {' — upgrade now to keep your data and features.'}
+              </p>
+            )}
+            {current?.features_included && current.features_included.length > 0 && (
+              <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5">
+                {current.features_included.map((k) => (
+                  <li key={k} className="flex items-center gap-1.5 text-xs text-gray-300">
+                    <i className="ri-check-line text-emerald-400" />
+                    {featureLabels[k] ?? k}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <button
+            onClick={() => setShowAll((v) => !v)}
+            className="px-4 py-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-white text-sm font-medium transition-colors flex items-center gap-2 shrink-0"
+          >
+            <i className={showAll ? 'ri-arrow-up-s-line' : 'ri-arrow-up-circle-line'} />
+            {showAll ? 'Hide plans' : (isTrial ? 'Choose a plan' : 'Compare & Upgrade')}
+          </button>
+        </div>
+      </div>
+
+      {/* ===== ADD-ONS ===== */}
+      <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <i className="ri-puzzle-line text-cyan-400" />
+            <h3 className="text-sm font-semibold text-white">Add-on Subscriptions</h3>
+          </div>
+          <span className="text-[11px] text-gray-500">Layer extra modules onto your current plan</span>
+        </div>
+
+        <div className="rounded-lg border border-dark-700 bg-dark-900 p-4 flex items-start gap-4">
+          <span className="w-10 h-10 rounded-lg bg-emerald-500/15 text-emerald-400 flex items-center justify-center shrink-0">
+            <i className="ri-team-line text-xl" />
+          </span>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap mb-1">
+              <h4 className="text-sm font-bold text-white">Employee Management Unlimited</h4>
+              {(emOn || isTrial) && (
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+                  emOn
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                    : 'bg-blue-500/20 text-blue-300 border-blue-500/30'
+                }`}>
+                  {emOn ? 'Active' : 'Via trial'}
+                </span>
+              )}
+              <span className="text-[11px] text-gray-500">₹ 8,500 / month · unlimited users</span>
+            </div>
+            <p className="text-xs text-gray-400 leading-relaxed">
+              Provision Microsoft 365 & Google Workspace users, manage groups & teams,
+              credentials vault with self-service requests, IT hardware inventory, and
+              orchestrated offboarding.
+            </p>
+            <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-gray-400">
+              <li>✓ M365 + Google two-way sync</li>
+              <li>✓ Credentials vault</li>
+              <li>✓ IT hardware tracking</li>
+              <li>✓ Offboarding pipeline</li>
+            </ul>
+          </div>
+          <div className="shrink-0">
+            {emOn ? (
+              <button
+                onClick={() => toggleEm(false)}
+                disabled={busy === 'em'}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium bg-rose-500/15 text-rose-300 border border-rose-500/30 hover:bg-rose-500/25 disabled:opacity-40"
+              >
+                {busy === 'em' ? '…' : 'Disable add-on'}
+              </button>
+            ) : (
+              <button
+                onClick={() => toggleEm(true)}
+                disabled={busy === 'em'}
+                className="px-4 py-2 rounded-lg text-xs font-medium bg-emerald-500 hover:bg-emerald-400 text-white disabled:opacity-40"
+              >
+                {busy === 'em' ? '…' : (isTrial ? 'Subscribe (₹8,500/mo)' : 'Enable add-on')}
+              </button>
+            )}
+          </div>
+        </div>
+        {isTrial && (
+          <p className="text-[11px] text-gray-500 mt-3">
+            During trial, all add-ons are unlocked automatically. After trial ends, subscribe to keep using this module.
+          </p>
+        )}
+      </div>
+
+      {/* ===== ALL PLANS (collapsible) ===== */}
+      {showAll && (
+        <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-semibold text-white">Available Plans</h3>
+            <p className="text-[11px] text-gray-500">Choose a plan to email Rudrans for upgrade</p>
+          </div>
+          {plans.length === 0 ? (
+            <p className="text-xs text-gray-500">No plans available right now. Contact support to set up your subscription.</p>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {plans.map((p) => {
+                const isCurrent = p.id === currentPlanId;
+                return (
+                  <div key={p.id} className={`rounded-xl border p-5 flex flex-col ${isCurrent ? 'bg-emerald-500/5 border-emerald-500/40 ring-1 ring-emerald-500/30' : 'bg-dark-900 border-dark-700'}`}>
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="text-sm font-bold text-white">{p.name}</h4>
+                      {isCurrent && <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-semibold">Current</span>}
+                    </div>
+                    <p className="text-lg font-bold text-white mb-1">{priceOf(p)}<span className="text-xs text-gray-500 font-normal">{cycleOf(p)}</span></p>
+                    <p className="text-xs text-gray-500 mb-3">{p.seat_count} agents</p>
+                    <ul className="space-y-1.5 mb-4 flex-1">
+                      {(p.features_included ?? []).map((key) => (
+                        <li key={key} className="flex items-center gap-1.5 text-xs text-gray-400">
+                          <i className="ri-check-line text-emerald-400 text-xs" />
+                          {featureLabels[key] ?? key}
+                        </li>
+                      ))}
+                    </ul>
+                    <button
+                      disabled={isCurrent || !!pendingReq || busy === `plan-${p.id}`}
+                      onClick={() => startUpgrade(p)}
+                      className={`w-full py-2 rounded-lg text-xs font-medium transition-colors ${
+                        isCurrent
+                          ? 'bg-emerald-500/10 text-emerald-300 cursor-default border border-emerald-500/25'
+                          : pendingReq
+                            ? 'bg-dark-700 text-gray-500 border border-dark-600 cursor-not-allowed'
+                            : 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/25'
+                      }`}
+                    >
+                      {isCurrent ? 'Active Plan'
+                        : busy === `plan-${p.id}` ? 'Requesting…'
+                        : pendingReq ? 'Request pending'
+                        : /enterprise/i.test(p.name) ? 'Contact Sales'
+                        : 'Select & Upgrade'}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <p className="text-[11px] text-gray-500 mt-4">
+            Upgrades require Rudrans admin action. Click <strong>Select & Upgrade</strong> to email us; we&apos;ll switch your plan within one business day.
+          </p>
+        </div>
+      )}
+    </div>
   );
 }

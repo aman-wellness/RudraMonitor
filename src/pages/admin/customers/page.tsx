@@ -169,6 +169,7 @@ export default function AdminCustomers() {
               <th className="px-4 py-3 text-left">Organization</th>
               <th className="px-4 py-3 text-left">Partner</th>
               <th className="px-4 py-3 text-left">Status</th>
+              <th className="px-4 py-3 text-left">Add-ons</th>
               <th className="px-4 py-3 text-left">Agents</th>
               <th className="px-4 py-3 text-left">Licenses</th>
               <th className="px-4 py-3 text-left">Created</th>
@@ -176,9 +177,9 @@ export default function AdminCustomers() {
             </tr>
           </thead>
           <tbody className="divide-y divide-dark-700">
-            {loading && <tr><td colSpan={7} className="px-4 py-6 text-center text-gray-500 text-xs">Loading…</td></tr>}
+            {loading && <tr><td colSpan={8} className="px-4 py-6 text-center text-gray-500 text-xs">Loading…</td></tr>}
             {!loading && filtered.length === 0 && (
-              <tr><td colSpan={7} className="px-4 py-6 text-center text-gray-500 text-xs">No customers</td></tr>
+              <tr><td colSpan={8} className="px-4 py-6 text-center text-gray-500 text-xs">No customers</td></tr>
             )}
             {filtered.map((o) => {
               const isSuspended = o.subscription_status === 'suspended';
@@ -189,6 +190,7 @@ export default function AdminCustomers() {
                 </td>
                 <td className="px-4 py-3 text-gray-400">{o.partner?.name ?? <span className="text-gray-600">— direct —</span>}</td>
                 <td className="px-4 py-3"><StatusPill status={o.subscription_status} /></td>
+                <td className="px-4 py-3"><AddonChips org={o} /></td>
                 <td className="px-4 py-3 text-gray-300">{o.agent_count}</td>
                 <td className="px-4 py-3 text-gray-300">{o.active_license_count}</td>
                 <td className="px-4 py-3 text-gray-500 text-[11px]">
@@ -250,6 +252,39 @@ export default function AdminCustomers() {
         partners={partners}
       />
     </AdminLayout>
+  );
+}
+
+function AddonChips({ org }: { org: Row }) {
+  const o = org as unknown as {
+    em_subscribed?: boolean;
+    trial_ends_at?: string | null;
+    subscription_status: string;
+    features?: Record<string, boolean> | null;
+  };
+  const trialActive = o.subscription_status === 'trial' && o.trial_ends_at && new Date(o.trial_ends_at) > new Date();
+  const emOn = !!o.em_subscribed || !!trialActive;
+  const dlpOverride = o.features?.dlp;
+  const dlpOn = dlpOverride === true || (dlpOverride === undefined && !!trialActive);
+  const chips: Array<{ label: string; on: boolean }> = [
+    { label: 'EM', on: emOn },
+    { label: 'DLP', on: dlpOn },
+  ];
+  return (
+    <div className="flex gap-1 flex-wrap">
+      {chips.map((c) => (
+        <span key={c.label}
+          className={`px-1.5 py-0.5 rounded-md text-[9px] uppercase tracking-wider border ${
+            c.on
+              ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+              : 'bg-dark-700 text-gray-500 border-dark-600'
+          }`}
+          title={c.on ? `${c.label} active` : `${c.label} inactive`}
+        >
+          {c.label}
+        </span>
+      ))}
+    </div>
   );
 }
 

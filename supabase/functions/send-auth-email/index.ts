@@ -72,8 +72,11 @@ Deno.serve(async (req) => {
   //    have to rebuild it from token_hash + redirect_to.
   //    The verify endpoint lives on the Supabase project URL, NOT on
   //    body.email_data.site_url (which in hook payloads sometimes already
-  //    contains `/auth/v1` and would double-prefix). Use SUPABASE_URL.
-  const projectUrl = (Deno.env.get("SUPABASE_URL") ?? "").replace(/\/+$/, "");
+  //    contains `/auth/v1` and would double-prefix). Use the EXTERNAL URL
+  //    (API_EXTERNAL_URL on self-hosted, SUPABASE_URL on Cloud) so the link
+  //    isn't the internal "http://kong:8000" docker hostname that breaks in
+  //    the recipient's browser.
+  const projectUrl = (Deno.env.get("API_EXTERNAL_URL") ?? Deno.env.get("SUPABASE_URL") ?? "").replace(/\/+$/, "");
   const appUrl = (Deno.env.get("APP_URL") ?? body.email_data.site_url ?? "http://localhost:3000").replace(/\/auth\/v1\/?$/, "").replace(/\/+$/, "");
   const tokenHash = body.email_data.token_hash;
   const redirect = body.email_data.redirect_to ?? `${appUrl}/post-login`;

@@ -13,13 +13,16 @@ export default function PostLogin() {
     if (authLoading || roleLoading) return;
     if (!user) { navigate('/login', { replace: true }); return; }
 
-    // Role-aware routing for users who already belong to an org.
-    if (role === 'super_admin') { navigate('/admin/dashboard', { replace: true }); return; }
-    if (role === 'partner')     { navigate('/partner/dashboard', { replace: true }); return; }
+    // Routing priority:
+    //   1. Partner → partner portal (partners never have their own org).
+    //   2. If the user owns / belongs to an org → customer dashboard.
+    //      Super-admins who ALSO have an org get the customer dashboard;
+    //      they reach the admin portal via the explicit /super entry or
+    //      the "Super Admin" link in the sidebar.
+    //   3. Super-admin (no org) → admin dashboard.
+    //   4. No org, no role → complete-signup.
+    if (role === 'partner') { navigate('/partner/dashboard', { replace: true }); return; }
 
-    // No role → either a brand-new OAuth signup who hasn't created an org yet,
-    // or a customer-side user. Check if they own / belong to any org. If not,
-    // send them through the complete-signup flow.
     (async () => {
       const { data: ownsOrg } = await supabase
         .from('organizations').select('id').eq('owner_user_id', user.id).maybeSingle();
@@ -27,6 +30,7 @@ export default function PostLogin() {
       const { data: member } = await supabase
         .from('org_members').select('org_id').eq('user_id', user.id).maybeSingle();
       if (member) { navigate('/dashboard', { replace: true }); return; }
+      if (role === 'super_admin') { navigate('/admin/dashboard', { replace: true }); return; }
       navigate('/complete-signup', { replace: true });
     })();
   }, [authLoading, roleLoading, user, role, navigate]);

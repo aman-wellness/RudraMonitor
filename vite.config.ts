@@ -71,8 +71,24 @@ export default defineConfig({
   ],
   base,
   build: {
-    sourcemap: true,
+    sourcemap: false,
     outDir: 'out',
+    chunkSizeWarningLimit: 1500,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          // Only split the few foundational vendors that are loaded on every
+          // page. Letting rollup naturally chunk the rest means heavy deps
+          // like country-state-city only download with the route that uses
+          // them, instead of bloating a shared vendor bundle.
+          if (!id.includes('node_modules')) return;
+          if (id.includes('react-router')) return 'router';
+          if (id.includes('/react/') || id.includes('/react-dom/') || id.includes('/scheduler/')) return 'react';
+          if (id.includes('@supabase')) return 'supabase';
+          if (id.includes('i18next') || id.includes('react-i18next')) return 'i18n';
+        },
+      },
+    },
   },
   resolve: {
     alias: {

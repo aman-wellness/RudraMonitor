@@ -14,6 +14,9 @@ const nav = [
   { to: '/admin/audit',     label: 'Audit Log',  icon: 'ri-shield-check-line' },
   { to: '/admin/storage',   label: 'Storage',    icon: 'ri-database-2-line' },
   { to: '/admin/integrations', label: 'Integrations', icon: 'ri-plug-line' },
+  { to: '/admin/users',     label: 'Admin Users', icon: 'ri-shield-user-line' },
+  { to: '/admin/docs/super-admin',  label: 'Super Admin Guide', icon: 'ri-book-open-line' },
+  { to: '/admin/docs/architecture', label: 'Tech Architecture', icon: 'ri-stack-line' },
 ];
 
 export default function AdminLayout({ children, title }: { children: ReactNode; title: string }) {

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { pricingPlans, dlpAddon, enterpriseTier } from '@/mocks/pricing';
+import { pricingPlans, dlpAddon, enterpriseTier, employeeManagementPlan, employeeManagementAddon } from '@/mocks/pricing';
 
 type Currency = 'INR' | 'USD';
 
@@ -119,39 +119,61 @@ export default function PricingSection() {
           ))}
         </div>
 
-        {/* DLP add-on banner */}
-        <div className="mt-10 bg-dark-800 border border-dark-700 rounded-2xl overflow-hidden">
-          <div className="grid md:grid-cols-[1fr_auto] items-stretch">
-            <div className="p-6 md:p-8">
-              <div className="flex items-center gap-2 mb-3">
-                <span className="px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
-                  Add-on
-                </span>
-                <h3 className="text-lg font-poppins font-bold text-white">{dlpAddon.name}</h3>
-              </div>
-              <p className="text-sm text-gray-400 mb-4">{dlpAddon.description}</p>
-              <ul className="grid sm:grid-cols-2 gap-x-6 gap-y-2">
-                {dlpAddon.features.map((f, i) => (
-                  <li key={i} className="flex items-start gap-2">
-                    <i className="ri-check-line text-cyan-400 text-sm mt-0.5" />
-                    <span className="text-[13px] text-gray-300">{f}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <div className="md:w-64 flex flex-col items-center justify-center bg-dark-900 p-6 md:p-8 border-t md:border-t-0 md:border-l border-dark-700 text-center">
-              <p className="text-[11px] uppercase tracking-wider text-gray-500 mb-2">Per agent / month</p>
-              <p className="text-3xl font-bold text-white tabular-nums">
-                +{fmt(dlpAddon.pricePerAgentInr, dlpAddon.pricePerAgentUsd)}
-              </p>
-              <p className="text-[11px] text-gray-500 mt-2">Toggle per agent, billed monthly</p>
-              <Link
-                to="/signup"
-                className="mt-4 px-4 py-2 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 text-xs font-medium"
-              >
-                Enable DLP
-              </Link>
-            </div>
+        {/* Compact add-ons row — three side-by-side cards instead of stacked banners */}
+        <div className="mt-10">
+          <div className="text-center mb-5">
+            <h3 className="text-lg md:text-xl font-poppins font-semibold text-white">Add-ons & standalone modules</h3>
+            <p className="text-xs text-gray-500 mt-1">Mix &amp; match on any plan. No hidden fees.</p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* EM standalone */}
+            <AddonCard
+              tint="emerald"
+              badge="Standalone"
+              title={employeeManagementPlan.name}
+              price={`${fmt(employeeManagementPlan.priceInr, employeeManagementPlan.priceUsd)} / month`}
+              priceNote="Unlimited users"
+              description="Full IT lifecycle suite — provisioning, credentials vault, hardware, offboarding. Run without any monitoring agents."
+              bullets={employeeManagementPlan.features.slice(0, 5)}
+              cta="Start free"
+              ctaHref="/signup"
+            />
+            {/* EM add-on */}
+            <AddonCard
+              tint="violet"
+              badge="Add-on"
+              title="Employee Management"
+              price={`+${fmt(employeeManagementAddon.priceInr, employeeManagementAddon.priceUsd)} / month`}
+              priceNote="Stacks on any plan"
+              description="Layer the EM suite on top of your monitoring plan. Unlimited users, one invoice line item."
+              bullets={[
+                'Microsoft 365 + Google connect',
+                'Credentials vault + request flow',
+                'IT hardware inventory',
+                'Groups & Teams manager',
+                '4-stage offboarding with NOC',
+              ]}
+              cta="Add EM"
+              ctaHref="/signup"
+            />
+            {/* DLP add-on */}
+            <AddonCard
+              tint="cyan"
+              badge="Add-on"
+              title="DLP — USB + Email"
+              price={`+${fmt(dlpAddon.pricePerAgentInr, dlpAddon.pricePerAgentUsd)} / agent / mo`}
+              priceNote="Toggle per agent"
+              description="AI-classified data-loss prevention. USB transfers + personal-mail attachments alerted in real time."
+              bullets={[
+                'USB file copy detection',
+                'Personal-mail attachment monitor',
+                'Claude + GPT classification',
+                'Authorized-domains whitelist',
+                'Severity-tiered email alerts',
+              ]}
+              cta="Enable DLP"
+              ctaHref="/signup"
+            />
           </div>
         </div>
 
@@ -186,11 +208,54 @@ export default function PricingSection() {
 
         {/* Fine print */}
         <p className="text-center text-[11px] text-gray-500 mt-8 max-w-3xl mx-auto leading-relaxed">
-          All Indian customers are billed in INR with 18% GST. International customers in USD.
-          Annual subscriptions only. Need a custom tier between Growth (25 agents) and Scale (100 agents)?
-          We can issue a pro-rated invoice — talk to sales.
+          Indian customers billed in INR (+ 18% GST). International customers billed in USD.
+          14-day free trial, no card required. Cancel anytime from the admin portal.
         </p>
       </div>
     </section>
+  );
+}
+
+// ---- Compact add-on card used in the add-ons row ----
+
+function AddonCard({
+  tint, badge, title, price, priceNote, description, bullets, cta, ctaHref,
+}: {
+  tint: 'emerald' | 'violet' | 'cyan';
+  badge: string;
+  title: string;
+  price: string;
+  priceNote: string;
+  description: string;
+  bullets: string[];
+  cta: string;
+  ctaHref: string;
+}) {
+  const t = {
+    emerald: { ring: 'border-emerald-500/25', badge: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30', check: 'text-emerald-400', btn: 'bg-emerald-500 hover:bg-emerald-400 text-white' },
+    violet:  { ring: 'border-violet-500/25',  badge: 'bg-violet-500/15 text-violet-300 border-violet-500/30',  check: 'text-violet-400',  btn: 'bg-violet-500/15 hover:bg-violet-500/25 border border-violet-500/30 text-violet-200' },
+    cyan:    { ring: 'border-cyan-500/25',    badge: 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30',       check: 'text-cyan-400',    btn: 'bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-200' },
+  }[tint];
+  return (
+    <div className={`bg-dark-800 border ${t.ring} rounded-2xl p-5 flex flex-col`}>
+      <div className="flex items-center gap-2 mb-2">
+        <span className={`px-2 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider border ${t.badge}`}>{badge}</span>
+      </div>
+      <h4 className="text-base font-poppins font-bold text-white">{title}</h4>
+      <p className="text-xl font-bold text-white mt-2 tabular-nums">{price}</p>
+      <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-3">{priceNote}</p>
+      <p className="text-xs text-gray-400 mb-3 leading-relaxed">{description}</p>
+      <ul className="space-y-1.5 flex-1 mb-4">
+        {bullets.map((b) => (
+          <li key={b} className="flex items-start gap-2 text-[12px] text-gray-300">
+            <i className={`ri-check-line ${t.check} text-sm mt-0.5 shrink-0`} />
+            <span>{b}</span>
+          </li>
+        ))}
+      </ul>
+      <Link to={ctaHref} className={`text-center px-3 py-2 rounded-lg text-xs font-medium ${t.btn}`}>
+        {cta}
+      </Link>
+    </div>
   );
 }

@@ -94,6 +94,45 @@ export const pricingPlans: PricingPlan[] = [
   },
 ];
 
+/** Standalone Employee Management plan — for orgs that don't need monitoring. */
+export const employeeManagementPlan = {
+  id: 'em-unlimited' as const,
+  name: 'Employee Management Unlimited',
+  description: 'Full IT lifecycle suite — no monitoring agents required',
+  seatCount: 9999,
+  priceInr: 8500,
+  priceUsd: 100,
+  billingCycle: 'monthly' as const,
+  features: [
+    'Unlimited users (no per-seat cost)',
+    'Microsoft 365 + Google Workspace one-click connect',
+    'Provision new joiners (M365 mailbox + license + welcome email)',
+    'Encrypted Credentials Vault with self-service request flow',
+    'IT Hardware inventory with assignment history',
+    'Groups & Teams bulk membership manager',
+    'Reporting hierarchy + manager assignments',
+    'Offboarding pipeline — 4 stages, auto NOC issuance',
+    'Send-as your own mailbox (hr@yourcompany.com)',
+    'Department + custom roles (Owner / Org Admin / Viewer)',
+  ],
+  cta: 'Start Free Trial',
+};
+
+/** Employee Management add-on — layers on top of any monitoring plan. */
+export const employeeManagementAddon = {
+  name: 'Employee Management add-on',
+  priceInr: 8500,
+  priceUsd: 100,
+  billingCycle: 'monthly' as const,
+  description: 'Add the full Employee Management suite on top of any Starter / Growth / Scale plan.',
+  features: [
+    'Unlimited users, no per-seat fee',
+    'Everything in the standalone EM plan',
+    'Stacks on top of your existing monitoring seats',
+    'One bill — appears as a line item on your invoice',
+  ],
+};
+
 /** DLP is an opt-in add-on — billed per-agent on top of any plan. */
 export const dlpAddon = {
   name: 'Data Loss Prevention (DLP)',

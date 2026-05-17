@@ -95,6 +95,7 @@ export default function CustomerDetail() {
   const saveProfile = async () => {
     if (!org) return;
     setProfileBusy(true);
+    const newSeats = Math.max(0, Math.floor(profileForm.license_count || 0));
     const { error } = await supabase
       .from('organizations')
       .update({
@@ -108,14 +109,32 @@ export default function CustomerDetail() {
         state: profileForm.state.trim() || null,
         postal_code: profileForm.postal_code.trim() || null,
         phone: profileForm.phone.trim() || null,
-        license_count: Math.max(0, Math.floor(profileForm.license_count || 0)),
+        license_count: newSeats,
       })
       .eq('id', org.id);
-    setProfileBusy(false);
     if (error) {
+      setProfileBusy(false);
       alert(`Update failed: ${error.message}`);
       return;
     }
+
+    // Mirror the seat change onto the active license so the agent-side checks
+    // (which read licenses.seat_count) stay consistent with the org-level count.
+    const activeLicense = licenses.find((l) => l.status === 'active');
+    if (activeLicense && activeLicense.seat_count !== newSeats) {
+      const { error: licErr } = await supabase
+        .from('licenses')
+        .update({ seat_count: newSeats })
+        .eq('id', activeLicense.id);
+      if (licErr) {
+        setProfileBusy(false);
+        alert(`Seat update failed on license: ${licErr.message}`);
+        return;
+      }
+      setLicenses((ls) => ls.map((l) => (l.id === activeLicense.id ? { ...l, seat_count: newSeats } : l)));
+    }
+
+    setProfileBusy(false);
     setOrg({ ...org, ...profileForm });
     setEditing(false);
   };
@@ -351,8 +370,28 @@ export default function CustomerDetail() {
         )}
       </Section>
 
-      {/* Features (super_admin override) */}
-      <Section title="Features" icon="ri-toggle-line">
+      {/* Pending upgrade requests from the customer */}
+      <Section title="Upgrade Requests" icon="ri-arrow-up-circle-line">
+        <UpgradeRequests orgId={org.id} onApproved={async () => {
+          // Reload licenses after approval so admin sees the new plan_id.
+          const { data: licRes } = await supabase.from('licenses')
+            .select('id, license_key, status, seat_count, issued_at, expires_at, plan:plans(name)')
+            .eq('organization_id', org.id)
+            .order('issued_at', { ascending: false });
+          setLicenses((licRes as unknown as LicenseRow[]) ?? []);
+        }} />
+      </Section>
+
+      {/* Subscription & Add-ons (super_admin) */}
+      <Section title="Subscription & Add-ons" icon="ri-vip-crown-line">
+        <SubscriptionControls
+          org={org}
+          onChange={(patch) => setOrg({ ...org, ...patch })}
+        />
+      </Section>
+
+      {/* Monitoring feature overrides (super_admin) */}
+      <Section title="Monitoring Features" icon="ri-toggle-line">
         <FeatureToggles
           orgId={org.id}
           isTrial={org.subscription_status === 'trial'}
@@ -662,6 +701,306 @@ function StatusPill({ status }: { status: string }) {
     idle:      'bg-amber-500/15 text-amber-400 border-amber-500/30',
   };
   return <span className={`px-2 py-0.5 text-[10px] rounded-md border capitalize ${map[status] ?? 'bg-dark-700 text-gray-400 border-dark-600'}`}>{status}</span>;
+}
+
+function UpgradeRequests({ orgId, onApproved }: { orgId: string; onApproved: () => Promise<void> | void }) {
+  type Req = {
+    id: string;
+    plan_id: string;
+    status: string;
+    created_at: string;
+    note: string | null;
+    plans: { name: string; price_inr: number; seat_count: number } | null;
+  };
+  const [rows, setRows] = useState<Req[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const load = async () => {
+    const { data } = await supabase
+      .from('plan_upgrade_requests')
+      .select('id, plan_id, status, created_at, note, plans(name, price_inr, seat_count)')
+      .eq('org_id', orgId)
+      .order('created_at', { ascending: false })
+      .limit(10);
+    setRows((data as unknown as Req[]) ?? []);
+  };
+  useEffect(() => { load(); }, [orgId]);
+
+  const decide = async (r: Req, decision: 'approved' | 'rejected') => {
+    if (!confirm(`${decision === 'approved' ? 'Approve' : 'Reject'} upgrade to "${r.plans?.name ?? r.plan_id}"?`)) return;
+    setBusy(r.id);
+
+    if (decision === 'approved') {
+      // Flip the active license to the requested plan + bump seat_count.
+      const seats = r.plans?.seat_count ?? 0;
+      const { data: lic } = await supabase
+        .from('licenses')
+        .select('id, status')
+        .eq('organization_id', orgId)
+        .eq('status', 'active')
+        .order('issued_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (lic?.id) {
+        const { error: licErr } = await supabase
+          .from('licenses')
+          .update({ plan_id: r.plan_id, seat_count: seats })
+          .eq('id', lic.id);
+        if (licErr) { alert(`Failed to switch license: ${licErr.message}`); setBusy(null); return; }
+        await supabase.from('organizations').update({ license_count: seats }).eq('id', orgId);
+      }
+    }
+
+    const { error } = await supabase
+      .from('plan_upgrade_requests')
+      .update({ status: decision, decided_at: new Date().toISOString() })
+      .eq('id', r.id);
+    setBusy(null);
+    if (error) { alert(error.message); return; }
+    await load();
+    if (decision === 'approved') await onApproved();
+  };
+
+  const pending = rows.filter((r) => r.status === 'pending');
+  const history = rows.filter((r) => r.status !== 'pending');
+
+  if (rows.length === 0) {
+    return <div className="px-5 py-4 text-xs text-gray-500">No upgrade requests yet.</div>;
+  }
+
+  return (
+    <div className="px-5 py-4 space-y-3">
+      {pending.length > 0 && pending.map((r) => (
+        <div key={r.id} className="flex items-center justify-between gap-3 px-3 py-3 rounded-lg bg-amber-500/10 border border-amber-500/30 flex-wrap">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 mb-0.5">
+              <i className="ri-time-line text-amber-400" />
+              <p className="text-sm text-white font-medium">{r.plans?.name ?? '—'}</p>
+              <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">Pending</span>
+            </div>
+            <p className="text-[11px] text-gray-400">
+              ₹{r.plans?.price_inr?.toLocaleString('en-IN') ?? '—'} · {r.plans?.seat_count ?? '—'} agents · requested {new Date(r.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+            </p>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              disabled={busy === r.id}
+              onClick={() => decide(r, 'approved')}
+              className="px-3 py-1.5 rounded-md text-[11px] font-medium bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 disabled:opacity-40"
+            >
+              Approve & switch
+            </button>
+            <button
+              disabled={busy === r.id}
+              onClick={() => decide(r, 'rejected')}
+              className="px-3 py-1.5 rounded-md text-[11px] font-medium bg-rose-500/15 text-rose-300 border border-rose-500/30 hover:bg-rose-500/25 disabled:opacity-40"
+            >
+              Reject
+            </button>
+          </div>
+        </div>
+      ))}
+      {history.length > 0 && (
+        <div className="mt-2">
+          <p className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">History</p>
+          <table className="w-full text-xs">
+            <tbody className="divide-y divide-dark-700/60">
+              {history.map((r) => (
+                <tr key={r.id}>
+                  <td className="px-2 py-1.5 text-gray-300">{r.plans?.name ?? '—'}</td>
+                  <td className="px-2 py-1.5"><StatusPill status={r.status} /></td>
+                  <td className="px-2 py-1.5 text-gray-500 text-right">{new Date(r.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SubscriptionControls({
+  org,
+  onChange,
+}: {
+  org: CustomerView;
+  onChange: (patch: Partial<CustomerView>) => void;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const patch = async (key: string, updates: Record<string, unknown>) => {
+    setBusy(key); setErr(null);
+    const { error } = await supabase.from('organizations').update(updates).eq('id', org.id);
+    setBusy(null);
+    if (error) { setErr(error.message); return false; }
+    onChange(updates as Partial<CustomerView>);
+    return true;
+  };
+
+  const setStatus = async (status: 'trial' | 'active' | 'suspended' | 'canceled') => {
+    if (!confirm(`Change subscription status to "${status}"?`)) return;
+    await patch('status', { subscription_status: status });
+  };
+
+  const extendTrial = async (days: number) => {
+    const base = org.trial_ends_at && new Date(org.trial_ends_at) > new Date()
+      ? new Date(org.trial_ends_at)
+      : new Date();
+    base.setDate(base.getDate() + days);
+    if (!confirm(`Extend trial to ${base.toLocaleDateString('en-IN')}?`)) return;
+    await patch('trial', {
+      trial_ends_at: base.toISOString(),
+      subscription_status: 'trial',
+    });
+  };
+
+  const trialDate = (org as unknown as { trial_ends_at: string | null }).trial_ends_at;
+  const emSubscribed = !!(org as unknown as { em_subscribed: boolean }).em_subscribed;
+  const emActiveByTrial = org.subscription_status === 'trial' && trialDate && new Date(trialDate) > new Date();
+
+  const toggleEm = async (enable: boolean) => {
+    const action = enable ? 'enable' : 'disable';
+    if (!confirm(`${action.toUpperCase()} Employee Management add-on for ${org.name}?`)) return;
+    await patch('em', {
+      em_subscribed: enable,
+      em_subscribed_since: enable ? new Date().toISOString() : null,
+    });
+  };
+
+  return (
+    <div className="px-5 py-4 space-y-5">
+      {err && (
+        <div className="px-3 py-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300">
+          {err}
+        </div>
+      )}
+
+      {/* Status row */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <div>
+            <p className="text-xs text-gray-400 uppercase tracking-wider">Subscription status</p>
+            <div className="flex items-center gap-2 mt-1">
+              <StatusPill status={org.subscription_status} />
+              {trialDate && org.subscription_status === 'trial' && (
+                <span className="text-[11px] text-gray-500">
+                  Trial ends {new Date(trialDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {org.subscription_status !== 'active' && (
+              <button onClick={() => setStatus('active')} disabled={busy === 'status'}
+                className="px-2.5 py-1 text-[10px] rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 disabled:opacity-40">
+                Activate
+              </button>
+            )}
+            {org.subscription_status !== 'trial' && (
+              <button onClick={() => setStatus('trial')} disabled={busy === 'status'}
+                className="px-2.5 py-1 text-[10px] rounded-md bg-blue-500/15 text-blue-300 border border-blue-500/30 hover:bg-blue-500/25 disabled:opacity-40">
+                Put on trial
+              </button>
+            )}
+            {org.subscription_status !== 'suspended' && (
+              <button onClick={() => setStatus('suspended')} disabled={busy === 'status'}
+                className="px-2.5 py-1 text-[10px] rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 disabled:opacity-40">
+                Suspend
+              </button>
+            )}
+            {org.subscription_status !== 'canceled' && (
+              <button onClick={() => setStatus('canceled')} disabled={busy === 'status'}
+                className="px-2.5 py-1 text-[10px] rounded-md bg-rose-500/15 text-rose-300 border border-rose-500/30 hover:bg-rose-500/25 disabled:opacity-40">
+                Cancel
+              </button>
+            )}
+          </div>
+        </div>
+
+        {(org.subscription_status === 'trial' || !trialDate) && (
+          <div className="mt-3 flex items-center gap-2 flex-wrap">
+            <span className="text-[11px] text-gray-500">Extend trial:</span>
+            {[7, 14, 30].map((d) => (
+              <button key={d} onClick={() => extendTrial(d)} disabled={busy === 'trial'}
+                className="px-2 py-1 text-[10px] rounded-md bg-dark-700 text-gray-300 border border-dark-600 hover:text-white hover:border-cyan-500/40 disabled:opacity-40">
+                +{d}d
+              </button>
+            ))}
+            <button onClick={async () => {
+              const v = prompt('Set trial expiry (YYYY-MM-DD):');
+              if (!v) return;
+              const d = new Date(v);
+              if (Number.isNaN(d.getTime())) { alert('Invalid date'); return; }
+              await patch('trial', { trial_ends_at: d.toISOString(), subscription_status: 'trial' });
+            }} disabled={busy === 'trial'}
+              className="px-2 py-1 text-[10px] rounded-md bg-dark-700 text-gray-300 border border-dark-600 hover:text-white hover:border-cyan-500/40 disabled:opacity-40">
+              Custom…
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Add-ons */}
+      <div>
+        <p className="text-xs text-gray-400 uppercase tracking-wider mb-2">Add-on subscriptions</p>
+        <div className="space-y-2">
+          <AddonRow
+            label="Employee Management"
+            hint="Provisioning, M365/Google sync, groups, credentials vault, hardware, offboarding."
+            enabled={emSubscribed}
+            inheritedFromTrial={!emSubscribed && !!emActiveByTrial}
+            busy={busy === 'em'}
+            onEnable={() => toggleEm(true)}
+            onDisable={() => toggleEm(false)}
+            price="₹8,500 / mo"
+          />
+        </div>
+        <p className="text-[10px] text-gray-600 mt-2">
+          Trial customers get all add-ons automatically until trial expires. Toggling here bypasses Razorpay — useful for comped accounts.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function AddonRow({
+  label, hint, enabled, inheritedFromTrial, busy, onEnable, onDisable, price,
+}: {
+  label: string; hint: string; enabled: boolean; inheritedFromTrial: boolean;
+  busy: boolean; onEnable: () => void; onDisable: () => void; price: string;
+}) {
+  const effective = enabled || inheritedFromTrial;
+  return (
+    <div className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg bg-dark-900/50 border border-dark-700">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <p className="text-sm text-white">{label}</p>
+          <span className={`px-1.5 py-0.5 rounded-md text-[9px] uppercase tracking-wider border ${effective ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' : 'bg-rose-500/10 text-rose-300 border-rose-500/30'}`}>
+            {effective ? 'Active' : 'Inactive'}
+          </span>
+          {inheritedFromTrial && (
+            <span className="px-1.5 py-0.5 rounded-md text-[9px] uppercase tracking-wider border bg-blue-500/15 text-blue-300 border-blue-500/30">
+              Via trial
+            </span>
+          )}
+          <span className="text-[10px] text-gray-500">{price}</span>
+        </div>
+        <p className="text-[11px] text-gray-500 mt-0.5">{hint}</p>
+      </div>
+      <div className="flex items-center gap-1.5 shrink-0">
+        <button disabled={busy} onClick={onEnable}
+          className={`px-2 py-1 text-[10px] rounded ${enabled ? 'bg-emerald-500/25 text-emerald-200 border border-emerald-500/40' : 'bg-dark-800 text-gray-400 border border-dark-700 hover:text-white'}`}>
+          Enable
+        </button>
+        <button disabled={busy} onClick={onDisable}
+          className={`px-2 py-1 text-[10px] rounded ${!enabled ? 'bg-rose-500/25 text-rose-200 border border-rose-500/40' : 'bg-dark-800 text-gray-400 border border-dark-700 hover:text-white'}`}>
+          Disable
+        </button>
+      </div>
+    </div>
+  );
 }
 
 const FEATURE_LIST: Array<{ key: string; label: string; hint: string }> = [

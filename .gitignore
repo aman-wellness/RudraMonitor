@@ -36,3 +36,4 @@ node_modules/
 npm-debug.log*
 out/
 supabase/_combined_setup.sql
+.vercel

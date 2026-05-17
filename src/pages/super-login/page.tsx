@@ -26,19 +26,36 @@ export default function SuperLogin() {
     try {
       await signIn(email, password);
       const { data: u } = await supabase.auth.getUser();
-      const { data: app } = await supabase
+      if (!u.user?.id) {
+        setError('Sign-in succeeded but no user session — try again.');
+        return;
+      }
+      const { data: app, error: appErr } = await supabase
         .from('app_users')
         .select('app_role')
-        .eq('user_id', u.user?.id)
+        .eq('user_id', u.user.id)
         .maybeSingle();
-      if (!app || app.app_role !== 'super_admin') {
+      if (appErr) {
         await signOut();
-        setError('Access denied.');
+        setError(`Role lookup failed: ${appErr.message}`);
+        return;
+      }
+      if (!app) {
+        await signOut();
+        setError("Access denied — this account isn't registered as a super-admin. Ask an existing super-admin to invite you from /admin/users.");
+        return;
+      }
+      if (app.app_role !== 'super_admin') {
+        await signOut();
+        setError(`Access denied — your role is "${app.app_role}", not "super_admin".`);
         return;
       }
       navigate('/admin/dashboard', { replace: true });
-    } catch {
-      setError('Access denied.');
+    } catch (e) {
+      const msg = (e as Error).message ?? 'Sign-in failed';
+      setError(/invalid login|invalid email|password/i.test(msg)
+        ? 'Wrong email or password.'
+        : `Sign-in error: ${msg}`);
     } finally {
       setSubmitting(false);
     }

@@ -3,6 +3,8 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTheme } from '@/context/ThemeContext';
 import { useAuth } from '@/context/AuthContext';
 import { useAlerts } from '@/lib/dataHooks';
+import { useAppRole } from '@/lib/useAppRole';
+import { useOrgRole } from '@/lib/useOrgRole';
 
 const formatRelative = (iso: string) => {
   const diffMs = Date.now() - new Date(iso).getTime();
@@ -24,6 +26,13 @@ const sidebarLinks = [
   { label: 'Performance', href: '/performance-reports', icon: 'ri-bar-chart-grouped-line' },
   { label: 'Reports', href: '/reports', icon: 'ri-file-chart-line' },
   { label: 'Agent Setup', href: '/setup', icon: 'ri-download-cloud-line' },
+  { label: 'Employees', href: '/employees', icon: 'ri-user-add-line' },
+  { label: 'Groups & Teams', href: '/employees/groups', icon: 'ri-group-line' },
+  { label: 'Managers', href: '/employees/managers', icon: 'ri-user-star-line' },
+  { label: 'Credentials Vault', href: '/employees/credentials', icon: 'ri-key-2-line' },
+  { label: 'IT Hardware', href: '/employees/hardware', icon: 'ri-computer-line' },
+  { label: 'Offboarding', href: '/employees/offboarding', icon: 'ri-logout-box-line' },
+  { label: 'Integrations', href: '/employees/integrations', icon: 'ri-plug-line' },
   { label: 'Admin Portal', href: '/admin-portal', icon: 'ri-shield-user-line' },
 ];
 
@@ -36,6 +45,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const { isDark, toggleTheme } = useTheme();
   const { user, organization, signOut } = useAuth();
   const { rows: alertRows } = useAlerts({ sinceHours: 24, limit: 5 });
+  const { role: appRole } = useAppRole();
+  const visibleLinks = sidebarLinks.concat(
+    appRole === 'super_admin'
+      ? [{ label: 'Super Admin', href: '/admin/dashboard', icon: 'ri-shield-keyhole-line' }]
+      : [],
+  );
   const unresolvedAlerts = alertRows.filter((a) => !a.ai_resolved);
 
   const currentPath = location.pathname;
@@ -77,8 +92,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
 
         {/* Nav Links */}
-        <nav className="flex-1 py-4 px-3 space-y-1">
-          {sidebarLinks.map((link) => {
+        <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto min-h-0">
+          {visibleLinks.map((link) => {
             const active = currentPath === link.href;
             return (
               <Link
@@ -151,8 +166,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <i className="ri-close-line text-xl" />
           </button>
         </div>
-        <nav className="py-4 px-3 space-y-1">
-          {sidebarLinks.map((link) => {
+        <nav className="py-4 px-3 space-y-1 overflow-y-auto h-[calc(100vh-4rem)]">
+          {visibleLinks.map((link) => {
             const active = currentPath === link.href;
             return (
               <Link
@@ -306,9 +321,25 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
         {/* Page Content */}
         <main className="flex-1 min-w-0 w-full p-4 md:p-6 lg:p-8 overflow-y-auto overflow-x-hidden">
-          <div className="w-full max-w-screen-2xl mx-auto">{children}</div>
+          <div className="w-full max-w-screen-2xl mx-auto">
+            <ViewerBanner />
+            {children}
+          </div>
         </main>
       </div>
+    </div>
+  );
+}
+
+// Read-only banner shown to viewers on every customer page so they know
+// up-front why write controls are disabled.
+function ViewerBanner() {
+  const { isViewer } = useOrgRole();
+  if (!isViewer) return null;
+  return (
+    <div className="mb-4 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300 flex items-center gap-2">
+      <i className="ri-eye-line" />
+      <span><strong>Viewer mode</strong> — read-only access. Ask your Org Admin if you need to make changes.</span>
     </div>
   );
 }

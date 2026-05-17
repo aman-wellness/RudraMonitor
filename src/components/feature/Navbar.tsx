@@ -15,6 +15,7 @@ export default function Navbar() {
 
   const navLinks = [
     { label: 'Features', href: '#features' },
+    { label: 'Employee Mgmt', href: '#employee-management' },
     { label: 'Pricing', href: '#pricing' },
     { label: 'Testimonials', href: '#testimonials' },
     { label: 'Contact', href: '#contact' },

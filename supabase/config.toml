@@ -41,3 +41,13 @@ verify_jwt = false
 
 [functions.start-trial-signup]
 verify_jwt = false
+
+# Directory & Employee Lifecycle features
+[functions.cred-request-start]
+verify_jwt = false
+
+[functions.cred-request-submit]
+verify_jwt = false
+
+[functions.cred-request-decision]
+verify_jwt = false

@@ -4,16 +4,15 @@ import { useEffect, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useAgents } from '@/lib/dataHooks';
 
-const RELEASES_BASE = 'https://ttjazaxjhzvrzhptrpmd.supabase.co/storage/v1/object/public/releases';
+const RELEASES_BASE = 'https://api.rudrans.com/storage/v1/object/public/releases';
 // Builds are produced by .github/workflows/build-agent.yml on every workflow_dispatch / tag push.
-// File names embed the ref name (`main` for dev builds, `v0.1.0` for release tags).
-const BUILD_REF = 'main';
-// Fallback if the manifest is unreachable. Real version is fetched at runtime
-// from latest.json so the Setup page always reflects the most recent release
-// without a code change.
-const FALLBACK_VERSION = '0.1.2';
+// File names embed the git ref (`v0.2.0` for tag pushes, `main` for branch builds).
+// We default to the latest tagged release and fetch the actual current version
+// from latest.json at runtime so the Setup page never drifts behind a code change.
+const BUILD_REF = 'v0.2.0';
+const FALLBACK_VERSION = '0.2.0';
 
-const buildOsData = (version: string) => [
+const buildOsData = (version: string, ref: string) => [
   {
     os: 'macOS',
     icon: 'ri-apple-line',
@@ -25,15 +24,15 @@ const buildOsData = (version: string) => [
     downloads: [
       {
         label: 'Apple Silicon (.pkg)',
-        filename: `Rudrans-Agent-macOS-arm64-${BUILD_REF}.pkg`,
-        url: `${RELEASES_BASE}/Rudrans-Agent-macOS-arm64-${BUILD_REF}.pkg`,
+        filename: `TrackForce-Agent-macOS-arm64-${ref}.pkg`,
+        url: `${RELEASES_BASE}/TrackForce-Agent-macOS-arm64-${ref}.pkg`,
         size: '~4 MB',
         version,
       },
       {
         label: 'Intel (.pkg)',
-        filename: `Rudrans-Agent-macOS-x64-${BUILD_REF}.pkg`,
-        url: `${RELEASES_BASE}/Rudrans-Agent-macOS-x64-${BUILD_REF}.pkg`,
+        filename: `TrackForce-Agent-macOS-x64-${ref}.pkg`,
+        url: `${RELEASES_BASE}/TrackForce-Agent-macOS-x64-${ref}.pkg`,
         size: '~4 MB',
         version,
       },
@@ -56,8 +55,8 @@ const buildOsData = (version: string) => [
     downloads: [
       {
         label: 'Rudrans Agent (.msi)',
-        filename: `Rudrans-Agent-Windows-${BUILD_REF}.msi`,
-        url: `${RELEASES_BASE}/Rudrans-Agent-Windows-${BUILD_REF}.msi`,
+        filename: `TrackForce-Agent-Windows-${ref}.msi`,
+        url: `${RELEASES_BASE}/TrackForce-Agent-Windows-${ref}.msi`,
         size: '~12 MB',
         version,
       },
@@ -80,15 +79,15 @@ const buildOsData = (version: string) => [
     downloads: [
       {
         label: 'Debian Package (.deb)',
-        filename: `rudrans-agent_${BUILD_REF}_amd64.deb`,
-        url: `${RELEASES_BASE}/rudrans-agent_${BUILD_REF}_amd64.deb`,
+        filename: `trackforce-agent_${ref}_amd64.deb`,
+        url: `${RELEASES_BASE}/trackforce-agent_${ref}_amd64.deb`,
         size: '~5 MB',
         version,
       },
     ],
     steps: [
       'Download the .deb package',
-      'Run `sudo dpkg -i rudrans-agent_*.deb` (or double-click on GNOME)',
+      'Run `sudo dpkg -i trackforce-agent_*.deb` (or double-click on GNOME)',
       'Launch from app menu — enrollment dialog appears once',
       'Agent runs in the background; relaunches on every login',
     ],
@@ -119,7 +118,11 @@ export default function SetupPage() {
       .catch(() => { /* keep fallback */ });
     return () => { alive = false; };
   }, []);
-  const osData = buildOsData(agentVersion);
+  // Derive the file-ref from the live version (e.g. "0.2.0" → "v0.2.0") so the
+  // download URLs always match the artifacts CI just uploaded. Fall back to the
+  // hard-coded BUILD_REF if latest.json is unreachable for some reason.
+  const ref = agentVersion ? `v${agentVersion}` : BUILD_REF;
+  const osData = buildOsData(agentVersion, ref);
 
   const licenseKey = organization?.license_key ?? '—';
   const orgName = organization?.name ?? '—';

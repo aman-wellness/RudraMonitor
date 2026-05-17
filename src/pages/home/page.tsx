@@ -3,6 +3,7 @@ import HeroSection from './components/HeroSection';
 import FeaturesGrid from './components/FeaturesGrid';
 import FeatureShowcase from './components/FeatureShowcase';
 import SystemHealthSection from './components/SystemHealthSection';
+import EmployeeManagementSection from './components/EmployeeManagementSection';
 import PricingSection from './components/PricingSection';
 import TestimonialsSection from './components/TestimonialsSection';
 import CTASection from './components/CTASection';
@@ -16,6 +17,7 @@ export default function Home() {
       <FeaturesGrid />
       <FeatureShowcase />
       <SystemHealthSection />
+      <EmployeeManagementSection />
       <PricingSection />
       <TestimonialsSection />
       <CTASection />

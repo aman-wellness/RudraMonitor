@@ -77,7 +77,17 @@ export default function Footer() {
               Resources
             </h4>
             <ul className="space-y-2.5">
-              {['Documentation', 'Blog', 'Case Studies', 'Support', 'FAQs'].map((item) => (
+              <li>
+                <a href="/docs/user-guide" className="text-sm text-gray-500 hover:text-emerald-400 transition-colors duration-200">
+                  User Guide
+                </a>
+              </li>
+              <li>
+                <a href="/docs/partner-guide" className="text-sm text-gray-500 hover:text-emerald-400 transition-colors duration-200">
+                  Partner Guide
+                </a>
+              </li>
+              {['Blog', 'Case Studies', 'Support', 'FAQs'].map((item) => (
                 <li key={item}>
                   <a
                     href="#"
@@ -138,15 +148,8 @@ export default function Footer() {
               &copy; 2025 Rudrans. All rights reserved.
             </p>
             <div className="flex items-center gap-4">
-              {['Privacy Policy', 'Terms of Service', 'Cookie Policy'].map((item) => (
-                <a
-                  key={item}
-                  href="#"
-                  className="text-xs text-gray-600 hover:text-gray-400 transition-colors"
-                >
-                  {item}
-                </a>
-              ))}
+              <a href="/legal/privacy" className="text-xs text-gray-600 hover:text-gray-400 transition-colors">Privacy Policy</a>
+              <a href="/legal/terms" className="text-xs text-gray-600 hover:text-gray-400 transition-colors">Terms of Service</a>
             </div>
           </div>
         </div>
