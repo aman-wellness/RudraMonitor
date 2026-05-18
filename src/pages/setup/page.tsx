@@ -39,12 +39,12 @@ const buildOsData = (version: string, ref: string) => [
     ],
     steps: [
       'Download the .pkg matching your Mac (Apple Silicon = M1/M2/M3, Intel = older)',
-      'If macOS blocks the .pkg ("can\'t be opened because Apple cannot check it"), right-click the .pkg → "Open" → click "Open" again on the warning',
-      'Alternatively, run this in Terminal to clear the quarantine flag: xattr -dr com.apple.quarantine ~/Downloads/Rudrans-Agent-*.pkg',
+      'IMPORTANT — clear Gatekeeper quarantine: open Terminal and run: xattr -dr com.apple.quarantine ~/Downloads/Rudrans-Agent-macOS-arm64-*.pkg',
+      'OR if you prefer the GUI: double-click .pkg → "Done" on the warning → System Settings → Privacy & Security → scroll down → click "Open Anyway"',
       'Double-click the .pkg and follow the installer (admin password required)',
-      'After install, grant Screen Recording + Accessibility in System Settings → Privacy & Security',
-      'Enrollment dialog opens — paste the License Key below and your name',
-      'Agent goes silent in the background; auto-starts on every reboot',
+      'After install, grant Screen Recording + Accessibility in System Settings → Privacy & Security → Screen Recording (toggle Rudrans Agent on)',
+      'Launch Rudrans Agent from Applications — enrollment dialog appears',
+      'Paste the License Key below and your agent name. Done — agent runs silently in the background and auto-starts on every reboot.',
     ],
   },
   {

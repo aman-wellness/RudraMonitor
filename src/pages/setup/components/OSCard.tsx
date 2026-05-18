@@ -114,9 +114,15 @@ export default function OSCard({ os, icon, color, borderColor, bgColor, download
             {os === 'Ubuntu'
               ? 'wget -qO- https://rudrans.com/install.sh | sudo bash'
               : os === 'macOS'
-                ? 'brew install --cask rudrans-agent'
+                ? 'xattr -dr com.apple.quarantine ~/Downloads/Rudrans-Agent-macOS-*.pkg'
                 : 'msiexec /i RudransAgent.msi /quiet /norestart'}
           </code>
+          {os === 'macOS' && (
+            <p className="text-[10px] text-amber-300 mt-2 leading-relaxed">
+              <i className="ri-error-warning-line" /> Run this command FIRST in Terminal to clear the Gatekeeper quarantine flag.
+              Then double-click the .pkg. Without this, macOS Sequoia (15+) will block the installer.
+            </p>
+          )}
         </div>
       </div>
 
