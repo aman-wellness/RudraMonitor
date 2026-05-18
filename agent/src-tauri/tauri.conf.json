@@ -42,7 +42,12 @@
     "resources": ["resources/uninstall.command"],
     "category": "Productivity",
     "shortDescription": "Rudrans employee monitoring agent",
-    "longDescription": "Background agent that reports system metrics, active applications, and screenshots to Rudrans."
+    "longDescription": "Background agent that reports system metrics, active applications, and screenshots to Rudrans.",
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "entitlements": null,
+      "exceptionDomain": null
+    }
   },
   "plugins": {
     "updater": {

@@ -24,22 +24,25 @@ const buildOsData = (version: string, ref: string) => [
     downloads: [
       {
         label: 'Apple Silicon (.pkg)',
-        filename: `TrackForce-Agent-macOS-arm64-${ref}.pkg`,
-        url: `${RELEASES_BASE}/TrackForce-Agent-macOS-arm64-${ref}.pkg`,
+        filename: `Rudrans-Agent-macOS-arm64-${ref}.pkg`,
+        url: `${RELEASES_BASE}/Rudrans-Agent-macOS-arm64-${ref}.pkg`,
         size: '~4 MB',
         version,
       },
       {
         label: 'Intel (.pkg)',
-        filename: `TrackForce-Agent-macOS-x64-${ref}.pkg`,
-        url: `${RELEASES_BASE}/TrackForce-Agent-macOS-x64-${ref}.pkg`,
+        filename: `Rudrans-Agent-macOS-x64-${ref}.pkg`,
+        url: `${RELEASES_BASE}/Rudrans-Agent-macOS-x64-${ref}.pkg`,
         size: '~4 MB',
         version,
       },
     ],
     steps: [
-      'Download the .pkg matching your Mac (Apple Silicon = M1/M2/M3)',
+      'Download the .pkg matching your Mac (Apple Silicon = M1/M2/M3, Intel = older)',
+      'If macOS blocks the .pkg ("can\'t be opened because Apple cannot check it"), right-click the .pkg → "Open" → click "Open" again on the warning',
+      'Alternatively, run this in Terminal to clear the quarantine flag: xattr -dr com.apple.quarantine ~/Downloads/Rudrans-Agent-*.pkg',
       'Double-click the .pkg and follow the installer (admin password required)',
+      'After install, grant Screen Recording + Accessibility in System Settings → Privacy & Security',
       'Enrollment dialog opens — paste the License Key below and your name',
       'Agent goes silent in the background; auto-starts on every reboot',
     ],
@@ -55,8 +58,8 @@ const buildOsData = (version: string, ref: string) => [
     downloads: [
       {
         label: 'Rudrans Agent (.msi)',
-        filename: `TrackForce-Agent-Windows-${ref}.msi`,
-        url: `${RELEASES_BASE}/TrackForce-Agent-Windows-${ref}.msi`,
+        filename: `Rudrans-Agent-Windows-${ref}.msi`,
+        url: `${RELEASES_BASE}/Rudrans-Agent-Windows-${ref}.msi`,
         size: '~12 MB',
         version,
       },
@@ -79,15 +82,15 @@ const buildOsData = (version: string, ref: string) => [
     downloads: [
       {
         label: 'Debian Package (.deb)',
-        filename: `trackforce-agent_${ref}_amd64.deb`,
-        url: `${RELEASES_BASE}/trackforce-agent_${ref}_amd64.deb`,
+        filename: `rudrans-agent_${ref}_amd64.deb`,
+        url: `${RELEASES_BASE}/rudrans-agent_${ref}_amd64.deb`,
         size: '~5 MB',
         version,
       },
     ],
     steps: [
       'Download the .deb package',
-      'Run `sudo dpkg -i trackforce-agent_*.deb` (or double-click on GNOME)',
+      'Run `sudo dpkg -i rudrans-agent_*.deb` (or double-click on GNOME)',
       'Launch from app menu — enrollment dialog appears once',
       'Agent runs in the background; relaunches on every login',
     ],

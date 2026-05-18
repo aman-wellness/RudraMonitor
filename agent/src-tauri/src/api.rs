@@ -68,7 +68,12 @@ pub async fn fetch_settings(
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        return Err(anyhow!("settings fetch failed: {} — {}", status, body));
+        // IMPORTANT: prefix with "http_status=" so the caller can reliably
+        // distinguish "the server said 404" (clear enrollment) from a network
+        // error like "failed to lookup address — not known" (leave enrollment
+        // alone). Substring-matching "not found" against generic error text
+        // was wiping enrollment on reboot before DNS came up.
+        return Err(anyhow!("settings fetch failed: http_status={} body={}", status.as_u16(), body));
     }
     Ok(resp.json::<AgentSettings>().await?)
 }

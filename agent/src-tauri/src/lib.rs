@@ -421,19 +421,24 @@ async fn settings_tick(state: &AppState) -> Result<()> {
     let s = match api::fetch_settings(&client, &supabase_url, &anon_key, &enrollment.enroll_token).await {
         Ok(s) => s,
         Err(e) => {
-            // If the server says this enrollment doesn't exist (404/401/403), the
-            // org admin probably deleted this agent from the portal. Clear local
-            // enrollment so the next heartbeat falls back to the setup screen
-            // instead of looping on a dead agent_id forever.
+            // ONLY clear enrollment when the server returned an actual HTTP
+            // 401 / 403 / 404 (i.e. the agent_id is definitively gone). We
+            // detect that via the structured "http_status=" prefix that
+            // api::fetch_settings now adds — substring-matching the bare
+            // message used to nuke enrollment on transient DNS / connection
+            // errors at boot, forcing the user to re-enter their license.
             let msg = e.to_string();
-            if msg.contains("404") || msg.contains("401") || msg.contains("403")
-                || msg.to_lowercase().contains("not found")
-            {
+            let server_rejected = msg.contains("http_status=401")
+                || msg.contains("http_status=403")
+                || msg.contains("http_status=404");
+            if server_rejected {
                 log::warn!("server rejected enrollment ({msg}) — clearing local config to re-enroll");
                 let mut cfg_w = state.config.lock().await;
                 cfg_w.enrollment = None;
                 cfg_w.license_key = None;
                 let _ = config::save(&cfg_w);
+            } else {
+                log::warn!("settings_tick transient error (will retry): {msg}");
             }
             return Err(e);
         }
