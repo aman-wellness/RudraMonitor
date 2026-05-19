@@ -121,43 +121,42 @@ Deno.serve(async (req) => {
 
   // 4-6. AI classification + persistence + alert.
   //
-  // ⚠️ Must run in the background. Self-hosted Supabase Edge Runtime kills any
-  // request that exceeds its wall-clock budget (~400ms by default), and the
-  // Anthropic / OpenAI call here regularly takes 1-3s. When the classifier was
-  // awaited inline, the runtime sent "early termination has been triggered"
-  // mid-call: the row was inserted but ai_severity / ai_authorized / alert
-  // email never ran, leaving every event looking unprocessed in the dashboard.
+  // Earlier this ran via EdgeRuntime.waitUntil so the heavy Anthropic / OpenAI
+  // call wouldn't block the HTTP response. Turned out self-hosted edge-runtime
+  // here (api.rudrans.com) doesn't honour waitUntil — the worker isolate is
+  // GC'd as soon as the response flushes, dropping the background promise on
+  // the floor. So `ai_severity`/`ai_authorized` stayed NULL forever.
   //
-  // EdgeRuntime.waitUntil keeps the worker alive for the background promise
-  // after the HTTP response is flushed, so the heavy work completes without
-  // blocking the response.
-  const finalize = (async () => {
-    try {
-      const classification = await classify(ev, settings);
-      await admin.from("dlp_events").update({
-        ai_authorized: classification.authorized,
-        ai_severity: classification.severity,
-        ai_reason: classification.reason,
-        ai_model: classification.model,
-        ai_processed_at: new Date().toISOString(),
-      }).eq("id", ev.id);
-      if (!classification.authorized) {
-        await fetch(`${SUPABASE_URL}/functions/v1/dlp-alert-email`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", apikey: SERVICE_ROLE_KEY },
-          body: JSON.stringify({ event_id: ev.id }),
-        }).catch(() => { /* email alert is best-effort */ });
-      }
-    } catch (e) {
-      console.error("dlp-ingest finalize failed:", e);
-    }
-  })();
+  // Run inline instead. When AI keys aren't configured (current default)
+  // `classify` falls through to a sub-millisecond heuristic, so the wall-clock
+  // budget is fine. If/when keys are added we'll split classification into a
+  // dedicated function invocation that can run with its own time budget.
+  let classification: Classification;
+  try {
+    classification = await classify(ev, settings);
+    await admin.from("dlp_events").update({
+      ai_authorized: classification.authorized,
+      ai_severity: classification.severity,
+      ai_reason: classification.reason,
+      ai_model: classification.model,
+      ai_processed_at: new Date().toISOString(),
+    }).eq("id", ev.id);
+  } catch (e) {
+    console.error("dlp-ingest classify failed:", e);
+    return json({ ok: true, event_id: ev.id, classification: "errored" });
+  }
 
-  // deno-lint-ignore no-explicit-any
-  const ert = (globalThis as any).EdgeRuntime;
-  if (ert?.waitUntil) ert.waitUntil(finalize);
+  // Alert dispatch is genuinely fire-and-forget — losing it to a wall-clock
+  // kill is acceptable, the row is already on the dashboard.
+  if (!classification.authorized) {
+    fetch(`${SUPABASE_URL}/functions/v1/dlp-alert-email`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: SERVICE_ROLE_KEY },
+      body: JSON.stringify({ event_id: ev.id }),
+    }).catch(() => { /* best-effort */ });
+  }
 
-  return json({ ok: true, event_id: ev.id, classification: "pending" });
+  return json({ ok: true, event_id: ev.id, classification });
 });
 
 // ---------------------------------------------------------------------------
