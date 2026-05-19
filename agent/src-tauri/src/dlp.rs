@@ -306,12 +306,11 @@ pub struct EmailComposeTracker {
 }
 
 impl Default for EmailComposeTracker {
-    // 5s threshold (down from 30s) so customers see DLP firing on Gmail/personal
-    // mail visits within one or two polls. The 30s threshold made the feature
-    // look broken — admins would enable DLP, open Gmail to test, and see nothing
-    // for a minute. Trade-off: more events for casual personal-mail browsing,
-    // but the AI classifier and authorized_domains whitelist filter the noise.
-    fn default() -> Self { Self { current: None, min_session_secs: 5 } }
+    // 0s threshold + emit-on-first-detection (see observe()). Combined with the
+    // 5s poll cadence in lib.rs this puts a fresh dlp_events row in the
+    // dashboard within ~5 seconds of a Gmail / personal-mail tab being opened.
+    // Earlier 5-30s thresholds masked real captures during quick admin tests.
+    fn default() -> Self { Self { current: None, min_session_secs: 0 } }
 }
 
 #[derive(Debug, Clone)]
@@ -345,15 +344,25 @@ impl EmailComposeTracker {
                 }
                 None
             }
-            // New mail session begins (or provider switched)
+            // New mail session begins (or provider switched). When min_session_secs
+            // is 0 we emit immediately on this first detection so the dashboard
+            // surfaces the event without waiting for a second poll to confirm.
             (Some(p), _) => {
+                let emit_now = self.min_session_secs == 0;
                 self.current = Some(EmailSession {
                     provider: p.to_string(),
                     url: current_url.unwrap_or("").to_string(),
                     started_at: now,
                     last_seen: now,
-                    emitted: false,
+                    emitted: emit_now,
                 });
+                if emit_now {
+                    return Some(EmailEvent {
+                        provider: p.to_string(),
+                        url: current_url.unwrap_or("").to_string(),
+                        session_secs: 0,
+                    });
+                }
                 None
             }
             // No personal-mail focus

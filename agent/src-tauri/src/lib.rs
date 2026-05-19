@@ -1015,12 +1015,11 @@ fn spawn_dlp_loop(state: AppState) {
         }
     });
 
-    // Email-compose tracker — poll every 10s when DLP is enabled (was 30s). The
-    // earlier 30s cadence combined with a 30s session threshold meant customers
-    // had to keep Gmail open for a full minute before any event fired, which
-    // looked like DLP was simply broken. 10s polls + 5s session threshold catch
-    // even short personal-mail visits within ~10-15s. Each poll is still cheap
-    // (one UIA tree walk on Windows, ~50ms).
+    // Email-compose tracker — poll every 5s when DLP is enabled. Combined with
+    // the tracker's emit-on-first-detection behaviour (min_session_secs=0) this
+    // surfaces a Gmail / personal-mail visit in the dashboard within ~5 seconds
+    // of the tab being opened. Each poll is still cheap (one UIA tree walk on
+    // Windows, ~50ms).
     tauri::async_runtime::spawn(async move {
         sleep(Duration::from_secs(20)).await;
         let mut tracker = dlp::EmailComposeTracker::default();
@@ -1040,7 +1039,7 @@ fn spawn_dlp_loop(state: AppState) {
                     log::warn!("dlp email post failed: {err}");
                 }
             }
-            sleep(Duration::from_secs(10)).await;
+            sleep(Duration::from_secs(5)).await;
         }
     });
 }
