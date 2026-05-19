@@ -161,7 +161,7 @@ fn set_paused(paused: bool, state: State<'_, AppState>) {
 }
 
 #[tauri::command]
-async fn set_license_key(license_key: String, state: State<'_, AppState>) -> Result<api::ValidateLicenseResponse, String> {
+async fn set_license_key(license_key: String, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<api::ValidateLicenseResponse, String> {
     let key = license_key.trim().to_string();
     if key.is_empty() { return Err("license key required".into()); }
 
@@ -186,6 +186,18 @@ async fn set_license_key(license_key: String, state: State<'_, AppState>) -> Res
     }
     state.license_blocked.store(false, Ordering::SeqCst);
     *state.license_reason.lock().await = None;
+
+    // Once the license is saved, the customer never needs to see the window
+    // again unless they explicitly open it from the tray. Hide it so the
+    // agent vanishes into the background like a fresh enrollment would.
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+    }
+
     Ok(resp)
 }
 
@@ -897,15 +909,17 @@ pub fn run() {
             app.manage(state.clone());
 
             // macOS activation policy: Accessory = tray-only (no dock icon).
-            // Regular = full app with dock. We use Regular for fresh installs
-            // (so the setup window grabs focus) and Accessory once enrolled +
-            // licensed (background-only). Tray icon is always present so the
-            // user can re-enter the UI if stale state ever blocks them.
+            // Regular = full app with dock. Use Regular ONLY when there is no
+            // enrollment at all (fresh install). Anything else — including an
+            // enrolled agent that happens to have a missing license_key on
+            // disk (legacy v0.2.0 / 0.2.1 bug where enroll() forgot to save
+            // license_key) — stays Accessory so the user is never bothered
+            // with an unwanted window pop-up. The agent is already operational
+            // for those rows; the License Required prompt is reachable via the
+            // tray if the user actually wants it.
             #[cfg(target_os = "macos")]
             {
-                let needs_setup_mac = !enrolled
-                    || state.config.try_lock().map(|c| c.license_key.is_none()).unwrap_or(false);
-                let policy = if needs_setup_mac {
+                let policy = if !enrolled {
                     tauri::ActivationPolicy::Regular
                 } else {
                     tauri::ActivationPolicy::Accessory
@@ -918,12 +932,12 @@ pub fn run() {
             // hatch when stale state exists). Tray is the minimum visible UI.
             build_tray(app)?;
 
-            // Show the main window automatically only when there is no enrollment
-            // OR no license key yet — so users always see the setup screen on a
-            // fresh install. Re-installs that find stale agent.json now still
-            // surface the UI via the tray.
-            let needs_setup = !enrolled
-                || state.config.try_lock().map(|c| c.license_key.is_none()).unwrap_or(false);
+            // Auto-show the main window ONLY on fresh installs (no enrollment
+            // saved yet). If the agent has an enrollment, do not force the
+            // window open — even if license_key happens to be missing on disk
+            // (that's a recoverable legacy state, not a blocker — the agent
+            // keeps reporting metrics off the enroll_token).
+            let needs_setup = !enrolled;
             if needs_setup {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.show();
