@@ -1216,19 +1216,20 @@ function AccessMap() {
   const [q, setQ] = useState('');
   const [groupBy, setGroupBy] = useState<'platform' | 'user'>('platform');
   const [showRevoked, setShowRevoked] = useState(false);
+  const [grantOpen, setGrantOpen] = useState(false);
 
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
-      const { data } = await supabase
-        .from('v_credential_access')
-        .select('*')
-        .order('platform_name')
-        .order('user_name');
-      setRows((data ?? []) as AccessRow[]);
-      setLoading(false);
-    })();
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data } = await supabase
+      .from('v_credential_access')
+      .select('*')
+      .order('platform_name')
+      .order('user_name');
+    setRows((data ?? []) as AccessRow[]);
+    setLoading(false);
   }, []);
+
+  useEffect(() => { void load(); }, [load]);
 
   const filtered = useMemo(() => {
     const ql = q.trim().toLowerCase();
@@ -1267,7 +1268,21 @@ function AccessMap() {
           <input type="checkbox" checked={showRevoked} onChange={(e) => setShowRevoked(e.target.checked)} />
           Show revoked
         </label>
+        <button
+          onClick={() => setGrantOpen(true)}
+          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-sm text-white font-medium flex items-center gap-1.5 shrink-0"
+        >
+          <i className="ri-user-add-line text-sm" />
+          Grant access
+        </button>
       </div>
+
+      {grantOpen && (
+        <GrantAccessModal
+          onClose={() => setGrantOpen(false)}
+          onDone={async () => { setGrantOpen(false); await load(); }}
+        />
+      )}
 
       <div className="divide-y divide-dark-700">
         {loading ? (
@@ -2167,4 +2182,224 @@ function downloadCsvCreds(filename: string, headers: string[], rows: Record<stri
   const a = document.createElement('a');
   a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
+}
+
+// ============== Grant access modal ==============
+// Multi-credential × multi-employee picker. Picks credentials from the vault,
+// picks employees (and optionally directory groups whose members get auto-
+// expanded), then posts to /functions/v1/cred-grant-access which inserts the
+// credential_assignments rows. No email is dispatched here — purely an
+// access-rights record. Customer can later use "Send to user" on the Vault
+// tab to actually deliver the password.
+
+function GrantAccessModal({ onClose, onDone }: { onClose: () => void; onDone: () => Promise<void> }) {
+  type CredOpt = { id: string; platform_name: string; category: string | null };
+  type EmpOpt  = { id: string; full_name: string; work_email: string | null; designation: string | null };
+  type GroupOpt = { id: string; display_name: string | null; provider: string; members_count: number };
+
+  const [creds, setCreds] = useState<CredOpt[]>([]);
+  const [emps,  setEmps]  = useState<EmpOpt[]>([]);
+  const [groups, setGroups] = useState<GroupOpt[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const [selCreds, setSelCreds] = useState<Set<string>>(new Set());
+  const [selEmps,  setSelEmps]  = useState<Set<string>>(new Set());
+  const [selGroups, setSelGroups] = useState<Set<string>>(new Set());
+
+  const [credQuery, setCredQuery] = useState('');
+  const [empQuery, setEmpQuery] = useState('');
+  const [groupQuery, setGroupQuery] = useState('');
+  const [tab, setTab] = useState<'employees' | 'groups'>('employees');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const [c, e, g] = await Promise.all([
+        supabase.from('credentials_safe')
+          .select('id, platform_name, category, active')
+          .eq('active', true)
+          .order('platform_name')
+          .range(0, 999),
+        supabase.from('employees')
+          .select('id, full_name, work_email, designation, status')
+          .eq('status', 'active')
+          .order('full_name')
+          .range(0, 999),
+        supabase.from('directory_groups')
+          .select('id, display_name, provider, members_count')
+          .order('display_name')
+          .range(0, 999),
+      ]);
+      setCreds((c.data ?? []) as CredOpt[]);
+      setEmps((e.data ?? []) as EmpOpt[]);
+      setGroups((g.data ?? []) as GroupOpt[]);
+      setLoading(false);
+    })();
+  }, []);
+
+  const filteredCreds = useMemo(() => {
+    const q = credQuery.trim().toLowerCase();
+    if (!q) return creds;
+    return creds.filter((c) => [c.platform_name, c.category].filter(Boolean).join(' ').toLowerCase().includes(q));
+  }, [creds, credQuery]);
+
+  const filteredEmps = useMemo(() => {
+    const q = empQuery.trim().toLowerCase();
+    if (!q) return emps;
+    return emps.filter((e) => [e.full_name, e.work_email, e.designation].filter(Boolean).join(' ').toLowerCase().includes(q));
+  }, [emps, empQuery]);
+
+  const filteredGroups = useMemo(() => {
+    const q = groupQuery.trim().toLowerCase();
+    if (!q) return groups;
+    return groups.filter((g) => (g.display_name ?? '').toLowerCase().includes(q));
+  }, [groups, groupQuery]);
+
+  const toggle = (set: Set<string>, setter: (s: Set<string>) => void, id: string) => {
+    const next = new Set(set);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setter(next);
+  };
+
+  const submit = async () => {
+    if (selCreds.size === 0) { setMsg({ kind: 'err', text: 'Pick at least one credential' }); return; }
+    if (selEmps.size === 0 && selGroups.size === 0) { setMsg({ kind: 'err', text: 'Pick at least one employee or group' }); return; }
+    setBusy(true); setMsg(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const r = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/cred-grant-access`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session?.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          credential_ids: Array.from(selCreds),
+          employee_ids: Array.from(selEmps),
+          group_ids: Array.from(selGroups),
+        }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
+      setMsg({ kind: 'ok', text: `Granted access: ${j.inserted} new record${j.inserted === 1 ? '' : 's'}.` });
+      await onDone();
+    } catch (e) {
+      setMsg({ kind: 'err', text: (e as Error).message });
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={onClose}>
+      <div className="bg-dark-800 border border-dark-700 rounded-xl w-full max-w-3xl max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <header className="px-5 py-3 border-b border-dark-700 flex items-center justify-between flex-shrink-0">
+          <div>
+            <h2 className="text-lg text-white font-semibold">Grant credential access</h2>
+            <p className="text-[11px] text-gray-500">Select credentials + employees or groups. Saves access records without sending emails.</p>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-white">✕</button>
+        </header>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {/* Credentials picker */}
+          <section>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs uppercase tracking-wider text-gray-500">Credentials ({selCreds.size} selected)</p>
+              <input
+                value={credQuery} onChange={(e) => setCredQuery(e.target.value)}
+                placeholder="Search vault…"
+                className="px-2 py-1 rounded-md text-xs bg-dark-900 border border-dark-700 text-white placeholder-gray-600 focus:outline-none w-48"
+              />
+            </div>
+            <div className="max-h-44 overflow-y-auto bg-dark-900/60 rounded-lg border border-dark-700 divide-y divide-dark-700/40">
+              {loading ? (
+                <p className="px-3 py-4 text-center text-xs text-gray-500">Loading…</p>
+              ) : filteredCreds.length === 0 ? (
+                <p className="px-3 py-4 text-center text-xs text-gray-500">No credentials match.</p>
+              ) : filteredCreds.map((c) => (
+                <label key={c.id} className="flex items-center gap-3 px-3 py-2 hover:bg-dark-800/40 cursor-pointer">
+                  <input type="checkbox" checked={selCreds.has(c.id)} onChange={() => toggle(selCreds, setSelCreds, c.id)} />
+                  <span className="text-xs text-white flex-1 truncate">{c.platform_name}</span>
+                  {c.category && <span className="text-[10px] text-gray-500">{c.category}</span>}
+                </label>
+              ))}
+            </div>
+          </section>
+
+          {/* Recipients picker — tabs */}
+          <section>
+            <div className="flex items-center gap-1 mb-2 border-b border-dark-700">
+              <button onClick={() => setTab('employees')}
+                className={`px-3 py-1.5 text-xs border-b-2 -mb-px ${tab === 'employees' ? 'border-emerald-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>
+                Employees ({selEmps.size})
+              </button>
+              <button onClick={() => setTab('groups')}
+                className={`px-3 py-1.5 text-xs border-b-2 -mb-px ${tab === 'groups' ? 'border-emerald-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>
+                Groups ({selGroups.size})
+              </button>
+              <div className="flex-1" />
+              <input
+                value={tab === 'employees' ? empQuery : groupQuery}
+                onChange={(e) => tab === 'employees' ? setEmpQuery(e.target.value) : setGroupQuery(e.target.value)}
+                placeholder={tab === 'employees' ? 'Search employees…' : 'Search groups…'}
+                className="px-2 py-1 mb-1 rounded-md text-xs bg-dark-900 border border-dark-700 text-white placeholder-gray-600 focus:outline-none w-48"
+              />
+            </div>
+
+            {tab === 'employees' ? (
+              <div className="max-h-56 overflow-y-auto bg-dark-900/60 rounded-lg border border-dark-700 divide-y divide-dark-700/40">
+                {filteredEmps.length === 0 ? (
+                  <p className="px-3 py-4 text-center text-xs text-gray-500">No employees match.</p>
+                ) : filteredEmps.map((e) => (
+                  <label key={e.id} className="flex items-center gap-3 px-3 py-2 hover:bg-dark-800/40 cursor-pointer">
+                    <input type="checkbox" checked={selEmps.has(e.id)} onChange={() => toggle(selEmps, setSelEmps, e.id)} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-white truncate">{e.full_name}</p>
+                      <p className="text-[10px] text-gray-500 truncate">{e.work_email ?? '—'}{e.designation ? ` · ${e.designation}` : ''}</p>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            ) : (
+              <div className="max-h-56 overflow-y-auto bg-dark-900/60 rounded-lg border border-dark-700 divide-y divide-dark-700/40">
+                {filteredGroups.length === 0 ? (
+                  <p className="px-3 py-4 text-center text-xs text-gray-500">No groups synced yet. Connect Microsoft 365 / Google Workspace first.</p>
+                ) : filteredGroups.map((g) => (
+                  <label key={g.id} className="flex items-center gap-3 px-3 py-2 hover:bg-dark-800/40 cursor-pointer">
+                    <input type="checkbox" checked={selGroups.has(g.id)} onChange={() => toggle(selGroups, setSelGroups, g.id)} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-white truncate">{g.display_name ?? '—'}</p>
+                      <p className="text-[10px] text-gray-500 truncate">{g.provider} · {g.members_count} member{g.members_count === 1 ? '' : 's'}</p>
+                    </div>
+                  </label>
+                ))}
+                <p className="px-3 py-2 text-[10px] text-cyan-300 bg-cyan-500/5">
+                  ℹ Selecting a group auto-expands to its members on save. Members must already exist as employees in your org.
+                </p>
+              </div>
+            )}
+          </section>
+
+          {msg && (
+            <div className={`px-3 py-2 rounded-lg text-xs border ${
+              msg.kind === 'ok'
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+            }`}>{msg.text}</div>
+          )}
+        </div>
+
+        <footer className="px-5 py-3 border-t border-dark-700 flex items-center justify-between gap-2 flex-shrink-0">
+          <p className="text-[11px] text-gray-500">
+            Will create up to {selCreds.size * (selEmps.size + (selGroups.size > 0 ? '?' : 0).toString().length)} access records. Existing assignments are skipped.
+          </p>
+          <div className="flex items-center gap-2">
+            <button onClick={onClose} className="px-4 py-2 bg-dark-700 hover:bg-dark-600 rounded-lg text-sm text-white">Cancel</button>
+            <button onClick={submit} disabled={busy}
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-lg text-sm text-white font-medium">
+              {busy ? 'Granting…' : 'Grant access'}
+            </button>
+          </div>
+        </footer>
+      </div>
+    </div>
+  );
 }
