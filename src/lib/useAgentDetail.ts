@@ -75,9 +75,17 @@ type ActivityRow = {
   created_at: string;
 };
 
-export type DateRange = 'today' | 'yesterday' | '7d' | '30d' | 'all';
+// Either a preset name, or a "custom:<fromISO>|<toISO>" string emitted by the
+// DateFilter popover when the user picks specific start + end timestamps.
+export type DateRange = 'today' | 'yesterday' | '7d' | '30d' | 'all' | `custom:${string}|${string}`;
 
 function rangeBounds(r: DateRange): { since: Date; until: Date } {
+  if (typeof r === 'string' && r.startsWith('custom:')) {
+    const [fromIso, toIso] = r.slice('custom:'.length).split('|');
+    const since = fromIso ? new Date(fromIso) : new Date(0);
+    const until = toIso ? new Date(toIso) : new Date();
+    return { since, until };
+  }
   const now = new Date();
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   switch (r) {
@@ -90,6 +98,8 @@ function rangeBounds(r: DateRange): { since: Date; until: Date } {
     case '30d': { const s = new Date(startOfToday); s.setDate(s.getDate() - 29); return { since: s, until: now }; }
     case 'all': return { since: new Date(0), until: now };
   }
+  // Fallback (TS exhaustiveness happy path)
+  return { since: startOfToday, until: now };
 }
 
 export function useAgentDetail(agentId: string | undefined, range: DateRange = 'today') {

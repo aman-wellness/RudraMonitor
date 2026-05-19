@@ -153,6 +153,12 @@ export default function AgentDetailPage() {
 
         <DateFilter
           onChange={(preset) => {
+            // Custom range arrives as "custom:<fromISO>|<toISO>" — pass straight
+            // through; useAgentDetail decodes it.
+            if (preset.startsWith('custom:')) {
+              setRange(preset as DateRange);
+              return;
+            }
             const map: Record<string, DateRange> = {
               'Today': 'today', 'Yesterday': 'yesterday',
               '7 days': '7d', '30 days': '30d', 'All time': 'all',
