@@ -64,11 +64,13 @@ export default function CredentialsVault() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [csvOpen, setCsvOpen] = useState(false);
   const [tab, setTab] = useState<'vault' | 'dashboard' | 'invoices' | 'access' | 'requests'>('vault');
+  const [page, setPage] = useState(1);
+  const pageSize = 25;
 
   const load = useCallback(async () => {
     setLoading(true);
     const [c, d, e] = await Promise.all([
-      supabase.from('credentials_safe').select('*').order('platform_name'),
+      supabase.from('credentials_safe').select('*').order('platform_name').range(0, 9999),
       supabase.from('org_departments').select('id, name').order('name'),
       // Show ALL org users — Rudrans-created + directory-synced — so admins
       // can send creds to anyone in the tenant, not just employees provisioned
@@ -97,6 +99,14 @@ export default function CredentialsVault() {
     if (!ql) return rows;
     return rows.filter((r) => [r.platform_name, r.category, r.username, ...(r.tags ?? [])].filter(Boolean).join(' ').toLowerCase().includes(ql));
   }, [rows, q]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const pageRows = useMemo(
+    () => filtered.slice((safePage - 1) * pageSize, safePage * pageSize),
+    [filtered, safePage],
+  );
+  useEffect(() => { setPage(1); }, [q, tab]);
 
   const toggleSelect = (id: string) => setSelected((s) => {
     const next = new Set(s);
@@ -192,7 +202,7 @@ export default function CredentialsVault() {
                   <tr><td colSpan={9} className="px-4 py-10 text-center text-sm text-gray-500">Loading…</td></tr>
                 ) : filtered.length === 0 ? (
                   <tr><td colSpan={9} className="px-4 py-10 text-center text-sm text-gray-500">No credentials yet.</td></tr>
-                ) : filtered.map((r) => (
+                ) : pageRows.map((r) => (
                   <tr key={r.id} className="border-b border-dark-700/50 hover:bg-dark-700/30">
                     <td className="px-3 py-3 text-center">
                       <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleSelect(r.id)} />
@@ -225,6 +235,26 @@ export default function CredentialsVault() {
               </tbody>
             </table>
           </div>
+          {!loading && filtered.length > 0 && (
+            <div className="flex items-center justify-between px-4 py-3 border-t border-dark-700 text-xs text-gray-400">
+              <div>
+                Showing {(safePage - 1) * pageSize + 1}–{Math.min(safePage * pageSize, filtered.length)} of {filtered.length}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={safePage <= 1}
+                  className="px-2 py-1 bg-dark-700 hover:bg-dark-600 disabled:opacity-40 rounded text-white"
+                >Prev</button>
+                <span>Page {safePage} / {totalPages}</span>
+                <button
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={safePage >= totalPages}
+                  className="px-2 py-1 bg-dark-700 hover:bg-dark-600 disabled:opacity-40 rounded text-white"
+                >Next</button>
+              </div>
+            </div>
+          )}
         </div>
         </>
         )}
