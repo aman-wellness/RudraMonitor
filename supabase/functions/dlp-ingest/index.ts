@@ -119,30 +119,45 @@ Deno.serve(async (req) => {
   }).select().single();
   if (evErr) return json({ error: `insert: ${evErr.message}` }, 500);
 
-  // 4. AI classification (async — kick off but don't block ingest)
-  // We DO await so the response carries the classification result for the UI's
-  // optimistic update; the email send is fire-and-forget.
-  const classification = await classify(ev, settings);
+  // 4-6. AI classification + persistence + alert.
+  //
+  // ⚠️ Must run in the background. Self-hosted Supabase Edge Runtime kills any
+  // request that exceeds its wall-clock budget (~400ms by default), and the
+  // Anthropic / OpenAI call here regularly takes 1-3s. When the classifier was
+  // awaited inline, the runtime sent "early termination has been triggered"
+  // mid-call: the row was inserted but ai_severity / ai_authorized / alert
+  // email never ran, leaving every event looking unprocessed in the dashboard.
+  //
+  // EdgeRuntime.waitUntil keeps the worker alive for the background promise
+  // after the HTTP response is flushed, so the heavy work completes without
+  // blocking the response.
+  const finalize = (async () => {
+    try {
+      const classification = await classify(ev, settings);
+      await admin.from("dlp_events").update({
+        ai_authorized: classification.authorized,
+        ai_severity: classification.severity,
+        ai_reason: classification.reason,
+        ai_model: classification.model,
+        ai_processed_at: new Date().toISOString(),
+      }).eq("id", ev.id);
+      if (!classification.authorized) {
+        await fetch(`${SUPABASE_URL}/functions/v1/dlp-alert-email`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", apikey: SERVICE_ROLE_KEY },
+          body: JSON.stringify({ event_id: ev.id }),
+        }).catch(() => { /* email alert is best-effort */ });
+      }
+    } catch (e) {
+      console.error("dlp-ingest finalize failed:", e);
+    }
+  })();
 
-  // 5. Persist classification + maybe alert
-  await admin.from("dlp_events").update({
-    ai_authorized: classification.authorized,
-    ai_severity: classification.severity,
-    ai_reason: classification.reason,
-    ai_model: classification.model,
-    ai_processed_at: new Date().toISOString(),
-  }).eq("id", ev.id);
+  // deno-lint-ignore no-explicit-any
+  const ert = (globalThis as any).EdgeRuntime;
+  if (ert?.waitUntil) ert.waitUntil(finalize);
 
-  // 6. If unauthorized, trigger email alert (fire-and-forget)
-  if (!classification.authorized) {
-    fetch(`${SUPABASE_URL}/functions/v1/dlp-alert-email`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", apikey: SERVICE_ROLE_KEY },
-      body: JSON.stringify({ event_id: ev.id }),
-    }).catch(() => { /* fire-and-forget */ });
-  }
-
-  return json({ ok: true, event_id: ev.id, classification });
+  return json({ ok: true, event_id: ev.id, classification: "pending" });
 });
 
 // ---------------------------------------------------------------------------
