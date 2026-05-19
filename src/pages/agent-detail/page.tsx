@@ -43,10 +43,21 @@ export default function AgentDetailPage() {
     return () => clearInterval(t);
   }, [refresh]);
 
-  const updateCaptureSettings = async (screenshots: boolean, videos: boolean, dlp?: boolean) => {
+  const updateCaptureSettings = async (p: {
+    screenshots: boolean;
+    videos: boolean;
+    dlp?: boolean;
+    screenshotIntervalSecs: number;
+    videoIntervalSecs: number;
+  }) => {
     if (!agentId) return;
-    const patch: Record<string, boolean> = { screenshots_enabled: screenshots, videos_enabled: videos };
-    if (dlp !== undefined) patch.dlp_enabled = dlp;
+    const patch: Record<string, boolean | number> = {
+      screenshots_enabled: p.screenshots,
+      videos_enabled: p.videos,
+      screenshot_interval_secs: p.screenshotIntervalSecs,
+      video_interval_secs: p.videoIntervalSecs,
+    };
+    if (p.dlp !== undefined) patch.dlp_enabled = p.dlp;
     const { error } = await supabase.from('agents').update(patch).eq('id', agentId);
     if (error) throw error;
     await refresh();
@@ -193,6 +204,8 @@ export default function AgentDetailPage() {
           screenshotsEnabled={agent.screenshotsEnabled}
           videosEnabled={agent.videosEnabled}
           dlpEnabled={agent.dlpEnabled}
+          screenshotIntervalSecs={agent.screenshotIntervalSecs}
+          videoIntervalSecs={agent.videoIntervalSecs}
           dlpAddonPriceInr={dlpAddonPriceInr}
           onUpdate={updateCaptureSettings}
         />
@@ -638,6 +651,10 @@ export default function AgentDetailPage() {
           <CaptureControls
             screenshotsEnabled={agent.screenshotsEnabled}
             videosEnabled={agent.videosEnabled}
+            dlpEnabled={agent.dlpEnabled}
+            screenshotIntervalSecs={agent.screenshotIntervalSecs}
+            videoIntervalSecs={agent.videoIntervalSecs}
+            dlpAddonPriceInr={dlpAddonPriceInr}
             onUpdate={updateCaptureSettings}
           />
         )}

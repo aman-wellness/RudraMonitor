@@ -24,6 +24,8 @@ export type AgentDetail = {
   screenshotsEnabled: boolean;
   videosEnabled: boolean;
   dlpEnabled: boolean;
+  screenshotIntervalSecs: number;
+  videoIntervalSecs: number;
   totalActiveTime: string;
   appsUsed: number;
   sitesVisited: number;
@@ -297,6 +299,8 @@ function buildDetail(
     screenshotsEnabled: (agentRow.screenshots_enabled as boolean | undefined) ?? true,
     videosEnabled: (agentRow.videos_enabled as boolean | undefined) ?? false,
     dlpEnabled: (agentRow.dlp_enabled as boolean | undefined) ?? false,
+    screenshotIntervalSecs: (agentRow.screenshot_interval_secs as number | undefined) ?? 300,
+    videoIntervalSecs: (agentRow.video_interval_secs as number | undefined) ?? 1800,
     totalActiveTime: formatHM(totalActiveSec),
     appsUsed: appBuckets.size,
     sitesVisited: sites.size,

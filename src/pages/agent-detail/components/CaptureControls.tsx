@@ -4,28 +4,71 @@ interface Props {
   screenshotsEnabled: boolean;
   videosEnabled: boolean;
   dlpEnabled?: boolean;
+  screenshotIntervalSecs: number;
+  videoIntervalSecs: number;
   dlpAddonPriceInr?: number | null;     // null = DLP not available on plan
-  onUpdate: (screenshots: boolean, videos: boolean, dlp?: boolean) => Promise<void> | void;
+  onUpdate: (patch: {
+    screenshots: boolean;
+    videos: boolean;
+    dlp?: boolean;
+    screenshotIntervalSecs: number;
+    videoIntervalSecs: number;
+  }) => Promise<void> | void;
 }
 
-export default function CaptureControls({ screenshotsEnabled, videosEnabled, dlpEnabled = false, dlpAddonPriceInr, onUpdate }: Props) {
+// DB check constraint: screenshot_interval_secs ∈ [30, 3600].
+const SS_PRESETS = [
+  { secs: 60, label: '1 min' },
+  { secs: 120, label: '2 min' },
+  { secs: 300, label: '5 min' },
+  { secs: 600, label: '10 min' },
+  { secs: 900, label: '15 min' },
+  { secs: 1800, label: '30 min' },
+  { secs: 3600, label: '1 hr' },
+];
+
+// DB check constraint: video_interval_secs ∈ [60, 14400].
+const VID_PRESETS = [
+  { secs: 120, label: '2 min' },
+  { secs: 300, label: '5 min' },
+  { secs: 900, label: '15 min' },
+  { secs: 1800, label: '30 min' },
+  { secs: 3600, label: '1 hr' },
+  { secs: 7200, label: '2 hr' },
+  { secs: 14400, label: '4 hr' },
+];
+
+export default function CaptureControls({
+  screenshotsEnabled, videosEnabled, dlpEnabled = false,
+  screenshotIntervalSecs, videoIntervalSecs,
+  dlpAddonPriceInr, onUpdate,
+}: Props) {
   const [ss, setSs] = useState(screenshotsEnabled);
   const [vid, setVid] = useState(videosEnabled);
   const [dlp, setDlp] = useState(dlpEnabled);
+  const [ssEvery, setSsEvery] = useState(screenshotIntervalSecs);
+  const [vidEvery, setVidEvery] = useState(videoIntervalSecs);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Sync local state when props change (e.g. agent-detail refreshes after a write).
   useEffect(() => { setSs(screenshotsEnabled); }, [screenshotsEnabled]);
   useEffect(() => { setVid(videosEnabled); }, [videosEnabled]);
   useEffect(() => { setDlp(dlpEnabled); }, [dlpEnabled]);
+  useEffect(() => { setSsEvery(screenshotIntervalSecs); }, [screenshotIntervalSecs]);
+  useEffect(() => { setVidEvery(videoIntervalSecs); }, [videoIntervalSecs]);
 
   const handleSave = async () => {
     setError(null);
     setSaving(true);
     try {
-      await onUpdate(ss, vid, dlp);
+      await onUpdate({
+        screenshots: ss,
+        videos: vid,
+        dlp,
+        screenshotIntervalSecs: ssEvery,
+        videoIntervalSecs: vidEvery,
+      });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) {
@@ -35,8 +78,12 @@ export default function CaptureControls({ screenshotsEnabled, videosEnabled, dlp
     }
   };
 
-  const hasChanges = ss !== screenshotsEnabled || vid !== videosEnabled || dlp !== dlpEnabled;
+  const hasChanges =
+    ss !== screenshotsEnabled || vid !== videosEnabled || dlp !== dlpEnabled ||
+    ssEvery !== screenshotIntervalSecs || vidEvery !== videoIntervalSecs;
   const dlpAvailable = dlpAddonPriceInr != null;
+
+  const selectCls = 'bg-dark-800 border border-dark-700 rounded-md text-[11px] text-white px-2 py-1 focus:outline-none focus:border-emerald-500';
 
   return (
     <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
@@ -46,10 +93,10 @@ export default function CaptureControls({ screenshotsEnabled, videosEnabled, dlp
         </span>
         <h3 className="text-sm font-semibold text-white">Capture Controls</h3>
       </div>
-      <p className="text-[11px] text-gray-500 mb-4">Enable or disable screen recording features for this agent. Changes apply immediately on the next heartbeat.</p>
+      <p className="text-[11px] text-gray-500 mb-4">Enable or disable screen recording features for this agent. Changes apply on the next agent heartbeat (within ~5 min).</p>
 
       <div className="space-y-3">
-        {/* Screenshot Toggle */}
+        {/* Screenshot */}
         <div className="flex items-center justify-between bg-dark-900 rounded-lg border border-dark-700 p-3">
           <div className="flex items-center gap-3">
             <span className={`w-8 h-8 rounded-lg flex items-center justify-center ${ss ? 'bg-emerald-500/15' : 'bg-dark-700'}`}>
@@ -57,18 +104,33 @@ export default function CaptureControls({ screenshotsEnabled, videosEnabled, dlp
             </span>
             <div>
               <p className="text-xs text-white font-medium">Screenshots</p>
-              <p className="text-[11px] text-gray-500">Capture on activity change & URL change</p>
+              <p className="text-[11px] text-gray-500">Captures on activity / URL change, throttled by interval below</p>
             </div>
           </div>
-          <button
-            onClick={() => setSs(!ss)}
-            className={`w-10 h-5 rounded-full transition-colors relative ${ss ? 'bg-emerald-500' : 'bg-dark-700'}`}
-          >
-            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${ss ? 'left-[22px]' : 'left-[2px]'}`} />
-          </button>
+          <div className="flex items-center gap-3">
+            <select
+              value={SS_PRESETS.some((p) => p.secs === ssEvery) ? ssEvery : 0}
+              onChange={(e) => setSsEvery(Number(e.target.value))}
+              disabled={!ss}
+              className={`${selectCls} ${!ss ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              {!SS_PRESETS.some((p) => p.secs === ssEvery) && (
+                <option value={0} disabled>{ssEvery}s (custom)</option>
+              )}
+              {SS_PRESETS.map((p) => (
+                <option key={p.secs} value={p.secs}>{p.label}</option>
+              ))}
+            </select>
+            <button
+              onClick={() => setSs(!ss)}
+              className={`w-10 h-5 rounded-full transition-colors relative ${ss ? 'bg-emerald-500' : 'bg-dark-700'}`}
+            >
+              <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${ss ? 'left-[22px]' : 'left-[2px]'}`} />
+            </button>
+          </div>
         </div>
 
-        {/* Video Toggle */}
+        {/* Video */}
         <div className="flex items-center justify-between bg-dark-900 rounded-lg border border-dark-700 p-3">
           <div className="flex items-center gap-3">
             <span className={`w-8 h-8 rounded-lg flex items-center justify-center ${vid ? 'bg-emerald-500/15' : 'bg-dark-700'}`}>
@@ -76,18 +138,33 @@ export default function CaptureControls({ screenshotsEnabled, videosEnabled, dlp
             </span>
             <div>
               <p className="text-xs text-white font-medium">Video Recording</p>
-              <p className="text-[11px] text-gray-500">10-min clips every interval</p>
+              <p className="text-[11px] text-gray-500">10-sec clip every interval</p>
             </div>
           </div>
-          <button
-            onClick={() => setVid(!vid)}
-            className={`w-10 h-5 rounded-full transition-colors relative ${vid ? 'bg-emerald-500' : 'bg-dark-700'}`}
-          >
-            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${vid ? 'left-[22px]' : 'left-[2px]'}`} />
-          </button>
+          <div className="flex items-center gap-3">
+            <select
+              value={VID_PRESETS.some((p) => p.secs === vidEvery) ? vidEvery : 0}
+              onChange={(e) => setVidEvery(Number(e.target.value))}
+              disabled={!vid}
+              className={`${selectCls} ${!vid ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              {!VID_PRESETS.some((p) => p.secs === vidEvery) && (
+                <option value={0} disabled>{vidEvery}s (custom)</option>
+              )}
+              {VID_PRESETS.map((p) => (
+                <option key={p.secs} value={p.secs}>{p.label}</option>
+              ))}
+            </select>
+            <button
+              onClick={() => setVid(!vid)}
+              className={`w-10 h-5 rounded-full transition-colors relative ${vid ? 'bg-emerald-500' : 'bg-dark-700'}`}
+            >
+              <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${vid ? 'left-[22px]' : 'left-[2px]'}`} />
+            </button>
+          </div>
         </div>
 
-        {/* DLP Toggle (paid add-on) */}
+        {/* DLP */}
         <div className={`flex items-center justify-between bg-dark-900 rounded-lg border p-3 ${dlpAvailable ? 'border-dark-700' : 'border-dark-700/50 opacity-60'}`}>
           <div className="flex items-center gap-3">
             <span className={`w-8 h-8 rounded-lg flex items-center justify-center ${dlp ? 'bg-cyan-500/15' : 'bg-dark-700'}`}>
@@ -119,7 +196,6 @@ export default function CaptureControls({ screenshotsEnabled, videosEnabled, dlp
         </div>
       </div>
 
-      {/* Save */}
       <div className="flex items-center justify-end gap-2 mt-4 pt-3 border-t border-dark-700">
         {error && <span className="text-xs text-red-400">{error}</span>}
         {saved && (
