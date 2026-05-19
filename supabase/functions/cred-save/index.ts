@@ -87,9 +87,39 @@ Deno.serve(async (req) => {
     return json({ ok: true, id }, 200);
   } else {
     row.created_by = u.user.id;
-    if (!row.password_enc) return json({ error: "password required for new credential" }, 400);
+    // Password is optional — many platforms (Slack, Notion, etc.) are OTP /
+    // magic-link / SSO and have no shared password to store. Keep the row but
+    // mark `is_passwordless` so the UI can show a "Login via OTP" badge.
+    if (!row.password_enc) {
+      row.is_passwordless = true;
+    }
     const { data, error } = await admin.from("credentials").insert(row).select("id").single();
     if (error) return json({ error: error.message }, 500);
+
+    // Per-seat pre-assignment: caller can include `assigned_employee_ids[]` to
+    // mark which employees are taking up seats. We create credential_assignments
+    // rows so seat-occupancy reports work; the password is NOT emailed here —
+    // a separate "Send to user" action exists for that.
+    if (Array.isArray(body.assigned_employee_ids) && body.assigned_employee_ids.length > 0) {
+      const orgId = row.org_id as string;
+      const { data: emps } = await admin.from("employees")
+        .select("id, work_email, personal_email")
+        .eq("org_id", orgId)
+        .in("id", body.assigned_employee_ids);
+      const now = new Date().toISOString();
+      const assignRows = (emps ?? []).map((e: { id: string; work_email: string | null; personal_email: string | null }) => ({
+        org_id: orgId,
+        credential_id: data.id,
+        employee_id: e.id,
+        sent_at: now,
+        sent_by: u.user.id,
+        delivery_email: e.work_email ?? e.personal_email ?? "",
+      }));
+      if (assignRows.length > 0) {
+        await admin.from("credential_assignments").insert(assignRows);
+      }
+    }
+
     return json({ ok: true, id: data.id }, 200);
   }
 });

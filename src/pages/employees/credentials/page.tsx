@@ -266,6 +266,34 @@ function CredentialModal({
 }) {
   const [f, setF] = useState(row);
   const [busy, setBusy] = useState(false);
+
+  // Per-seat assignment picker — populated lazily when subscription_model
+  // flips to per_seat. Stores employee uuids the customer wants to mark as
+  // seat holders. On Save, we ship these to cred-save which inserts
+  // credential_assignments rows (no email triggered).
+  type EmpOpt = { id: string; full_name: string; work_email: string | null; designation: string | null };
+  const [employees, setEmployees] = useState<EmpOpt[]>([]);
+  const [empsLoaded, setEmpsLoaded] = useState(false);
+  const [assignedIds, setAssignedIds] = useState<Set<string>>(new Set());
+  const [empFilter, setEmpFilter] = useState('');
+
+  // Lazy-load the org's employees the first time per_seat is selected so the
+  // modal stays fast for non-per-seat creds.
+  useEffect(() => {
+    if (f.subscription_model !== 'per_seat' || empsLoaded) return;
+    (async () => {
+      const { data } = await supabase
+        .from('employees')
+        .select('id, full_name, work_email, designation, status')
+        .eq('status', 'active')
+        .order('full_name')
+        .range(0, 999);
+      setEmployees(((data ?? []) as Array<EmpOpt & { status: string }>).map((e) => ({
+        id: e.id, full_name: e.full_name, work_email: e.work_email, designation: e.designation,
+      })));
+      setEmpsLoaded(true);
+    })();
+  }, [f.subscription_model, empsLoaded]);
   const [err, setErr] = useState<string | null>(null);
   const isNew = !row.id;
 
@@ -291,6 +319,7 @@ function CredentialModal({
           subscription_ends_at: f.subscription_ends_at ?? null,
           subscription_model: f.subscription_model ?? null,
           billing_api_provider: f.billing_api_provider ?? null,
+          assigned_employee_ids: f.subscription_model === 'per_seat' ? Array.from(assignedIds) : [],
         }),
       });
       const j = await r.json();
@@ -331,8 +360,8 @@ function CredentialModal({
             <Field label="Username">
               <input value={f.username ?? ''} onChange={(e) => setF({ ...f, username: e.target.value })} className={inputCls} placeholder="design@acme.com" />
             </Field>
-            <Field label={isNew ? 'Password *' : 'Password (leave blank to keep)'}>
-              <input type="password" value={f.password ?? ''} onChange={(e) => setF({ ...f, password: e.target.value })} className={inputCls} placeholder="••••••" />
+            <Field label={isNew ? 'Password (optional)' : 'Password (leave blank to keep)'}>
+              <input type="password" value={f.password ?? ''} onChange={(e) => setF({ ...f, password: e.target.value })} className={inputCls} placeholder="leave blank for OTP / SSO" />
             </Field>
           </div>
           <Field label="Tags (comma-separated)">
@@ -398,6 +427,101 @@ function CredentialModal({
               </Field>
             </div>
           </div>
+
+          {/* Per-seat assignment picker — only when subscription_model = per_seat. */}
+          {f.subscription_model === 'per_seat' && (
+            <div className="pt-3 mt-2 border-t border-dark-700">
+              <div className="flex items-center justify-between mb-2">
+                <div>
+                  <p className="text-xs uppercase tracking-wider text-gray-500">Assigned employees</p>
+                  <p className="text-[11px] text-gray-500 mt-0.5">
+                    Mark which employees take up a seat for this credential.
+                    Selecting them <strong>does not</strong> auto-send the password — use "Send to user" later to dispatch.
+                  </p>
+                </div>
+                <div className="text-[11px] text-gray-400 shrink-0">
+                  <span className="text-cyan-300 font-semibold">{assignedIds.size}</span>
+                  {f.seats_total ? <span className="text-gray-500"> / {f.seats_total}</span> : null}
+                  <span className="text-gray-500"> selected</span>
+                </div>
+              </div>
+
+              <input
+                value={empFilter}
+                onChange={(e) => setEmpFilter(e.target.value)}
+                placeholder="Search by name, email, designation…"
+                className={`${inputCls} mb-2`}
+              />
+
+              <div className="max-h-56 overflow-y-auto bg-dark-900/60 rounded-lg border border-dark-700 divide-y divide-dark-700/50">
+                {!empsLoaded ? (
+                  <p className="px-3 py-4 text-center text-xs text-gray-500">Loading employees…</p>
+                ) : employees.length === 0 ? (
+                  <p className="px-3 py-4 text-center text-xs text-gray-500">No active employees yet. Add some under Employees → Add user.</p>
+                ) : (() => {
+                  const q = empFilter.trim().toLowerCase();
+                  const list = q
+                    ? employees.filter((e) =>
+                        [e.full_name, e.work_email, e.designation].filter(Boolean).join(' ').toLowerCase().includes(q),
+                      )
+                    : employees;
+                  if (list.length === 0) {
+                    return <p className="px-3 py-4 text-center text-xs text-gray-500">No matches for "{empFilter}".</p>;
+                  }
+                  return list.map((e) => {
+                    const checked = assignedIds.has(e.id);
+                    return (
+                      <label key={e.id} className="flex items-center gap-3 px-3 py-2 hover:bg-dark-800/40 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            setAssignedIds((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(e.id)) next.delete(e.id); else {
+                                // Soft cap on seats — warn but don't hard-block (customer may be in the middle of resizing).
+                                if (f.seats_total && next.size >= f.seats_total) {
+                                  if (!confirm(`Seat limit (${f.seats_total}) already reached. Add this employee anyway?`)) return prev;
+                                }
+                                next.add(e.id);
+                              }
+                              return next;
+                            });
+                          }}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs text-white truncate">{e.full_name}</p>
+                          <p className="text-[10px] text-gray-500 truncate">
+                            {e.work_email ?? '—'}{e.designation ? ` · ${e.designation}` : ''}
+                          </p>
+                        </div>
+                        {checked && <span className="text-[10px] text-emerald-300 shrink-0">Will assign</span>}
+                      </label>
+                    );
+                  });
+                })()}
+              </div>
+
+              {empsLoaded && employees.length > 0 && (
+                <div className="flex items-center gap-3 mt-2 text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => setAssignedIds(new Set(employees.map((e) => e.id)))}
+                    className="text-cyan-400 hover:text-cyan-300"
+                  >
+                    Select all visible
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAssignedIds(new Set())}
+                    className="text-gray-500 hover:text-gray-300"
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           <label className="flex items-center gap-2 text-xs text-gray-400">
             <input type="checkbox" checked={f.active ?? true} onChange={(e) => setF({ ...f, active: e.target.checked })} />
