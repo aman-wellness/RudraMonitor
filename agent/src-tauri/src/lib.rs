@@ -264,6 +264,15 @@ async fn enroll(args: EnrollArgs, app: tauri::AppHandle, state: State<'_, AppSta
     config::save(&cfg).map_err(|e| e.to_string())?;
     config::consume_prefill();
 
+    // The previous run may have flipped license_blocked to true (stale org
+    // binding, expired key, anything that's now resolved). Settings_tick only
+    // re-validates every 5 minutes, so without this the agent silently pauses
+    // captures for up to 5 min after a fresh enrollment — exactly what tripped
+    // the v0.2.9 video-recording report.
+    drop(cfg);
+    state.license_blocked.store(false, Ordering::SeqCst);
+    *state.license_reason.lock().await = None;
+
     // Auto-enable launch-at-login so the agent persists across reboots without the user
     // having to know about it.
     let _ = app.autolaunch().enable();
