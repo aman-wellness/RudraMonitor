@@ -1,5 +1,5 @@
 // POST /functions/v1/enroll-agent
-// Body: { license_key, agent_name, machine_name, os_type }
+// Body: { license_key, agent_name, machine_name, os_type, agent_version }
 // Auth: Supabase project anon key (Authorization: Bearer ANON_KEY) — required by the gateway.
 //
 // Behaviour:
@@ -18,6 +18,7 @@ type EnrollBody = {
   agent_name?: string;
   machine_name?: string;
   os_type?: string;
+  agent_version?: string;
 };
 
 Deno.serve(async (req) => {
@@ -37,6 +38,7 @@ Deno.serve(async (req) => {
   const agent_name = (body.agent_name ?? "").trim();
   const machine_name = (body.machine_name ?? "").trim() || agent_name;
   const os_type = (body.os_type ?? "").trim() || null;
+  const agent_version = (body.agent_version ?? "").trim() || null;
 
   if (!license_key || !agent_name) {
     return json({ error: "license_key and agent_name are required" }, 400);
@@ -73,7 +75,7 @@ Deno.serve(async (req) => {
   if (existing) {
     await admin
       .from("agents")
-      .update({ agent_name, os_type, status: "online", last_active: new Date().toISOString() })
+      .update({ agent_name, os_type, agent_version, status: "online", last_active: new Date().toISOString() })
       .eq("id", existing.id);
     return json({ agent_id: existing.id, enroll_token: existing.enroll_token, org_id: org.id });
   }
@@ -85,6 +87,7 @@ Deno.serve(async (req) => {
       agent_name,
       machine_name,
       os_type,
+      agent_version,
       status: "online",
       last_active: new Date().toISOString(),
     })

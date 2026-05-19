@@ -243,6 +243,7 @@ async fn enroll(args: EnrollArgs, app: tauri::AppHandle, state: State<'_, AppSta
             agent_name: args.agent_name.trim().to_string(),
             machine_name: machine_name.clone(),
             os_type: os_type.clone(),
+            agent_version: env!("CARGO_PKG_VERSION").to_string(),
         },
     )
     .await
@@ -314,7 +315,7 @@ async fn push_kind(state: &AppState, kind: &str, payload: Value) -> Result<()> {
         &supabase_url,
         &anon_key,
         &enrollment.enroll_token,
-        &api::IngestRequest { kind, payload: vec![payload] },
+        &api::IngestRequest { kind, payload: vec![payload], agent_version: env!("CARGO_PKG_VERSION") },
     )
     .await
 }
@@ -567,6 +568,7 @@ async fn metrics_tick(state: &AppState) -> Result<()> {
         &api::IngestRequest {
             kind: "system_metrics",
             payload: vec![metrics::to_payload(&sample)],
+            agent_version: env!("CARGO_PKG_VERSION"),
         },
     )
     .await?;

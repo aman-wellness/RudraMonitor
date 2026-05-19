@@ -17,6 +17,9 @@ pub struct EnrollRequest {
     pub agent_name: String,
     pub machine_name: String,
     pub os_type: String,
+    /// Stamped from CARGO_PKG_VERSION so the dashboard can show the actual
+    /// build running on each machine instead of a hard-coded placeholder.
+    pub agent_version: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -30,6 +33,10 @@ pub struct EnrollResponse {
 pub struct IngestRequest<'a> {
     pub kind: &'a str, // "system_metrics" | "activity_logs" | "alerts"
     pub payload: Vec<Value>,
+    /// Build version. Edge fn refreshes `agents.agent_version` on every
+    /// heartbeat so the dashboard always shows the latest installed build
+    /// (no re-enroll required after auto-updates).
+    pub agent_version: &'a str,
 }
 
 #[derive(Debug, Clone, Deserialize)]

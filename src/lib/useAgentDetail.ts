@@ -285,7 +285,7 @@ function buildDetail(
     department: (agentRow.department as string) ?? 'Unassigned',
     os: (agentRow.os_type as string) ?? 'Unknown',
     status,
-    version: 'v0.1.0',
+    version: agentRow.agent_version ? `v${String(agentRow.agent_version).replace(/^v/, '')}` : '—',
     ipAddress: (agentRow.ip_address as string) ?? '—',
     firstLogin: formatDateTime(firstActivity),
     lastActivity: formatDateTime(lastActivity),

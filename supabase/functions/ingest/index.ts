@@ -99,11 +99,18 @@ Deno.serve(async (req) => {
   const { error: insertErr } = await admin.from(table).insert(rows);
   if (insertErr) return json({ error: insertErr.message }, 500);
 
-  // Update last_active heartbeat.
-  await admin
-    .from("agents")
-    .update({ last_active: new Date().toISOString(), status: "online" })
-    .eq("id", agent.id);
+  // Update last_active heartbeat. If the agent is reporting its build version
+  // along with the payload (added in agent v0.2.6+), refresh that too so the
+  // dashboard reflects auto-updates without waiting for a re-enroll.
+  const updates: Record<string, unknown> = {
+    last_active: new Date().toISOString(),
+    status: "online",
+  };
+  const reportedVersion = typeof (body as { agent_version?: unknown }).agent_version === "string"
+    ? ((body as { agent_version: string }).agent_version).trim()
+    : "";
+  if (reportedVersion) updates.agent_version = reportedVersion;
+  await admin.from("agents").update(updates).eq("id", agent.id);
 
   return json({ ok: true, inserted: rows.length });
 });
