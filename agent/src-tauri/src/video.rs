@@ -10,6 +10,8 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{DateTime, Utc};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+#[cfg(target_os = "macos")]
+use std::sync::OnceLock;
 
 const CLIP_DURATION_SECS: u32 = 10;
 const FRAMERATE: u32 = 5;
@@ -29,24 +31,59 @@ fn temp_path() -> PathBuf {
 }
 
 #[cfg(target_os = "macos")]
-fn input_args() -> Vec<&'static str> {
-    // "1:none" = primary display, no audio. macOS may number screens differently across machines;
-    // 1 is the default for the built-in display in most setups.
-    vec!["-f", "avfoundation", "-i", "1:none"]
+fn input_args(ffmpeg_bin: &PathBuf) -> Vec<String> {
+    // The previous hard-coded "1:none" was almost always wrong — on macOS,
+    // AVFoundation index 1 is typically a camera (FaceTime / Continuity), not
+    // the display. The actual screen device is enumerated as "Capture screen 0"
+    // at a machine-dependent index. Query ffmpeg for the live device list and
+    // pick the screen index dynamically. Result is cached so we only pay the
+    // ~150ms probe cost once per process.
+    let idx = macos_screen_index(ffmpeg_bin);
+    vec!["-f".into(), "avfoundation".into(), "-i".into(), format!("{}:none", idx)]
+}
+
+#[cfg(target_os = "macos")]
+fn macos_screen_index(ffmpeg_bin: &PathBuf) -> u32 {
+    static CACHED: OnceLock<u32> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        // `ffmpeg -f avfoundation -list_devices true -i ""` prints the device
+        // list to stderr and exits non-zero. Lines look like:
+        //   [AVFoundation indev @ 0x...] [3] Capture screen 0
+        let out = Command::new(ffmpeg_bin)
+            .args(["-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""])
+            .output();
+        if let Ok(o) = out {
+            let txt = String::from_utf8_lossy(&o.stderr);
+            for line in txt.lines() {
+                if !line.to_lowercase().contains("capture screen") { continue; }
+                // Extract the LAST "[N]" — first "[...]" is the logger context.
+                if let Some(last_open) = line.rfind('[') {
+                    if let Some(close) = line[last_open..].find(']') {
+                        let n = &line[last_open + 1..last_open + close];
+                        if let Ok(v) = n.parse::<u32>() { return v; }
+                    }
+                }
+            }
+        }
+        // Sensible fallback for modern Mac Studio / MacBook builds where the
+        // screen lands at index 3 (cameras 0/1, mic 2, screen 3). Better to
+        // misfire on a known index than refuse to record at all.
+        3
+    })
 }
 
 #[cfg(target_os = "windows")]
-fn input_args() -> Vec<&'static str> {
-    vec!["-f", "gdigrab", "-i", "desktop"]
+fn input_args(_ffmpeg_bin: &PathBuf) -> Vec<String> {
+    vec!["-f".into(), "gdigrab".into(), "-i".into(), "desktop".into()]
 }
 
 #[cfg(target_os = "linux")]
-fn input_args() -> Vec<&'static str> {
-    vec!["-f", "x11grab", "-i", ":0.0"]
+fn input_args(_ffmpeg_bin: &PathBuf) -> Vec<String> {
+    vec!["-f".into(), "x11grab".into(), "-i".into(), ":0.0".into()]
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-fn input_args() -> Vec<&'static str> {
+fn input_args(_ffmpeg_bin: &PathBuf) -> Vec<String> {
     vec![]
 }
 
@@ -71,7 +108,7 @@ fn record_clip_blocking(ffmpeg_bin: &PathBuf) -> Result<CapturedClip> {
         .arg("-loglevel").arg("error")
         .arg("-framerate").arg(&framerate);
 
-    for a in input_args() {
+    for a in input_args(ffmpeg_bin) {
         cmd.arg(a);
     }
 
