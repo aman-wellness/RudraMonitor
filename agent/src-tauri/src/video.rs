@@ -4,6 +4,7 @@
 // licensing simple. If ffmpeg isn't on PATH we log a notice and skip the tick. Bundling for
 // production rollouts is a Tauri `bundle.resources` decision documented in ROLLOUT.md.
 
+use crate::ffmpeg;
 use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{DateTime, Utc};
@@ -18,16 +19,6 @@ pub struct CapturedClip {
     pub mp4_b64: String,
     pub taken_at: DateTime<Utc>,
     pub duration_secs: u32,
-}
-
-fn ffmpeg_available() -> bool {
-    Command::new("ffmpeg")
-        .arg("-version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
 }
 
 fn temp_path() -> PathBuf {
@@ -59,19 +50,23 @@ fn input_args() -> Vec<&'static str> {
     vec![]
 }
 
-pub fn record_clip() -> Result<CapturedClip> {
-    if !ffmpeg_available() {
-        return Err(anyhow!(
-            "ffmpeg not found on PATH — install ffmpeg or bundle it with the agent"
-        ));
-    }
+pub async fn record_clip() -> Result<CapturedClip> {
+    let ffmpeg_bin = ffmpeg::ensure_ffmpeg()
+        .await
+        .context("provisioning ffmpeg")?;
 
+    tokio::task::spawn_blocking(move || record_clip_blocking(&ffmpeg_bin))
+        .await
+        .context("ffmpeg join")?
+}
+
+fn record_clip_blocking(ffmpeg_bin: &PathBuf) -> Result<CapturedClip> {
     let out = temp_path();
     let out_str = out.to_string_lossy().to_string();
     let duration = CLIP_DURATION_SECS.to_string();
     let framerate = FRAMERATE.to_string();
 
-    let mut cmd = Command::new("ffmpeg");
+    let mut cmd = Command::new(ffmpeg_bin);
     cmd.arg("-y")
         .arg("-loglevel").arg("error")
         .arg("-framerate").arg(&framerate);

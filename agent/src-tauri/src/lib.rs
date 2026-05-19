@@ -7,6 +7,7 @@ mod api;
 mod browser_url;
 mod config;
 mod dlp;
+mod ffmpeg;
 mod watchdog;
 
 pub use watchdog::{is_guardian_invocation, run_guardian_loop, mark_graceful_shutdown};
@@ -531,8 +532,8 @@ async fn video_tick(state: &AppState) -> Result<()> {
     let supabase_url = config::supabase_url(&cfg).ok_or_else(|| anyhow!("no supabase url"))?;
     let anon_key = config::supabase_anon_key(&cfg).ok_or_else(|| anyhow!("no anon key"))?;
 
-    // Recording is blocking and ffmpeg's runtime ≈ clip length.
-    let clip = tokio::task::spawn_blocking(video::record_clip).await??;
+    // record_clip handles its own spawn_blocking around the ffmpeg call.
+    let clip = video::record_clip().await?;
 
     let client = api::build_client()?;
     api::upload_video(
