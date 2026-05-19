@@ -1203,16 +1203,23 @@ function SubscriptionTab({
                 {' — upgrade now to keep your data and features.'}
               </p>
             )}
-            {current?.features_included && current.features_included.length > 0 && (
-              <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5">
-                {current.features_included.map((k) => (
-                  <li key={k} className="flex items-center gap-1.5 text-xs text-gray-300">
-                    <i className="ri-check-line text-emerald-400" />
-                    {featureLabels[k] ?? k}
-                  </li>
-                ))}
-              </ul>
-            )}
+            {current?.features_included && current.features_included.length > 0 && (() => {
+              // Trial users get every feature unlocked, including DLP, even
+              // when the plan's stored feature list doesn't enumerate it.
+              const features = isTrial && !current.features_included.includes('dlp')
+                ? [...current.features_included, 'dlp']
+                : current.features_included;
+              return (
+                <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5">
+                  {features.map((k) => (
+                    <li key={k} className="flex items-center gap-1.5 text-xs text-gray-300">
+                      <i className="ri-check-line text-emerald-400" />
+                      {featureLabels[k] ?? k}
+                    </li>
+                  ))}
+                </ul>
+              );
+            })()}
           </div>
           <button
             onClick={() => setShowAll((v) => !v)}

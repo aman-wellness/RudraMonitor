@@ -63,21 +63,33 @@ export default function AgentDetailPage() {
     await refresh();
   };
 
-  // Plan-level DLP add-on price (null = DLP not available on this plan).
-  const [dlpAddonPriceInr, setDlpAddonPriceInr] = useState<number | null>(null);
+  // Plan-level DLP add-on price.
+  //   undefined → still loading (don't show "not available" yet — that flash
+  //               is what made customers think DLP toggling was random)
+  //   null      → query resolved, plan really doesn't include DLP
+  //   number    → DLP is part of the plan at this price per agent per month
+  const [dlpAddonPriceInr, setDlpAddonPriceInr] = useState<number | null | undefined>(undefined);
+  const [isTrial, setIsTrial] = useState(false);
   useEffect(() => {
     if (!agent?.orgId) return;
     (async () => {
-      const { data: lic } = await supabase
-        .from('licenses')
-        .select('plans(dlp_addon_price_inr)')
-        .eq('organization_id', agent.orgId)
-        .eq('status', 'active')
-        .order('issued_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+      const [{ data: lic }, { data: orgRow }] = await Promise.all([
+        supabase
+          .from('licenses')
+          .select('plans(dlp_addon_price_inr)')
+          .eq('organization_id', agent.orgId)
+          .order('issued_at', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        supabase
+          .from('organizations')
+          .select('subscription_status')
+          .eq('id', agent.orgId)
+          .maybeSingle(),
+      ]);
       const price = (lic?.plans as { dlp_addon_price_inr?: number } | null)?.dlp_addon_price_inr;
       setDlpAddonPriceInr(typeof price === 'number' ? price : null);
+      setIsTrial((orgRow?.subscription_status as string | null) === 'trial');
     })();
   }, [agent?.orgId]);
 
@@ -207,6 +219,7 @@ export default function AgentDetailPage() {
           screenshotIntervalSecs={agent.screenshotIntervalSecs}
           videoIntervalSecs={agent.videoIntervalSecs}
           dlpAddonPriceInr={dlpAddonPriceInr}
+          isTrial={isTrial}
           onUpdate={updateCaptureSettings}
         />
 
@@ -655,6 +668,7 @@ export default function AgentDetailPage() {
             screenshotIntervalSecs={agent.screenshotIntervalSecs}
             videoIntervalSecs={agent.videoIntervalSecs}
             dlpAddonPriceInr={dlpAddonPriceInr}
+            isTrial={isTrial}
             onUpdate={updateCaptureSettings}
           />
         )}
