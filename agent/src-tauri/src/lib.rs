@@ -242,6 +242,11 @@ async fn enroll(args: EnrollArgs, app: tauri::AppHandle, state: State<'_, AppSta
         machine_name,
         org_id: resp.org_id,
     });
+    // Persist the license key alongside the enrollment so the next launch
+    // doesn't open the "License Required" prompt for an already-enrolled
+    // agent. Without this, license_key stays None on disk and the setup
+    // window auto-shows on every reboot.
+    cfg.license_key = Some(args.license_key.trim().to_string());
     config::save(&cfg).map_err(|e| e.to_string())?;
     config::consume_prefill();
 

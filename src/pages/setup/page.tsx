@@ -9,8 +9,8 @@ const RELEASES_BASE = 'https://api.rudrans.com/storage/v1/object/public/releases
 // File names embed the git ref (`v0.2.0` for tag pushes, `main` for branch builds).
 // We default to the latest tagged release and fetch the actual current version
 // from latest.json at runtime so the Setup page never drifts behind a code change.
-const BUILD_REF = 'v0.2.1';
-const FALLBACK_VERSION = '0.2.1';
+const BUILD_REF = 'v0.2.2';
+const FALLBACK_VERSION = '0.2.2';
 
 const buildOsData = (version: string, ref: string) => [
   {
