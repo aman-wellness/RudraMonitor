@@ -1013,9 +1013,12 @@ fn spawn_dlp_loop(state: AppState) {
         }
     });
 
-    // Email-compose tracker — every 30s checks the active browser URL. Heavier
-    // poll interval than before (was 10s) because each call into active_window
-    // triggers a UIA tree walk on Windows which is expensive on busy browsers.
+    // Email-compose tracker — poll every 10s when DLP is enabled (was 30s). The
+    // earlier 30s cadence combined with a 30s session threshold meant customers
+    // had to keep Gmail open for a full minute before any event fired, which
+    // looked like DLP was simply broken. 10s polls + 5s session threshold catch
+    // even short personal-mail visits within ~10-15s. Each poll is still cheap
+    // (one UIA tree walk on Windows, ~50ms).
     tauri::async_runtime::spawn(async move {
         sleep(Duration::from_secs(20)).await;
         let mut tracker = dlp::EmailComposeTracker::default();
@@ -1025,7 +1028,6 @@ fn spawn_dlp_loop(state: AppState) {
                 sleep(Duration::from_secs(30)).await;
                 continue;
             }
-            // Single active_window read per cycle (was 2x — wasted UIA call).
             let aw = active_window::current();
             let url = aw.as_ref().and_then(|w| w.url.clone());
             let evt = tracker.observe(url.as_deref());
@@ -1036,7 +1038,7 @@ fn spawn_dlp_loop(state: AppState) {
                     log::warn!("dlp email post failed: {err}");
                 }
             }
-            sleep(Duration::from_secs(30)).await;
+            sleep(Duration::from_secs(10)).await;
         }
     });
 }

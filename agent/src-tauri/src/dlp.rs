@@ -306,7 +306,12 @@ pub struct EmailComposeTracker {
 }
 
 impl Default for EmailComposeTracker {
-    fn default() -> Self { Self { current: None, min_session_secs: 30 } }
+    // 5s threshold (down from 30s) so customers see DLP firing on Gmail/personal
+    // mail visits within one or two polls. The 30s threshold made the feature
+    // look broken — admins would enable DLP, open Gmail to test, and see nothing
+    // for a minute. Trade-off: more events for casual personal-mail browsing,
+    // but the AI classifier and authorized_domains whitelist filter the noise.
+    fn default() -> Self { Self { current: None, min_session_secs: 5 } }
 }
 
 #[derive(Debug, Clone)]
