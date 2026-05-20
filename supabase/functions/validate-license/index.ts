@@ -23,13 +23,40 @@ Deno.serve(async (req) => {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 
-  const { data: lic, error } = await admin
+  // The license key lives in two places due to legacy schema decisions:
+  // organizations.license_key (what the dashboard surfaces and the customer
+  // copies) and licenses.license_key (the row that drives status / seats /
+  // expiry). Older builds let these drift, so the agent could enroll fine via
+  // enroll-agent (which reads organizations) and then fail validate-license
+  // (which read only licenses) with a confusing "license not found".
+  //
+  // Look up by either column and resolve to the canonical licenses row.
+  let { data: lic, error } = await admin
     .from("licenses")
     .select("id, status, expires_at, organization_id, seat_count, plan_id, plans(code)")
     .eq("license_key", key)
     .maybeSingle();
 
   if (error) return json({ valid: false, reason: error.message }, 500);
+
+  if (!lic) {
+    const { data: org } = await admin
+      .from("organizations")
+      .select("id")
+      .eq("license_key", key)
+      .maybeSingle();
+    if (org) {
+      const { data: licByOrg } = await admin
+        .from("licenses")
+        .select("id, status, expires_at, organization_id, seat_count, plan_id, plans(code)")
+        .eq("organization_id", org.id)
+        .order("issued_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      lic = licByOrg ?? null;
+    }
+  }
+
   if (!lic) return json({ valid: false, reason: "license not found" });
 
   if (body.org_id && lic.organization_id !== body.org_id) {
