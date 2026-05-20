@@ -51,11 +51,18 @@ Deno.serve(async (req) => {
 
   const { data: agent, error: agentErr } = await admin
     .from("agents")
-    .select("id, org_id")
+    .select("id, org_id, videos_enabled")
     .eq("enroll_token", token)
     .maybeSingle();
   if (agentErr) return json({ error: agentErr.message }, 500);
   if (!agent) return json({ error: "invalid token" }, 401);
+
+  // Server-side gate — see upload-screenshot for the rationale. Honour the
+  // dashboard toggle the moment it flips rather than waiting for the agent
+  // to refresh its cached settings.
+  if (!agent.videos_enabled) {
+    return json({ error: "videos disabled for this agent", code: "captures_disabled" }, 403);
+  }
 
   const ts = Math.floor(new Date(body.taken_at).getTime() || Date.now());
   const path = `${agent.org_id}/${agent.id}/${ts}.mp4`;

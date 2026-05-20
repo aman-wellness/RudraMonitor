@@ -59,11 +59,19 @@ Deno.serve(async (req) => {
 
   const { data: agent, error: agentErr } = await admin
     .from("agents")
-    .select("id, org_id")
+    .select("id, org_id, screenshots_enabled")
     .eq("enroll_token", token)
     .maybeSingle();
   if (agentErr) return json({ error: agentErr.message }, 500);
   if (!agent) return json({ error: "invalid token" }, 401);
+
+  // Server-side gate. The agent already checks its cached flag, but that cache
+  // can lag the dashboard by up to a minute, and older builds / a leaked token
+  // could bypass the client-side check entirely. Reject here so the toggle is
+  // honoured the instant it flips, not on the next agent settings refresh.
+  if (!agent.screenshots_enabled) {
+    return json({ error: "screenshots disabled for this agent", code: "captures_disabled" }, 403);
+  }
 
   const ts = Math.floor(new Date(body.taken_at).getTime() || Date.now());
   const path = `${agent.org_id}/${agent.id}/${ts}.jpg`;
