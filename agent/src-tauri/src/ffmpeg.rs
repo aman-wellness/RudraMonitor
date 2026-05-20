@@ -1,13 +1,18 @@
 // Self-contained ffmpeg provisioning.
 //
-// Employee laptops virtually never have ffmpeg on PATH (especially Windows/macOS),
-// which silently disabled video recording on every deployed agent. Instead of asking
-// the customer to push ffmpeg out via MDM, the agent downloads a static binary on
-// first need and caches it under the OS user-data dir. Subsequent ticks reuse the
-// cached copy.
-//
-// Binaries are hosted on the Rudrans Supabase Storage `ffmpeg` public bucket. Each
-// build is a single, statically linked executable (no shared libs, no installer).
+// Resolution order:
+//   1. Bundled binary shipped inside the .app/.msi/.deb. This is the macOS
+//      Screen Recording fix — when ffmpeg lives inside the parent bundle, TCC
+//      attributes screen-capture calls to the parent's identity ("Rudrans
+//      Agent") which already has permission. The previous download-to-user-
+//      data-dir path made ffmpeg an orphan binary at an unsigned location, so
+//      macOS re-prompted for screen recording every few minutes and refused
+//      to remember the grant.
+//   2. Cached copy in OS user-data dir (legacy v0.2.4-v0.2.12 download path).
+//   3. System `ffmpeg` on PATH (lets advanced users override with a custom build).
+//   4. Fresh download from Supabase Storage — last-resort if the bundle was
+//      tampered with or the agent was installed from an old build before
+//      ffmpeg started shipping inside the bundle.
 
 use anyhow::{anyhow, Context, Result};
 use std::path::PathBuf;
@@ -33,6 +38,37 @@ fn cache_path() -> Result<PathBuf> {
     Ok(dir.join(BIN_NAME))
 }
 
+/// Where Tauri drops `bundle.resources` per platform. The agent runs as
+/// `<bundle>/Contents/MacOS/rudrans-agent` on macOS, so resources sit one
+/// dir up under Contents/Resources/. Windows and Linux Tauri builds keep
+/// the resources sibling to the executable.
+fn bundled_paths() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            #[cfg(target_os = "macos")]
+            {
+                // /Applications/Rudrans Agent.app/Contents/MacOS/rudrans-agent
+                //   → ../Resources/ffmpeg
+                if let Some(contents) = exe_dir.parent() {
+                    out.push(contents.join("Resources").join(BIN_NAME));
+                    // Tauri 2 sometimes nests under _up_/ — try both.
+                    out.push(contents.join("Resources").join("_up_").join("resources").join(BIN_NAME));
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                // Windows MSI: <install>\rudrans-agent.exe   ←→ <install>\resources\ffmpeg.exe
+                // Linux deb:    /usr/bin/rudrans-agent       ←→ /usr/lib/.../resources/ffmpeg
+                // Tauri also drops a sibling resources/ dir.
+                out.push(exe_dir.join("resources").join(BIN_NAME));
+                out.push(exe_dir.join(BIN_NAME));
+            }
+        }
+    }
+    out
+}
+
 fn works(path: &PathBuf) -> bool {
     Command::new(path)
         .arg("-version")
@@ -43,19 +79,25 @@ fn works(path: &PathBuf) -> bool {
         .unwrap_or(false)
 }
 
-/// Return a path to a working ffmpeg. Order of preference:
-///   1. Cached copy in app data dir (downloaded previously).
-///   2. System `ffmpeg` on PATH (lets advanced users override with a custom build).
-///   3. Fresh download from Supabase Storage.
+/// Return a path to a working ffmpeg, preferring the binary shipped inside
+/// the app bundle so macOS TCC inherits the parent's Screen Recording grant.
 pub async fn ensure_ffmpeg() -> Result<PathBuf> {
+    for candidate in bundled_paths() {
+        if candidate.exists() && works(&candidate) {
+            log::info!("using bundled ffmpeg at {:?}", candidate);
+            return Ok(candidate);
+        }
+    }
+
     let cached = cache_path()?;
     if cached.exists() && works(&cached) {
+        log::info!("using cached ffmpeg at {:?}", cached);
         return Ok(cached);
     }
 
-    // Fall back to system ffmpeg if the user happens to have one installed.
     let system = PathBuf::from(BIN_NAME);
     if works(&system) {
+        log::info!("using system ffmpeg on PATH");
         return Ok(system);
     }
 

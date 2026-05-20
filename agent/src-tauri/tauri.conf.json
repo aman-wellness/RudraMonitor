@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Rudrans Agent",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "identifier": "com.rudrans.agent",
   "build": {
     "frontendDist": "../dist",
@@ -39,7 +39,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["resources/uninstall.command"],
+    "resources": ["resources/uninstall.command", "resources/ffmpeg*"],
     "category": "Productivity",
     "shortDescription": "Rudrans employee monitoring agent",
     "longDescription": "Background agent that reports system metrics, active applications, and screenshots to Rudrans.",

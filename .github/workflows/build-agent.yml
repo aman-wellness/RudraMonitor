@@ -123,6 +123,37 @@ jobs:
           echo "::add-mask::$CLEAN"
           echo "Sanitized signing key (length: ${#CLEAN})"
 
+      # Drop the right ffmpeg binary into resources/ so Tauri bundles it inside
+      # the .app / .msi / .deb. Macs need this for TCC reasons (a child binary
+      # downloaded at runtime gets its own permission identity and macOS keeps
+      # re-prompting). Bundling means ffmpeg lives inside the signed bundle and
+      # inherits the parent process's Screen Recording grant. Same idea on
+      # Windows and Linux just for first-clip latency.
+      - name: Bundle ffmpeg for ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p agent/src-tauri/resources
+          case "${{ matrix.target }}" in
+            aarch64-apple-darwin|x86_64-apple-darwin)
+              URL="https://api.rudrans.com/storage/v1/object/public/ffmpeg/ffmpeg-macos-universal"
+              OUT="agent/src-tauri/resources/ffmpeg"
+              ;;
+            x86_64-pc-windows-msvc)
+              URL="https://api.rudrans.com/storage/v1/object/public/ffmpeg/ffmpeg-windows-x64.exe"
+              OUT="agent/src-tauri/resources/ffmpeg.exe"
+              ;;
+            x86_64-unknown-linux-gnu)
+              URL="https://api.rudrans.com/storage/v1/object/public/ffmpeg/ffmpeg-linux-x64"
+              OUT="agent/src-tauri/resources/ffmpeg"
+              ;;
+            *)
+              echo "no ffmpeg mapping for ${{ matrix.target }}"; exit 1 ;;
+          esac
+          curl -fL --retry 3 "$URL" -o "$OUT"
+          chmod +x "$OUT" || true
+          ls -lh "$OUT"
+
       - name: Build agent
         working-directory: agent
         env:
