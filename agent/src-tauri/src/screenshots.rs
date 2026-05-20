@@ -1,12 +1,24 @@
 // Primary-monitor screenshot capture. JPEG-encoded with low quality so each frame stays under the
 // 512 KB Edge Function/storage cap, then base64 for transport.
+//
+// macOS Sequoia silently returns a wallpaper-only fallback image when the
+// calling binary doesn't have ScreenCaptureKit/TCC clearance, even when the
+// parent app does. xcap on macOS uses the legacy CGDisplayCreateImage path,
+// which is exactly the API that gets the fallback treatment. Customers
+// reported "every screenshot is the same desktop wallpaper" — that's the
+// fallback in action, not a code bug in xcap. Route macOS screenshot
+// capture through the bundled ffmpeg (single-frame avfoundation grab)
+// so it shares the TCC identity we already fixed for video recording.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{DateTime, Utc};
+#[cfg(not(target_os = "macos"))]
 use image::{codecs::jpeg::JpegEncoder, ColorType};
 
+#[cfg(not(target_os = "macos"))]
 const JPEG_QUALITY: u8 = 50;        // 0-100; ~50 keeps a 1080p frame around 100-200 KB
+#[cfg(not(target_os = "macos"))]
 const MAX_WIDTH: u32 = 1280;        // downscale wider monitors so payload stays small
 
 pub struct CapturedFrame {
@@ -14,6 +26,46 @@ pub struct CapturedFrame {
     pub taken_at: DateTime<Utc>,
 }
 
+#[cfg(target_os = "macos")]
+pub fn capture_primary() -> Result<CapturedFrame> {
+    use std::process::{Command, Stdio};
+
+    let ffmpeg_bin = crate::ffmpeg::locate_ffmpeg()
+        .ok_or_else(|| anyhow!("ffmpeg not found — bundle missing or cache empty"))?;
+    let idx = crate::video::macos_screen_index_for_screenshot(&ffmpeg_bin);
+
+    let mut out = std::env::temp_dir();
+    out.push(format!("rudrans_ss_{}.jpg", chrono::Utc::now().timestamp_millis()));
+    let out_str = out.to_string_lossy().to_string();
+
+    let status = Command::new(&ffmpeg_bin)
+        .args([
+            "-y",
+            "-loglevel", "error",
+            "-f", "avfoundation",
+            "-i", &format!("{}:none", idx),
+            "-frames:v", "1",
+            "-vf", "scale=1280:-2",
+            "-q:v", "5", // JPEG quality ~50%
+            &out_str,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status()
+        .with_context(|| "spawning ffmpeg for screenshot")?;
+    if !status.success() {
+        let _ = std::fs::remove_file(&out);
+        return Err(anyhow!("ffmpeg screenshot exited {}", status));
+    }
+    let bytes = std::fs::read(&out).with_context(|| format!("reading {out_str}"))?;
+    let _ = std::fs::remove_file(&out);
+    Ok(CapturedFrame {
+        jpeg_b64: STANDARD.encode(&bytes),
+        taken_at: Utc::now(),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn capture_primary() -> Result<CapturedFrame> {
     let monitors = xcap::Monitor::all().map_err(|e| anyhow!("xcap monitors: {e}"))?;
     let monitor = monitors

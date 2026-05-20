@@ -79,6 +79,28 @@ fn works(path: &PathBuf) -> bool {
         .unwrap_or(false)
 }
 
+/// Synchronous lookup of an already-present ffmpeg (bundled, cached, or on
+/// PATH). Skips the download path so it can be called from blocking contexts
+/// like screenshot capture. Returns None if none of the known locations have
+/// a working binary — callers should fall back to the async ensure_ffmpeg.
+pub fn locate_ffmpeg() -> Option<PathBuf> {
+    for candidate in bundled_paths() {
+        if candidate.exists() && works(&candidate) {
+            return Some(candidate);
+        }
+    }
+    if let Ok(cached) = cache_path() {
+        if cached.exists() && works(&cached) {
+            return Some(cached);
+        }
+    }
+    let system = PathBuf::from(BIN_NAME);
+    if works(&system) {
+        return Some(system);
+    }
+    None
+}
+
 /// Return a path to a working ffmpeg, preferring the binary shipped inside
 /// the app bundle so macOS TCC inherits the parent's Screen Recording grant.
 pub async fn ensure_ffmpeg() -> Result<PathBuf> {

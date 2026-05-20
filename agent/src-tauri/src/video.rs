@@ -43,6 +43,11 @@ fn input_args(ffmpeg_bin: &PathBuf) -> Vec<String> {
 }
 
 #[cfg(target_os = "macos")]
+pub fn macos_screen_index_for_screenshot(ffmpeg_bin: &PathBuf) -> u32 {
+    macos_screen_index(ffmpeg_bin)
+}
+
+#[cfg(target_os = "macos")]
 fn macos_screen_index(ffmpeg_bin: &PathBuf) -> u32 {
     static CACHED: OnceLock<u32> = OnceLock::new();
     *CACHED.get_or_init(|| {
