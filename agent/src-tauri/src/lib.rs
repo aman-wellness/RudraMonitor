@@ -891,10 +891,20 @@ pub fn run() {
         // fresh Tauri instance — which the watchdog then has to fight, and the user
         // may see stale "Loading…" or duplicate license-key prompts.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.show();
-                let _ = w.unminimize();
-                let _ = w.set_focus();
+            // A second invocation here usually means the user explicitly relaunched
+            // the agent — but it can also fire spuriously after a reboot when
+            // LaunchAgent and the watchdog briefly race. Only surface the window
+            // if there's no enrollment on disk; otherwise the agent should remain
+            // a silent background process exactly as the rebrand spec promised.
+            let enrolled_now = config::load().ok()
+                .and_then(|c| c.enrollment)
+                .is_some();
+            if !enrolled_now {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
+                }
             }
         }))
         .plugin(tauri_plugin_shell::init())
@@ -945,15 +955,18 @@ pub fn run() {
             build_tray(app)?;
 
             // Auto-show the main window ONLY on fresh installs (no enrollment
-            // saved yet). If the agent has an enrollment, do not force the
-            // window open — even if license_key happens to be missing on disk
-            // (that's a recoverable legacy state, not a blocker — the agent
-            // keeps reporting metrics off the enroll_token).
-            let needs_setup = !enrolled;
-            if needs_setup {
-                if let Some(w) = app.get_webview_window("main") {
+            // saved yet). If the agent has an enrollment, FORCE hide the window
+            // — macOS occasionally restores it visible across reboots when the
+            // previous session ended with it on screen (e.g. customer just
+            // entered their license key and hit Activate). Tauri's default
+            // `visible: false` only applies on first show; restoration bypasses
+            // that. Explicit .hide() here is what keeps the agent truly silent.
+            if let Some(w) = app.get_webview_window("main") {
+                if !enrolled {
                     let _ = w.show();
                     let _ = w.set_focus();
+                } else {
+                    let _ = w.hide();
                 }
             }
 
