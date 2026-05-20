@@ -44,7 +44,7 @@ const WINDOW_MAX_SESSION_SECS: i64 = 300;
 const SCREENSHOT_INTERVAL_SECS: u64 = 300;
 const IDLE_POLL_SECS: u64 = 30;
 const UPDATE_CHECK_INTERVAL_SECS: u64 = 30 * 60; // 30 minutes — balance bandwidth vs propagation speed
-const SETTINGS_REFRESH_SECS: u64 = 300; // 5 min — admin toggles propagate within this window.
+const SETTINGS_REFRESH_SECS: u64 = 60; // 1 min — admin toggles propagate within this window.
 
 // Defaults used when settings can't be fetched yet (first launch, network blip).
 const DEFAULT_SETTINGS: api::AgentSettings = api::AgentSettings {

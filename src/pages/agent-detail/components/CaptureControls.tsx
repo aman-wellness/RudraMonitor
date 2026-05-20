@@ -103,7 +103,7 @@ export default function CaptureControls({
         </span>
         <h3 className="text-sm font-semibold text-white">Capture Controls</h3>
       </div>
-      <p className="text-[11px] text-gray-500 mb-4">Enable or disable screen recording features for this agent. Changes apply on the next agent heartbeat (within ~5 min).</p>
+      <p className="text-[11px] text-gray-500 mb-4">Enable or disable screen recording features for this agent. Changes apply on the next agent heartbeat (within ~1 min).</p>
 
       <div className="space-y-3">
         {/* Screenshot */}
@@ -218,7 +218,7 @@ export default function CaptureControls({
         {saved && (
           <span className="text-xs text-emerald-400 flex items-center gap-1">
             <span className="w-3 h-3 flex items-center justify-center"><i className="ri-check-line text-xs" /></span>
-            Saved — agent picks up within 5 min
+            Saved — agent picks up within 1 min
           </span>
         )}
         <button
