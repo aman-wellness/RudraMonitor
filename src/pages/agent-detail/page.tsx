@@ -654,11 +654,7 @@ export default function AgentDetailPage() {
           );
         })()}
 
-        {activeTab === 'system' && (
-          <div className="bg-dark-800 border border-dark-700 rounded-xl p-8 text-center">
-            <p className="text-sm text-gray-500">System health charts open in the dedicated System Health page.</p>
-          </div>
-        )}
+        {activeTab === 'system' && <AgentSystemHealthPanel agentId={agentId!} />}
 
         {activeTab === 'capture' && (
           <CaptureControls
@@ -683,5 +679,134 @@ export default function AgentDetailPage() {
         )}
       </div>
     </DashboardLayout>
+  );
+}
+
+// Per-agent System Health card — was a "open the dedicated page" placeholder
+// before, which gave the customer no signal even though metrics rows were
+// flowing in fine. Show the latest CPU / RAM / disk / battery / network from
+// system_metrics for this specific agent, plus a deep-link to the dedicated
+// dashboard for historical charts.
+function AgentSystemHealthPanel({ agentId }: { agentId: string }) {
+  type Row = {
+    cpu_usage: number | null;
+    ram_usage: number | null;
+    disk_usage: number | null;
+    battery_level: number | null;
+    network_speed: string | null;
+    recorded_at: string;
+  };
+  const [row, setRow] = useState<Row | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [stale, setStale] = useState(false);
+
+  useEffect(() => {
+    if (!agentId) return;
+    let cancelled = false;
+    const fetchLatest = async () => {
+      const { data } = await supabase
+        .from('system_metrics')
+        .select('cpu_usage, ram_usage, disk_usage, battery_level, network_speed, recorded_at')
+        .eq('agent_id', agentId)
+        .order('recorded_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (cancelled) return;
+      setRow((data as Row | null) ?? null);
+      setStale(data ? Date.now() - new Date(data.recorded_at).getTime() > 5 * 60 * 1000 : true);
+      setLoading(false);
+    };
+    void fetchLatest();
+    const id = setInterval(fetchLatest, 30_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [agentId]);
+
+  const barColor = (val: number | null | undefined) => {
+    if (val == null) return 'bg-dark-700';
+    if (val > 80) return 'bg-red-500';
+    if (val > 60) return 'bg-amber-500';
+    return 'bg-emerald-500';
+  };
+
+  if (loading) {
+    return (
+      <div className="bg-dark-800 border border-dark-700 rounded-xl p-8 text-center">
+        <p className="text-sm text-gray-500">Loading system health…</p>
+      </div>
+    );
+  }
+  if (!row) {
+    return (
+      <div className="bg-dark-800 border border-dark-700 rounded-xl p-8 text-center">
+        <p className="text-sm text-gray-500">No metrics yet — agent hasn't reported in the last 30 minutes.</p>
+      </div>
+    );
+  }
+
+  const cards: Array<{ label: string; value: number | null; suffix?: string; icon: string }> = [
+    { label: 'CPU', value: row.cpu_usage, suffix: '%', icon: 'ri-cpu-line' },
+    { label: 'Memory', value: row.ram_usage, suffix: '%', icon: 'ri-database-2-line' },
+    { label: 'Disk', value: row.disk_usage, suffix: '%', icon: 'ri-hard-drive-line' },
+    { label: 'Battery', value: row.battery_level, suffix: '%', icon: 'ri-battery-charge-line' },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <i className="ri-heart-pulse-line text-emerald-400" />
+            <h3 className="text-sm font-semibold text-white">System Health</h3>
+            {stale && (
+              <span className="px-1.5 py-0.5 text-[9px] uppercase rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                Stale
+              </span>
+            )}
+          </div>
+          <span className="text-[11px] text-gray-500">
+            Updated {new Date(row.recorded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {cards.map((c) => (
+            <div key={c.label} className="bg-dark-900 border border-dark-700 rounded-lg p-3">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-1.5 text-xs text-gray-400">
+                  <i className={`${c.icon} text-emerald-400`} />
+                  {c.label}
+                </div>
+                <span className="text-sm font-semibold text-white tabular-nums">
+                  {c.value == null ? '—' : `${c.value}${c.suffix ?? ''}`}
+                </span>
+              </div>
+              <div className="h-1.5 bg-dark-700 rounded-full overflow-hidden">
+                <div
+                  className={`h-full ${barColor(c.value)} transition-all`}
+                  style={{ width: `${Math.min(100, Math.max(0, c.value ?? 0))}%` }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-4 pt-3 border-t border-dark-700 flex items-center justify-between text-xs">
+          <div className="flex items-center gap-2 text-gray-400">
+            <i className="ri-pulse-line" />
+            <span>Network: <span className="text-gray-200">{row.network_speed ?? '—'}</span></span>
+          </div>
+          <a
+            href="/system-health"
+            className="text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
+          >
+            Open full System Health page <i className="ri-arrow-right-up-line" />
+          </a>
+        </div>
+      </div>
+
+      <p className="text-[11px] text-gray-500 px-1">
+        Auto-refresh every 30 seconds. Historical charts (CPU/RAM/disk trends) are on the dedicated System Health page.
+      </p>
+    </div>
   );
 }
