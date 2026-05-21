@@ -693,31 +693,40 @@ fn spawn_background_loop(state: AppState) {
         });
     }
 
-    // Video poller. Loop-level checks were silent skips before v0.2.17, which
-    // hid the most common failure mode (cached videos_enabled stayed false) in
-    // production support — operators saw zero attempts and zero log lines.
-    // Drop the redundant guards here; video_tick() already early-returns on
-    // its own gates and logs each skip reason. Log every iteration so we
-    // always know the loop is alive.
+    // Video poller. Wake every 30s, check cache state, only fire video_tick
+    // when the interval has truly elapsed since the last attempt. Previous
+    // implementations sleep'd for `interval` seconds at the top of every
+    // iteration — and on startup `interval` is the DEFAULT_SETTINGS value
+    // (1800s = 30 minutes) until settings_tick refreshes the cache. That
+    // meant the very first recording attempt didn't fire until ~30 minutes
+    // after launch, even though settings_tick updated the cache to
+    // videos_enabled=true / interval=120s within the first 5 seconds.
     {
         let state = state.clone();
         tauri::async_runtime::spawn(async move {
+            // Initialise to a very stale instant so the first iteration that
+            // satisfies the gating conditions fires immediately.
+            let mut last_attempt = tokio::time::Instant::now()
+                .checked_sub(Duration::from_secs(86400))
+                .unwrap_or_else(tokio::time::Instant::now);
             loop {
+                sleep(Duration::from_secs(30)).await;
                 let (interval, videos_on) = {
                     let s = state.settings.lock().await;
                     (s.video_interval_secs as u64, s.videos_enabled)
                 };
                 let blocked = state.license_blocked.load(Ordering::SeqCst);
-                let snapshot = if ready(&state).await { "ready" } else { "not-ready" };
+                let is_ready = ready(&state).await;
                 log::info!(
-                    "video poller iteration: cache videos_enabled={}, license_blocked={}, interval={}s, agent={}",
-                    videos_on, blocked, interval.max(60), snapshot
+                    "video poller wake: cache videos_enabled={}, license_blocked={}, interval={}s, agent_ready={}, since_last_attempt={}s",
+                    videos_on, blocked, interval.max(60), is_ready,
+                    last_attempt.elapsed().as_secs()
                 );
-                sleep(Duration::from_secs(interval.max(60))).await;
-                if !ready(&state).await {
-                    log::info!("video poller: skip — agent not ready (no enrollment yet)");
-                    continue;
-                }
+                if !is_ready { continue; }
+                if !videos_on { continue; }
+                if blocked { continue; }
+                if last_attempt.elapsed() < Duration::from_secs(interval.max(60)) { continue; }
+                last_attempt = tokio::time::Instant::now();
                 if let Err(e) = video_tick(&state).await {
                     log::warn!("video tick failed: {e}");
                     *state.last_error.lock().await = Some(e.to_string());
