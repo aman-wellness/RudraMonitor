@@ -38,7 +38,10 @@ pub fn capture_primary() -> Result<CapturedFrame> {
     out.push(format!("rudrans_ss_{}.jpg", chrono::Utc::now().timestamp_millis()));
     let out_str = out.to_string_lossy().to_string();
 
-    let status = Command::new(&ffmpeg_bin)
+    // Same hard 15s ceiling as video::record_clip — macOS TCC can silently
+    // block the subprocess without ever returning, and the screenshot loop
+    // would otherwise wedge forever after the first hang.
+    let mut child = Command::new(&ffmpeg_bin)
         .args([
             "-y",
             "-loglevel", "error",
@@ -46,13 +49,33 @@ pub fn capture_primary() -> Result<CapturedFrame> {
             "-i", &format!("{}:none", idx),
             "-frames:v", "1",
             "-vf", "scale=1280:-2",
-            "-q:v", "5", // JPEG quality ~50%
+            "-q:v", "5",
             &out_str,
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .status()
+        .spawn()
         .with_context(|| "spawning ffmpeg for screenshot")?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    log::warn!("ffmpeg screenshot timeout — killing subprocess");
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = std::fs::remove_file(&out);
+                    return Err(anyhow!("ffmpeg screenshot timed out (likely macOS TCC blocking unsigned binary)"));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&out);
+                return Err(anyhow!("waiting on ffmpeg: {e}"));
+            }
+        }
+    };
     if !status.success() {
         let _ = std::fs::remove_file(&out);
         return Err(anyhow!("ffmpeg screenshot exited {}", status));

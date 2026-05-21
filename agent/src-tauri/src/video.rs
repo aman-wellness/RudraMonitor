@@ -135,10 +135,48 @@ fn record_clip_blocking(ffmpeg_bin: &PathBuf) -> Result<CapturedClip> {
         .stderr(Stdio::piped());
 
     let started_at = Utc::now();
-    let output = cmd.output().with_context(|| "spawning ffmpeg")?;
+
+    // Spawn + wait with a hard ceiling. macOS TCC sometimes silently blocks the
+    // ffmpeg subprocess (when the binary's ad-hoc code signature isn't on the
+    // Screen Recording allow-list under a stable identity) and the process
+    // hangs indefinitely with no stderr output. Without a timeout, the calling
+    // tokio task hangs forever and the video poller stops firing future ticks
+    // — exactly the production symptom this v0.2.19 build is fixing.
+    let mut child = cmd.spawn().with_context(|| "spawning ffmpeg")?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(
+        (CLIP_DURATION_SECS as u64).saturating_add(20),
+    );
+    let output = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut stderr = Vec::new();
+                if let Some(mut s) = child.stderr.take() {
+                    use std::io::Read;
+                    let _ = s.read_to_end(&mut stderr);
+                }
+                break std::process::Output { status, stdout: Vec::new(), stderr };
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    log::warn!("ffmpeg recording timeout — killing subprocess");
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = std::fs::remove_file(&out);
+                    return Err(anyhow!(
+                        "ffmpeg recording timed out after {}s (likely macOS TCC blocking unsigned binary)",
+                        (CLIP_DURATION_SECS as u64).saturating_add(20)
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&out);
+                return Err(anyhow!("waiting on ffmpeg: {e}"));
+            }
+        }
+    };
 
     if !output.status.success() {
-        // Best-effort cleanup before bubbling the error.
         let _ = std::fs::remove_file(&out);
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         return Err(anyhow!("ffmpeg failed: {} — {}", output.status, stderr.trim()));
