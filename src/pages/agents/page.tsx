@@ -1,8 +1,20 @@
 import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
-import { useAgents } from '@/lib/dataHooks';
+import { useAgents, useProductivityPerAgent } from '@/lib/dataHooks';
 import { supabase } from '@/lib/supabase';
+
+// Format helpers for the merged stats. Match the agent-detail page's
+// "Xh Ym" / "Xm" conventions so users see consistent numbers when they
+// drill in from a card.
+const formatActive = (seconds: number) => {
+  const m = Math.floor(seconds / 60);
+  if (m < 60) return `0h ${m}m`;
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  return `${h}h ${r}m`;
+};
+const formatIdle = (seconds: number) => `${Math.round(seconds / 60)}m`;
 
 const departments = ['All', 'Development', 'HR', 'Finance', 'Design', 'Sales', 'Support', 'Marketing', 'Unassigned'];
 const deptOptions = departments.filter((d) => d !== 'All');
@@ -10,7 +22,25 @@ const statuses = ['All', 'online', 'idle', 'offline'];
 
 export default function AgentsPage() {
   const navigate = useNavigate();
-  const { agents, loading, updateDepartment, deleteAgent, refresh: refreshAgents } = useAgents();
+  const { agents: rawAgents, loading, updateDepartment, deleteAgent, refresh: refreshAgents } = useAgents();
+  // Per-agent productivity / active / idle stats over the last 24 hours.
+  // useAgents itself hard-codes these to zero on the UI shape because it doesn't
+  // join activity_logs; without this lookup the All Agents page shows every
+  // card at 0% / 0h 0m / 0m even when the agent has been reporting all day.
+  const { byAgent: productivityByAgent } = useProductivityPerAgent(24);
+  const agents = useMemo(
+    () => rawAgents.map((a) => {
+      const p = productivityByAgent[a.id];
+      if (!p) return a;
+      return {
+        ...a,
+        productivity: p.productivity_pct ?? 0,
+        activeHours: formatActive(p.active_seconds ?? 0),
+        idleTime: formatIdle(p.idle_seconds ?? 0),
+      };
+    }),
+    [rawAgents, productivityByAgent],
+  );
   const [removing, setRemoving] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
 
