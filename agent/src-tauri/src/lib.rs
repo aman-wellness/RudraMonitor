@@ -77,6 +77,16 @@ pub struct AppState {
     /// stop pumping data immediately.
     license_blocked: Arc<AtomicBool>,
     license_reason: Arc<Mutex<Option<String>>>,
+    /// Per-process kill-switches set by capture loops after they detect that
+    /// macOS TCC is silently blocking the ad-hoc-signed ffmpeg subprocess.
+    /// Without these, the agent prompts the customer for Screen Recording
+    /// permission every iteration — the OS re-prompts because the binary
+    /// hash doesn't match any stable trust record. Once we observe the
+    /// timeout pattern, freeze the loop for the rest of this process so
+    /// customers don't get harassed. An agent restart (or v0.2.20+ signed
+    /// build) clears the flag and gives macOS another chance.
+    video_capture_disabled: Arc<AtomicBool>,
+    screenshot_capture_disabled: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -92,6 +102,8 @@ impl AppState {
             settings: Arc::new(Mutex::new(DEFAULT_SETTINGS)),
             license_blocked: Arc::new(AtomicBool::new(false)),
             license_reason: Arc::new(Mutex::new(None)),
+            video_capture_disabled: Arc::new(AtomicBool::new(false)),
+            screenshot_capture_disabled: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -682,12 +694,21 @@ fn spawn_background_loop(state: AppState) {
             loop {
                 let interval = state.settings.lock().await.screenshot_interval_secs as u64;
                 sleep(Duration::from_secs(interval.max(30))).await;
+                if state.screenshot_capture_disabled.load(Ordering::SeqCst) {
+                    continue;
+                }
                 if !ready(&state).await {
                     continue;
                 }
                 if let Err(e) = screenshot_tick(&state).await {
                     log::warn!("screenshot tick failed: {e}");
                     *state.last_error.lock().await = Some(e.to_string());
+                    if e.to_string().contains("ffmpeg screenshot timed out") {
+                        log::warn!(
+                            "screenshot capture disabled for this session — macOS TCC blocked the unsigned ffmpeg subprocess."
+                        );
+                        state.screenshot_capture_disabled.store(true, Ordering::SeqCst);
+                    }
                 }
             }
         });
@@ -716,7 +737,13 @@ fn spawn_background_loop(state: AppState) {
                     (s.video_interval_secs as u64, s.videos_enabled)
                 };
                 let blocked = state.license_blocked.load(Ordering::SeqCst);
+                let capture_disabled = state.video_capture_disabled.load(Ordering::SeqCst);
                 let is_ready = ready(&state).await;
+                if capture_disabled {
+                    // Don't even log on every iteration — once disabled for the
+                    // session, stay silent. A restart clears the flag.
+                    continue;
+                }
                 log::info!(
                     "video poller wake: cache videos_enabled={}, license_blocked={}, interval={}s, agent_ready={}, since_last_attempt={}s",
                     videos_on, blocked, interval.max(60), is_ready,
@@ -730,6 +757,17 @@ fn spawn_background_loop(state: AppState) {
                 if let Err(e) = video_tick(&state).await {
                     log::warn!("video tick failed: {e}");
                     *state.last_error.lock().await = Some(e.to_string());
+                    // The ffmpeg timeout case means macOS TCC is silently
+                    // blocking the unsigned subprocess. Don't pop the OS prompt
+                    // every iteration — customer reported it was happening
+                    // every minute. Freeze video captures for the rest of
+                    // this process; next restart / signed build will retry.
+                    if e.to_string().contains("ffmpeg recording timed out") {
+                        log::warn!(
+                            "video capture disabled for this session — macOS TCC blocked the unsigned ffmpeg subprocess. Retry on next agent restart or after Developer ID signing rolls out."
+                        );
+                        state.video_capture_disabled.store(true, Ordering::SeqCst);
+                    }
                 }
             }
         });
