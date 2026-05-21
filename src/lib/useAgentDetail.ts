@@ -168,6 +168,34 @@ export function useAgentDetail(agentId: string | undefined, range: DateRange = '
     void refresh();
   }, [refresh]);
 
+  // Realtime subscription: as soon as the agent inserts a new activity_log
+  // row (screenshot, video, focus session) or alert for THIS agent, the
+  // server pushes the change here and we re-fetch. No more "wait a minute
+  // then refresh" — screenshots appear in the dashboard the instant they
+  // land on the server. Same pattern the DLP page already uses for events.
+  useEffect(() => {
+    if (!agentId) return;
+    const channel = supabase
+      .channel(`agent:${agentId}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'activity_logs', filter: `agent_id=eq.${agentId}` },
+        () => { void refresh(); },
+      )
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'alerts', filter: `agent_id=eq.${agentId}` },
+        () => { void refresh(); },
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'agents', filter: `id=eq.${agentId}` },
+        () => { void refresh(); },
+      )
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [agentId, refresh]);
+
   return { agent, activity, alerts, loading, notFound, refresh };
 }
 
