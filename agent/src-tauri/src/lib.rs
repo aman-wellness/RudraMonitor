@@ -693,17 +693,29 @@ fn spawn_background_loop(state: AppState) {
         });
     }
 
-    // Video poller — opt-in per agent. Skipped silently if videos_enabled=false (settings tick).
+    // Video poller. Loop-level checks were silent skips before v0.2.17, which
+    // hid the most common failure mode (cached videos_enabled stayed false) in
+    // production support — operators saw zero attempts and zero log lines.
+    // Drop the redundant guards here; video_tick() already early-returns on
+    // its own gates and logs each skip reason. Log every iteration so we
+    // always know the loop is alive.
     {
         let state = state.clone();
         tauri::async_runtime::spawn(async move {
             loop {
-                let interval = state.settings.lock().await.video_interval_secs as u64;
+                let (interval, videos_on) = {
+                    let s = state.settings.lock().await;
+                    (s.video_interval_secs as u64, s.videos_enabled)
+                };
+                let blocked = state.license_blocked.load(Ordering::SeqCst);
+                let snapshot = if ready(&state).await { "ready" } else { "not-ready" };
+                log::info!(
+                    "video poller iteration: cache videos_enabled={}, license_blocked={}, interval={}s, agent={}",
+                    videos_on, blocked, interval.max(60), snapshot
+                );
                 sleep(Duration::from_secs(interval.max(60))).await;
                 if !ready(&state).await {
-                    continue;
-                }
-                if !state.settings.lock().await.videos_enabled {
+                    log::info!("video poller: skip — agent not ready (no enrollment yet)");
                     continue;
                 }
                 if let Err(e) = video_tick(&state).await {
