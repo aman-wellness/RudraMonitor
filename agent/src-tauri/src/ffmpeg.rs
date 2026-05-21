@@ -49,10 +49,17 @@ fn bundled_paths() -> Vec<PathBuf> {
             #[cfg(target_os = "macos")]
             {
                 // /Applications/Rudrans Agent.app/Contents/MacOS/rudrans-agent
-                //   → ../Resources/ffmpeg
+                //   → ../Resources/...
                 if let Some(contents) = exe_dir.parent() {
+                    // Tauri 2 actually nests bundle.resources entries under
+                    // Contents/Resources/resources/ (mirrors the layout of
+                    // agent/src-tauri/resources/). The pkg installer drops the
+                    // file at THIS path; everything else is a defensive guess.
+                    out.push(contents.join("Resources").join("resources").join(BIN_NAME));
+                    // Older Tauri 1 layouts flattened straight into Resources/
+                    // and a few snapshots used the _up_/ shim — keep both as
+                    // safety nets so a mixed-build customer still resolves.
                     out.push(contents.join("Resources").join(BIN_NAME));
-                    // Tauri 2 sometimes nests under _up_/ — try both.
                     out.push(contents.join("Resources").join("_up_").join("resources").join(BIN_NAME));
                 }
             }
