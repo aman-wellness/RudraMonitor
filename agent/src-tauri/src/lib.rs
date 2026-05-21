@@ -533,8 +533,12 @@ async fn screenshot_tick(state: &AppState) -> Result<()> {
 }
 
 async fn video_tick(state: &AppState) -> Result<()> {
-    if !license_ok(state) { return Ok(()); }
+    if !license_ok(state) {
+        log::info!("video_tick: skip — license blocked");
+        return Ok(());
+    }
     if !state.settings.lock().await.videos_enabled {
+        log::info!("video_tick: skip — videos_enabled=false in cached settings");
         return Ok(());
     }
     let cfg = state.config.lock().await.clone();
@@ -542,8 +546,13 @@ async fn video_tick(state: &AppState) -> Result<()> {
     let supabase_url = config::supabase_url(&cfg).ok_or_else(|| anyhow!("no supabase url"))?;
     let anon_key = config::supabase_anon_key(&cfg).ok_or_else(|| anyhow!("no anon key"))?;
 
-    // record_clip handles its own spawn_blocking around the ffmpeg call.
+    log::info!("video_tick: starting record_clip");
     let clip = video::record_clip().await?;
+    log::info!(
+        "video_tick: recorded {}s clip ({} bytes b64), uploading",
+        clip.duration_secs,
+        clip.mp4_b64.len()
+    );
 
     let client = api::build_client()?;
     api::upload_video(
@@ -742,6 +751,23 @@ async fn ready(state: &AppState) -> bool {
 ///
 /// Designed to be idempotent: running it twice is harmless. Running it on a partially
 /// installed system (e.g. dev builds) cleans up whatever bits exist and ignores the rest.
+fn log_file_path() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        return dirs::home_dir().map(|h| h.join("Library/Logs/Rudrans Agent/agent.log"));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return dirs::data_local_dir().map(|d| d.join("RudransAgent").join("logs").join("agent.log"));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return dirs::data_dir().map(|d| d.join("RudransAgent").join("logs").join("agent.log"));
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    None
+}
+
 pub fn uninstall_self() -> Result<()> {
     // 0. Mark graceful shutdown + give the watchdog a moment to notice. Without this
     //    the guardian process polls every 2s and may respawn the agent mid-wipe.
@@ -878,8 +904,28 @@ pub fn uninstall_self() -> Result<()> {
 }
 
 pub fn run() {
-    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .try_init();
+    // Persistent file logging. env_logger's default stderr target gets eaten by
+    // macOS when the agent is launched via LaunchAgent or the .pkg bundle (and
+    // by Windows service host on Windows) — every prior support attempt that
+    // asked the customer to redirect stdout into a file came back with a 0-byte
+    // log even though the agent was clearly running. Pipe to a known file
+    // under the OS Logs directory so a single `cat` always works.
+    let log_path = log_file_path();
+    let mut builder = env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info"),
+    );
+    if let Some(ref p) = log_path {
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+            builder.target(env_logger::Target::Pipe(Box::new(f)));
+        }
+    }
+    let _ = builder.try_init();
+    if let Some(ref p) = log_path {
+        log::info!("agent log: {:?}", p);
+    }
 
     // Record our PID + (re)spawn guardian so a Task-Manager-kill is auto-recovered.
     watchdog::register_agent_and_ensure_guardian();

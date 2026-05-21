@@ -51,9 +51,9 @@ pub fn macos_screen_index_for_screenshot(ffmpeg_bin: &PathBuf) -> u32 {
 fn macos_screen_index(ffmpeg_bin: &PathBuf) -> u32 {
     static CACHED: OnceLock<u32> = OnceLock::new();
     *CACHED.get_or_init(|| {
-        // `ffmpeg -f avfoundation -list_devices true -i ""` prints the device
-        // list to stderr and exits non-zero. Lines look like:
+        // Each line in -list_devices output looks like:
         //   [AVFoundation indev @ 0x...] [3] Capture screen 0
+        // Parse the LAST "[N]" group (the logger prefix is the FIRST group).
         let out = Command::new(ffmpeg_bin)
             .args(["-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""])
             .output();
@@ -61,19 +61,24 @@ fn macos_screen_index(ffmpeg_bin: &PathBuf) -> u32 {
             let txt = String::from_utf8_lossy(&o.stderr);
             for line in txt.lines() {
                 if !line.to_lowercase().contains("capture screen") { continue; }
-                // Extract the LAST "[N]" — first "[...]" is the logger context.
                 if let Some(last_open) = line.rfind('[') {
                     if let Some(close) = line[last_open..].find(']') {
                         let n = &line[last_open + 1..last_open + close];
-                        if let Ok(v) = n.parse::<u32>() { return v; }
+                        if let Ok(v) = n.parse::<u32>() {
+                            log::info!("avfoundation screen device detected at index {} (line: {:?})", v, line);
+                            return v;
+                        }
                     }
                 }
             }
+            log::warn!("avfoundation list-devices ran but no 'Capture screen' line matched; falling back to index 1");
+        } else {
+            log::warn!("avfoundation list-devices probe failed; falling back to index 1");
         }
-        // Sensible fallback for modern Mac Studio / MacBook builds where the
-        // screen lands at index 3 (cameras 0/1, mic 2, screen 3). Better to
-        // misfire on a known index than refuse to record at all.
-        3
+        // Fallback ki 1: most MacBooks have just one camera (FaceTime, index 0)
+        // and the screen lands at index 1. Previous fallback of 3 only matched
+        // Mac Studios / multi-camera setups and silently failed elsewhere.
+        1
     })
 }
 
