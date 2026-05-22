@@ -1,0 +1,53 @@
+#!/bin/bash
+# Runs as root during the .pkg install (macOS Installer.app invokes this).
+#
+# Goal: set up the customer's macOS so the freshly-installed Rudrans Agent
+# launches without Gatekeeper warnings AND keeps its Screen Recording / TCC
+# grants stable across every future auto-update. The agent binaries are signed
+# with our self-signed "Rudrans Software Code Signing" leaf cert in CI. macOS
+# only trusts that signature if its root CA ("Rudrans Software Root CA") is in
+# the System keychain marked as a trusted code-signing anchor. We ship the
+# public root cert inside the .app bundle (see tauri.conf.json bundle.resources)
+# and import it here.
+
+set -e
+
+APP="/Applications/Rudrans Agent.app"
+
+# Tauri 2 mirrors source-side resources/ layout, so the .cer can live in either
+# of two paths depending on which bundling pass produced it. Probe both.
+CER=""
+for candidate in \
+  "$APP/Contents/Resources/resources/RudransRootCA.cer" \
+  "$APP/Contents/Resources/_up_/resources/RudransRootCA.cer" \
+  "$APP/Contents/Resources/RudransRootCA.cer"
+do
+  if [ -f "$candidate" ]; then
+    CER="$candidate"
+    break
+  fi
+done
+
+if [ -n "$CER" ]; then
+  # trustRoot policy = the cert anchors trust for ALL purposes (codeSigning +
+  # SSL etc). For our use we only need codeSigning anchoring, but the more
+  # specific `-r codeSign` flag isn't universally honoured across macOS
+  # versions; trustRoot is the safe option.
+  /usr/bin/security add-trusted-cert -d -r trustRoot \
+    -k /Library/Keychains/System.keychain "$CER" 2>/dev/null || true
+fi
+
+# Strip the App Translocation quarantine xattr so the first launch doesn't
+# show a Gatekeeper warning. This is the .pkg-install equivalent of a user
+# right-clicking → Open on a Safari-downloaded .app. Recursively applied.
+/usr/bin/xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+
+# Customers upgrading from a prior ad-hoc-signed build have stale TCC entries
+# keyed by the old cdhash. Reset them so the first launch of THIS signed build
+# re-prompts ONCE, captures the grant under the new (stable) signing identity,
+# and then never re-prompts again.
+/usr/bin/tccutil reset ScreenCapture com.rudrans.agent 2>/dev/null || true
+/usr/bin/tccutil reset Accessibility com.rudrans.agent 2>/dev/null || true
+/usr/bin/tccutil reset SystemPolicyAllFiles com.rudrans.agent 2>/dev/null || true
+
+exit 0

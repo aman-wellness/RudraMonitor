@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- WebKit's JavaScriptCore allocates W+X pages for the JIT compiler. With
+       hardened runtime enabled (which we want for stable TCC), unsigned-
+       executable-memory + jit are both required or Tauri's webview won't
+       launch. -->
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <!-- Tauri loads our own bundled libraries (ffmpeg) which aren't signed
+       under the same identity as the main binary. Hardened runtime would
+       block them without this exception. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+  <!-- The agent calls into AppleScript / Accessibility helpers for active-
+       window and idle-detection on macOS. Without this entitlement
+       hardened runtime would reject those AE messages. -->
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
+</dict>
+</plist>

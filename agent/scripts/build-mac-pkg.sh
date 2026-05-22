@@ -60,80 +60,15 @@ osacompile -o "${STAGE}/Applications/Uninstall ${APP_NAME}.app" "${UNINSTALLER_S
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${UNINSTALLER_BUNDLE_ID}" \
   "${STAGE}/Applications/Uninstall ${APP_NAME}.app/Contents/Info.plist" 2>/dev/null || true
 
-echo "==> writing postinstall script (LaunchDaemon for service-level autostart + first launch)"
-cat > "${SCRIPTS_DIR}/postinstall" <<'POSTINSTALL'
-#!/bin/bash
-# Two-stage install:
-#   1. Drop a system-wide LaunchDaemon (root-owned) with KeepAlive=true so launchd
-#      itself respawns the agent within ~5 seconds even if the employee force-quits
-#      it from Activity Monitor or 'kill -9'. The plist also runs at boot so the
-#      agent is always alive without anyone logging in.
-#   2. Trigger a one-time GUI launch on the current user's session so the
-#      enrollment dialog appears (post-enroll the window auto-hides forever).
-#
-# All paths and the plist itself are public — IT admins can audit / disable through
-# normal launchctl commands. This is enterprise persistence, not a rootkit.
-
-LABEL="com.rudrans.agent"
-DAEMON_PLIST="/Library/LaunchDaemons/${LABEL}.plist"
-APP_BIN="/Applications/Rudrans Agent.app/Contents/MacOS/Rudrans Agent"
-
-# Remove any older user-level LaunchAgent we may have installed previously
-# (the autostart plugin would have written ~/Library/LaunchAgents/<label>.plist).
-LOGGED_IN_USER=$(stat -f%Su /dev/console)
-if [ -n "$LOGGED_IN_USER" ] && [ "$LOGGED_IN_USER" != "root" ]; then
-  USER_HOME=$(eval echo "~$LOGGED_IN_USER")
-  USER_PLIST="${USER_HOME}/Library/LaunchAgents/${LABEL}.plist"
-  if [ -f "$USER_PLIST" ]; then
-    sudo -u "$LOGGED_IN_USER" launchctl unload "$USER_PLIST" 2>/dev/null || true
-    rm -f "$USER_PLIST"
-  fi
-fi
-
-# Write LaunchDaemon plist. KeepAlive=true means launchd will restart the agent
-# any time it exits (whether killed, crashed, or admin tried to stop it) until
-# the daemon itself is unloaded by `launchctl unload`. ThrottleInterval=5 caps
-# the respawn rate so a buggy build can't loop infinitely.
-cat > "${DAEMON_PLIST}" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>${LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>${APP_BIN}</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>ThrottleInterval</key>
-    <integer>5</integer>
-    <key>ProcessType</key>
-    <string>Background</string>
-    <key>StandardOutPath</key>
-    <string>/var/log/rudrans-agent.log</string>
-    <key>StandardErrorPath</key>
-    <string>/var/log/rudrans-agent.log</string>
-</dict>
-</plist>
-PLIST
-
-chown root:wheel "${DAEMON_PLIST}"
-chmod 644 "${DAEMON_PLIST}"
-
-# Load the daemon — this both registers it with launchd and starts it immediately.
-launchctl load -w "${DAEMON_PLIST}" 2>/dev/null || true
-
-# Also pop the GUI on the user's session for first-time enrollment. Once enrolled,
-# the agent hides itself and the daemon keeps it alive in the background.
-if [ -n "$LOGGED_IN_USER" ] && [ "$LOGGED_IN_USER" != "root" ]; then
-  sudo -u "$LOGGED_IN_USER" open -a "/Applications/Rudrans Agent.app" || true
-fi
-exit 0
-POSTINSTALL
+echo "==> copying postinstall script (cert trust + quarantine clear + tccutil reset)"
+# Use the externally-tracked script so CI builds (which call the same file via
+# .github/workflows/build-agent.yml) and local-dev pkg builds run identical
+# logic. The postinstall imports our self-signed root CA into the System
+# keychain (stable TCC identity), strips the quarantine xattr (no Gatekeeper
+# warning on first launch), and resets any stale TCC entries from previous
+# ad-hoc-signed builds so the customer re-grants Screen Recording ONCE
+# against the new signing identity.
+cp "$(dirname "$0")/pkg-scripts/postinstall" "${SCRIPTS_DIR}/postinstall"
 chmod 755 "${SCRIPTS_DIR}/postinstall"
 
 echo "==> building component .pkg"

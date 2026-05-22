@@ -154,11 +154,41 @@ jobs:
           chmod +x "$OUT" || true
           ls -lh "$OUT"
 
+      # Import the self-signed macOS code-signing cert into a temporary
+      # keychain. Tauri's bundler will pick up APPLE_SIGNING_IDENTITY and
+      # run `codesign --force --sign ... --options runtime --entitlements
+      # entitlements.plist` automatically. The cert produces a stable
+      # Designated Requirement across builds → macOS TCC keeps Screen
+      # Recording / Accessibility grants persistent on auto-update.
+      - name: Import macOS code-signing cert
+        if: matrix.os == 'macos-14'
+        env:
+          P12_B64: ${{ secrets.RUDRANS_CODESIGN_P12 }}
+          P12_PASSWORD: ${{ secrets.RUDRANS_CODESIGN_P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.RUDRANS_KEYCHAIN_PASSWORD }}
+        run: |
+          echo "$P12_B64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -lut 3600 build.keychain
+          security import "$RUNNER_TEMP/cert.p12" -k build.keychain \
+            -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          rm "$RUNNER_TEMP/cert.p12"
+          echo "Imported. Identities now available:"
+          security find-identity -v -p codesigning build.keychain
+
       - name: Build agent
         working-directory: agent
         env:
           # TAURI_SIGNING_PRIVATE_KEY is set above via GITHUB_ENV
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Tauri 2's macOS bundler reads this env var to invoke codesign with
+          # the matching identity from the build keychain. tauri.conf.json
+          # also declares it as a fallback for local builds.
+          APPLE_SIGNING_IDENTITY: ${{ matrix.os == 'macos-14' && 'Rudrans Software Code Signing' || '' }}
         run: npm run tauri build -- --bundles ${{ matrix.bundle }} --target ${{ matrix.target }}
 
       # Read the actual product version from tauri.conf.json so artifact names
@@ -266,63 +296,25 @@ jobs:
           rm -rf "$STAGE" "$SCRIPTS_DIR"
           mkdir -p "$STAGE/Applications" "$SCRIPTS_DIR" agent/dist-mac
           cp -R "$APP_PATH" "$STAGE/Applications/"
-          osacompile -o "$STAGE/Applications/Uninstall TrackForce Agent.app" -e \
-            'do shell script "/Applications/TrackForce Agent.app/Contents/MacOS/TrackForce Agent --uninstall || true" with administrator privileges'
 
-          # Postinstall script: registers a system-wide LaunchDaemon (root-owned) with
-          # KeepAlive=true so launchd respawns the agent within ~5s of any kill.
-          # Survives Activity-Monitor force-quit and `sudo killall`. Coexists with the
-          # in-process watchdog: launchd is the outer ring, the watchdog is the inner.
-          cat > "$SCRIPTS_DIR/postinstall" <<'POSTINSTALL'
-          #!/bin/bash
-          set -e
-          LABEL="com.trackforce.agent"
-          DAEMON_PLIST="/Library/LaunchDaemons/${LABEL}.plist"
-          APP_BIN="/Applications/TrackForce Agent.app/Contents/MacOS/TrackForce Agent"
-
-          # Remove any older user-level LaunchAgent left by tauri-plugin-autostart.
-          LOGGED_IN_USER=$(stat -f%Su /dev/console)
-          if [ -n "$LOGGED_IN_USER" ] && [ "$LOGGED_IN_USER" != "root" ]; then
-            USER_HOME=$(eval echo "~$LOGGED_IN_USER")
-            USER_PLIST="${USER_HOME}/Library/LaunchAgents/${LABEL}.plist"
-            if [ -f "$USER_PLIST" ]; then
-              sudo -u "$LOGGED_IN_USER" launchctl unload "$USER_PLIST" 2>/dev/null || true
-              rm -f "$USER_PLIST"
-            fi
-          fi
-
-          cat > "${DAEMON_PLIST}" <<PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>Label</key><string>${LABEL}</string>
-              <key>ProgramArguments</key><array><string>${APP_BIN}</string></array>
-              <key>RunAtLoad</key><true/>
-              <key>KeepAlive</key><true/>
-              <key>ThrottleInterval</key><integer>5</integer>
-              <key>ProcessType</key><string>Background</string>
-              <key>StandardOutPath</key><string>/var/log/rudrans-agent.log</string>
-              <key>StandardErrorPath</key><string>/var/log/rudrans-agent.log</string>
-          </dict>
-          </plist>
-          PLIST
-
-          chown root:wheel "${DAEMON_PLIST}"
-          chmod 644 "${DAEMON_PLIST}"
-          launchctl load -w "${DAEMON_PLIST}" 2>/dev/null || true
-
-          # First-launch enrollment popup on the user's session.
-          if [ -n "$LOGGED_IN_USER" ] && [ "$LOGGED_IN_USER" != "root" ]; then
-            sudo -u "$LOGGED_IN_USER" open -a "/Applications/TrackForce Agent.app" || true
-          fi
-          exit 0
-          POSTINSTALL
+          # Use the externally-tracked postinstall (agent/scripts/pkg-scripts/postinstall)
+          # so local-dev pkg builds (agent/scripts/build-mac-pkg.sh) and CI builds run
+          # the exact same logic. The script (a) imports our self-signed root CA into
+          # the System keychain so the .app's signature is trusted, (b) strips the
+          # quarantine xattr so Gatekeeper doesn't warn on first launch, and (c) resets
+          # any stale TCC entries from prior ad-hoc-signed builds so Screen Recording
+          # gets re-granted ONCE against the new stable signing identity.
+          cp agent/scripts/pkg-scripts/postinstall "$SCRIPTS_DIR/postinstall"
           chmod 755 "$SCRIPTS_DIR/postinstall"
 
+          # Use the actual product version from tauri.conf.json so each pkg's
+          # Info.plist version matches the .app inside it. The previous hard-
+          # coded "0.1.0" was visibly stale in Installer.app's UI.
+          VERSION=$(node -p "require('./agent/src-tauri/tauri.conf.json').version")
+
           pkgbuild --root "$STAGE" \
-            --identifier com.trackforce.agent \
-            --version "0.1.0" \
+            --identifier com.rudrans.agent \
+            --version "$VERSION" \
             --install-location "/" \
             --scripts "$SCRIPTS_DIR" \
             "agent/dist-mac/${{ matrix.remote_name }}"

@@ -37,3 +37,15 @@ npm-debug.log*
 out/
 supabase/_combined_setup.sql
 .vercel
+
+# Self-signed code-signing material — NEVER commit private keys.
+# Public cert (RudransRootCA.cer) is committed under agent/src-tauri/resources/
+# so the .pkg postinstall can import it. Everything else stays local.
+.signing/
+*.p12
+*.p12.b64
+RudransRootCA.key
+leaf.key
+leaf.csr
+leaf.ext
+*.srl
