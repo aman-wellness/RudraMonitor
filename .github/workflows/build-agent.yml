@@ -167,15 +167,12 @@ jobs:
           P12_PASSWORD: ${{ secrets.RUDRANS_CODESIGN_P12_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.RUDRANS_KEYCHAIN_PASSWORD }}
         run: |
-          # Diagnostics — fingerprint locally is:
-          #   p12 sha256:  2273b30fa38c39221fa946e4efd02f49b9c131e666b7e4a586b9752215ef6fab
-          #   pass sha256: 60ad9f538070cc861b6cc0c5c622de39aed831653ee2545aaaf90c176926ee1d
-          # If these don't match, the secret got mangled in transit.
+          # The p12 must be generated with `openssl pkcs12 -export -legacy` —
+          # OpenSSL 3+ defaults to AES-256-CBC encryption which macOS's
+          # `security` CLI cannot parse (fails with "MAC verification failed
+          # during PKCS12 import"). -legacy keeps the old 3DES/RC2 envelope
+          # that SecKeychainItemImport understands.
           printf '%s' "$P12_B64" | openssl base64 -A -d > "$RUNNER_TEMP/cert.p12"
-          echo "p12 size:        $(wc -c < "$RUNNER_TEMP/cert.p12") (expect 6038)"
-          echo "p12 sha256:      $(shasum -a 256 "$RUNNER_TEMP/cert.p12" | cut -d' ' -f1)"
-          echo "PASSWORD length: ${#P12_PASSWORD} (expect 36)"
-          echo "PASSWORD sha256: $(printf '%s' "$P12_PASSWORD" | shasum -a 256 | cut -d' ' -f1)"
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
