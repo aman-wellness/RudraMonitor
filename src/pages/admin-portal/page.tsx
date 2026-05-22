@@ -996,32 +996,7 @@ export default function AdminPortalPage() {
             </div>
 
             {/* Danger Zone */}
-            <div className="bg-dark-800 border border-red-500/20 rounded-xl p-5">
-              <div className="flex items-center gap-2 mb-4">
-                <span className="w-5 h-5 flex items-center justify-center"><i className="ri-alert-line text-red-400 text-sm" /></span>
-                <h3 className="text-sm font-semibold text-white">Danger Zone</h3>
-              </div>
-              <div className="space-y-2">
-                {[
-                  { label: 'Purge All Screenshots', desc: 'Delete all stored screenshots', icon: 'ri-image-line' },
-                  { label: 'Purge All Videos', desc: 'Delete all stored video clips', icon: 'ri-video-line' },
-                  { label: 'Reset All Agents', desc: 'Disconnect and re-register all agents', icon: 'ri-refresh-line' },
-                ].map((action) => (
-                  <div key={action.label} className="flex items-center justify-between bg-dark-900 rounded-lg border border-dark-700 p-3">
-                    <div className="flex items-center gap-2">
-                      <span className="w-4 h-4 flex items-center justify-center text-gray-600"><i className={`${action.icon} text-xs`} /></span>
-                      <div>
-                        <p className="text-xs text-white font-medium">{action.label}</p>
-                        <p className="text-[11px] text-gray-500">{action.desc}</p>
-                      </div>
-                    </div>
-                    <button className="px-3 py-1.5 rounded-lg border border-red-500/30 text-red-400 text-[11px] font-medium hover:bg-red-500/10 transition-colors">
-                      Run
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <DangerZone orgId={organization?.id ?? null} />
           </div>
         )}
       </div>
@@ -1354,6 +1329,117 @@ function SubscriptionTab({
           </p>
         </div>
       )}
+    </div>
+  );
+}
+// Danger Zone — used to be a static UI block with non-functional Run buttons.
+// Now each action POSTs to /functions/v1/org-purge with the user's JWT; the
+// edge fn re-checks org_members.role and does the cleanup with the service
+// role. Storage objects under <org_id>/ are also removed for screenshot/video
+// purges so the freed seat doesn't carry stale media.
+function DangerZone({ orgId }: { orgId: string | null }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+
+  type Action = 'screenshots' | 'videos' | 'reset_agents';
+  const actions: { key: Action; label: string; desc: string; icon: string; confirm: string }[] = [
+    {
+      key: 'screenshots',
+      label: 'Purge All Screenshots',
+      desc: 'Delete every stored screenshot for this organisation. Storage files + activity_logs rows. Cannot be undone.',
+      icon: 'ri-image-line',
+      confirm: 'Delete EVERY screenshot for this organisation? This cannot be undone.',
+    },
+    {
+      key: 'videos',
+      label: 'Purge All Videos',
+      desc: 'Delete every stored video clip. Storage files + activity_logs rows. Cannot be undone.',
+      icon: 'ri-video-line',
+      confirm: 'Delete EVERY video clip for this organisation? This cannot be undone.',
+    },
+    {
+      key: 'reset_agents',
+      label: 'Reset All Agents',
+      desc: 'Rotate enroll_token + mark offline. Agents must be re-installed / re-licensed to resume reporting.',
+      icon: 'ri-refresh-line',
+      confirm: 'Disconnect EVERY agent and force re-enrollment? Existing agents will start failing immediately.',
+    },
+  ];
+
+  const run = async (action: Action, confirmText: string) => {
+    if (!orgId) {
+      setFeedback({ kind: 'err', text: 'Organisation not loaded yet.' });
+      return;
+    }
+    if (!confirm(confirmText)) return;
+    setBusy(action);
+    setFeedback(null);
+    try {
+      const { data: sess } = await supabase.auth.getSession();
+      const jwt = sess.session?.access_token;
+      if (!jwt) throw new Error('No active session');
+      // supabase.functions.invoke would also work, but doing the fetch explicitly
+      // here makes the failure modes (network, 4xx body) easier to surface to
+      // the operator standing in front of the Danger Zone.
+      const url = `${import.meta.env.VITE_SUPABASE_URL || 'https://api.rudrans.com'}/functions/v1/org-purge`;
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${jwt}`,
+          apikey: import.meta.env.VITE_SUPABASE_ANON_KEY || '',
+        },
+        body: JSON.stringify({ action, org_id: orgId }),
+      });
+      const data: Record<string, unknown> = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        throw new Error(typeof data.error === 'string' ? data.error : `HTTP ${resp.status}`);
+      }
+      const summary =
+        action === 'reset_agents'
+          ? `Reset ${data.agents_reset ?? 0} agent(s).`
+          : `Deleted ${data.rows_deleted ?? 0} row(s) + ${data.files_deleted ?? 0} stored file(s).`;
+      setFeedback({ kind: 'ok', text: summary });
+    } catch (e) {
+      setFeedback({ kind: 'err', text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="bg-dark-800 border border-red-500/20 rounded-xl p-5">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <span className="w-5 h-5 flex items-center justify-center"><i className="ri-alert-line text-red-400 text-sm" /></span>
+          <h3 className="text-sm font-semibold text-white">Danger Zone</h3>
+        </div>
+        {feedback && (
+          <span className={`text-[11px] ${feedback.kind === 'ok' ? 'text-emerald-400' : 'text-red-400'}`}>
+            {feedback.text}
+          </span>
+        )}
+      </div>
+      <div className="space-y-2">
+        {actions.map((a) => (
+          <div key={a.key} className="flex items-center justify-between bg-dark-900 rounded-lg border border-dark-700 p-3">
+            <div className="flex items-center gap-2">
+              <span className="w-4 h-4 flex items-center justify-center text-gray-600"><i className={`${a.icon} text-xs`} /></span>
+              <div>
+                <p className="text-xs text-white font-medium">{a.label}</p>
+                <p className="text-[11px] text-gray-500">{a.desc}</p>
+              </div>
+            </div>
+            <button
+              onClick={() => void run(a.key, a.confirm)}
+              disabled={busy !== null || !orgId}
+              className="px-3 py-1.5 rounded-lg border border-red-500/30 text-red-400 text-[11px] font-medium hover:bg-red-500/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {busy === a.key ? 'Running…' : 'Run'}
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
