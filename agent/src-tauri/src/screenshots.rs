@@ -1,28 +1,24 @@
 // Primary-monitor screenshot capture. JPEG-encoded with low quality so each frame stays under the
 // 512 KB Edge Function/storage cap, then base64 for transport.
 //
-// Implementation history:
-//   - v0.2.13 and earlier: xcap on every OS. macOS Sequoia returns a
-//     wallpaper-only fallback on the legacy CGWindowList path WHEN the calling
-//     process doesn't have Screen Recording permission. Once the customer
-//     grants the agent permission, the fallback should stop and real screen
-//     content comes through.
-//   - v0.2.14 to v0.2.19: macOS path moved to a bundled-ffmpeg subprocess,
-//     hoping to share the TCC identity. The opposite happened — ad-hoc signed
-//     subprocesses are mistrusted by macOS on every install (their hash
-//     changes per build), so ffmpeg hung silently and the customer saw NO
-//     screenshots at all instead of wallpaper ones.
-//   - v0.2.20+: revert macOS to xcap. xcap runs INSIDE the agent process, so
-//     its TCC identity is the agent itself — the entry the customer already
-//     granted. If macOS still returns wallpaper, the proper fix is the
-//     Apple Developer ID signing track. ffmpeg subprocess approach abandoned.
+// macOS path (v0.2.22+): use the system /usr/sbin/screencapture binary.
+// It's Apple-signed and trusted, so macOS attributes the screen-capture
+// permission check to the *parent* process (Rudrans Agent) — which is
+// already in the customer's Screen Recording allow-list. This sidesteps
+// both the CGDisplayCreateImage wallpaper-fallback on Sequoia (xcap path)
+// and the ad-hoc-signed bundled-ffmpeg TCC re-prompt loop (v0.2.14 path).
+//
+// Win/Linux still use xcap which works fine on those platforms.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{DateTime, Utc};
+#[cfg(not(target_os = "macos"))]
 use image::{codecs::jpeg::JpegEncoder, ColorType};
 
+#[cfg(not(target_os = "macos"))]
 const JPEG_QUALITY: u8 = 50;        // 0-100; ~50 keeps a 1080p frame around 100-200 KB
+#[cfg(not(target_os = "macos"))]
 const MAX_WIDTH: u32 = 1280;        // downscale wider monitors so payload stays small
 
 pub struct CapturedFrame {
@@ -30,6 +26,66 @@ pub struct CapturedFrame {
     pub taken_at: DateTime<Utc>,
 }
 
+#[cfg(target_os = "macos")]
+pub fn capture_primary() -> Result<CapturedFrame> {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let out = std::env::temp_dir().join(format!(
+        "rudrans_ss_{}.jpg",
+        chrono::Utc::now().timestamp_millis()
+    ));
+    let out_str = out.to_string_lossy().to_string();
+
+    // -x  silent (no sound)
+    // -t jpg  JPEG output
+    // -C  don't capture the cursor (privacy + cleaner reports)
+    // -r  no window shadow
+    // /usr/sbin/screencapture is Apple-signed; TCC attributes the request
+    // to Rudrans Agent (the parent), so the existing Screen Recording grant
+    // applies. No wallpaper fallback, no permission re-prompt on update.
+    let mut child = Command::new("/usr/sbin/screencapture")
+        .args(["-x", "-C", "-r", "-t", "jpg", &out_str])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawning /usr/sbin/screencapture")?;
+
+    // Hard ceiling — Apple's tool is fast (sub-second normally) but if TCC
+    // ever does deny it interactively we don't want the agent loop wedged.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = std::fs::remove_file(&out);
+                return Err(anyhow!("screencapture timed out (TCC may be blocking)"));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(e) => {
+                let _ = std::fs::remove_file(&out);
+                return Err(anyhow!("waiting on screencapture: {e}"));
+            }
+        }
+    };
+    if !status.success() {
+        let _ = std::fs::remove_file(&out);
+        return Err(anyhow!("screencapture exited {}", status));
+    }
+    let bytes = std::fs::read(&out).with_context(|| format!("reading {out_str}"))?;
+    let _ = std::fs::remove_file(&out);
+    if bytes.len() < 1000 {
+        return Err(anyhow!("screencapture produced suspiciously small file ({} bytes)", bytes.len()));
+    }
+    Ok(CapturedFrame {
+        jpeg_b64: STANDARD.encode(&bytes),
+        taken_at: Utc::now(),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn capture_primary() -> Result<CapturedFrame> {
     let monitors = xcap::Monitor::all().map_err(|e| anyhow!("xcap monitors: {e}"))?;
     let monitor = monitors
@@ -42,7 +98,6 @@ pub fn capture_primary() -> Result<CapturedFrame> {
     let (mut w, mut h) = (img.width(), img.height());
     let mut buf = img.into_raw(); // RGBA8
 
-    // Downscale to MAX_WIDTH to keep file size predictable on 4K screens.
     if w > MAX_WIDTH {
         let scale = MAX_WIDTH as f32 / w as f32;
         let new_h = (h as f32 * scale).round() as u32;
@@ -58,7 +113,6 @@ pub fn capture_primary() -> Result<CapturedFrame> {
         buf = resized.into_raw();
     }
 
-    // JPEG only supports RGB; strip the alpha channel.
     let mut rgb = Vec::with_capacity((w * h * 3) as usize);
     for px in buf.chunks_exact(4) {
         rgb.extend_from_slice(&px[..3]);
