@@ -703,9 +703,18 @@ fn spawn_background_loop(state: AppState) {
                 if let Err(e) = screenshot_tick(&state).await {
                     log::warn!("screenshot tick failed: {e}");
                     *state.last_error.lock().await = Some(e.to_string());
-                    if e.to_string().contains("ffmpeg screenshot timed out") {
+                    // On macOS any screenshot failure means TCC trouble — either
+                    // ffmpeg hung, screencapture got a "Deny" click, the parent
+                    // app's ad-hoc signature became distrusted on update, etc.
+                    // Disable for the rest of this process so we stop spawning
+                    // captures that pop up the OS permission dialog every cycle.
+                    // Agent restart clears the flag; Developer ID signing fixes
+                    // it properly.
+                    #[cfg(target_os = "macos")]
+                    {
                         log::warn!(
-                            "screenshot capture disabled for this session — macOS TCC blocked the unsigned ffmpeg subprocess."
+                            "screenshot capture disabled for this session ({}) — restart agent or wait for the Developer-ID-signed build to retry.",
+                            e
                         );
                         state.screenshot_capture_disabled.store(true, Ordering::SeqCst);
                     }
@@ -757,14 +766,17 @@ fn spawn_background_loop(state: AppState) {
                 if let Err(e) = video_tick(&state).await {
                     log::warn!("video tick failed: {e}");
                     *state.last_error.lock().await = Some(e.to_string());
-                    // The ffmpeg timeout case means macOS TCC is silently
-                    // blocking the unsigned subprocess. Don't pop the OS prompt
-                    // every iteration — customer reported it was happening
-                    // every minute. Freeze video captures for the rest of
-                    // this process; next restart / signed build will retry.
-                    if e.to_string().contains("ffmpeg recording timed out") {
+                    // On macOS ANY video tick failure means TCC trouble —
+                    // ffmpeg hung, permission got denied, signature mismatch,
+                    // etc. Freeze captures for the rest of this process so
+                    // customers stop seeing Screen Recording prompts every
+                    // minute. Agent restart clears the flag; the planned
+                    // Developer-ID-signed build will retry cleanly.
+                    #[cfg(target_os = "macos")]
+                    {
                         log::warn!(
-                            "video capture disabled for this session — macOS TCC blocked the unsigned ffmpeg subprocess. Retry on next agent restart or after Developer ID signing rolls out."
+                            "video capture disabled for this session ({}) — restart agent or wait for the Developer-ID-signed build.",
+                            e
                         );
                         state.video_capture_disabled.store(true, Ordering::SeqCst);
                     }
