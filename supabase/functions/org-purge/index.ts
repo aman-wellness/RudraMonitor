@@ -28,17 +28,24 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
 
   // 1. Caller identity via the user's JWT (NOT the anon bearer the dashboard
-  //    sends as the apikey).
+  //    sends as the apikey). Validate the token by asking GoTrue who it
+  //    belongs to — passing the JWT to admin.auth.getUser() does the
+  //    verification server-side and returns the user record. The earlier
+  //    "stuff the JWT into createClient as the api key" approach didn't
+  //    actually validate anything and immediately broke with "invalid user
+  //    session" because the JWT can't authenticate against the api endpoints
+  //    as if it were an api key.
   const auth = req.headers.get("authorization") ?? "";
   const jwt = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
   if (!jwt) return json({ error: "missing user JWT" }, 401);
 
-  const userClient = createClient(SUPABASE_URL, jwt, {
+  const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
     auth: { autoRefreshToken: false, persistSession: false },
-    global: { headers: { Authorization: `Bearer ${jwt}` } },
   });
-  const { data: userRes, error: userErr } = await userClient.auth.getUser();
-  if (userErr || !userRes?.user) return json({ error: "invalid user session" }, 401);
+  const { data: userRes, error: userErr } = await admin.auth.getUser(jwt);
+  if (userErr || !userRes?.user) {
+    return json({ error: `invalid user session: ${userErr?.message ?? "no user"}` }, 401);
+  }
   const userId = userRes.user.id;
 
   let body: { action?: Action; org_id?: string };
@@ -51,9 +58,6 @@ Deno.serve(async (req) => {
   if (!orgId) return json({ error: "org_id required" }, 400);
 
   // 2. Require the caller to be an owner/admin member of the org.
-  const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
   const { data: member } = await admin
     .from("org_members")
     .select("role")
