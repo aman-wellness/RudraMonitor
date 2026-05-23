@@ -196,11 +196,18 @@ async function handleGet(
   admin: ReturnType<typeof createClient>,
   caller: Caller,
 ): Promise<Response> {
+  // session_id is OPTIONAL for agents — they typically don't know the
+  // dashboard's session_id until an offer arrives, so they poll broadly
+  // (filtered by their agent_id via X-Agent-Token) looking for incoming
+  // offers. Dashboards always supply session_id because they own it.
   const sessionId = url.searchParams.get("session_id")?.trim() ?? "";
   const directionParam = url.searchParams.get("direction") ?? "";
   const since = url.searchParams.get("since") ?? new Date(0).toISOString();
-  if (!sessionId || (directionParam !== "to_agent" && directionParam !== "to_dashboard")) {
-    return json({ error: "session_id + direction=to_agent|to_dashboard required" }, 400);
+  if (directionParam !== "to_agent" && directionParam !== "to_dashboard") {
+    return json({ error: "direction=to_agent|to_dashboard required" }, 400);
+  }
+  if (!sessionId && caller.type !== "agent") {
+    return json({ error: "session_id required for non-agent callers" }, 400);
   }
   const direction: Direction = directionParam as Direction;
 
@@ -221,15 +228,25 @@ async function handleGet(
   // doesn't expose request lifecycle hooks reliably across versions.
   const deadline = Date.now() + LONG_POLL_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    const { data: rows } = await admin
+    // Build the row filter dynamically: agents without a session_id read
+    // every "to_agent" message addressed to their agent_id (so they can
+    // see incoming offers before knowing what session_id the dashboard
+    // will use). Dashboards always supply session_id.
+    let q = admin
       .from("webrtc_signaling")
-      .select("id, kind, payload, created_at, agent_id")
-      .eq("session_id", sessionId)
+      .select("id, kind, payload, created_at, agent_id, session_id")
       .eq("direction", direction)
       .gt("created_at", since)
       .gt("expires_at", new Date().toISOString())
       .order("created_at", { ascending: true })
       .limit(50);
+    if (sessionId) {
+      q = q.eq("session_id", sessionId);
+    }
+    if (caller.type === "agent" && caller.agentId) {
+      q = q.eq("agent_id", caller.agentId);
+    }
+    const { data: rows } = await q;
 
     if (rows && rows.length > 0) {
       // Final authorization tightening: ensure all returned rows match
@@ -246,6 +263,10 @@ async function handleGet(
             kind: r.kind,
             payload: r.payload,
             created_at: r.created_at,
+            // Surface session_id so the agent (which poll-broadcasts
+            // before any session exists) can extract it from the
+            // offer envelope and use it on its outbound POSTs.
+            session_id: (r as { session_id?: string }).session_id ?? null,
           })),
         });
       }

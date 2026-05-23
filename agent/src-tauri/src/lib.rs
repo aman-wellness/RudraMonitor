@@ -15,6 +15,7 @@ mod idle;
 mod metrics;
 mod screenshots;
 mod video;
+mod webrtc_stream;
 
 use active_window::{FocusSession, WindowInfo};
 use anyhow::{anyhow, Result};
@@ -810,7 +811,7 @@ fn spawn_background_loop(state: AppState) {
     });
 }
 
-async fn ready(state: &AppState) -> bool {
+pub(crate) async fn ready(state: &AppState) -> bool {
     if state.paused.load(Ordering::SeqCst) {
         return false;
     }
@@ -1098,7 +1099,12 @@ pub fn run() {
             spawn_updater_loop(app.handle().clone());
             // DLP watcher always starts but loops short-circuit when
             // settings.dlp_enabled is false — admin toggles from the dashboard.
-            spawn_dlp_loop(state);
+            spawn_dlp_loop(state.clone());
+            // WebRTC live-monitoring loop. Idle until the dashboard sends an
+            // offer through /webrtc-signal; from that point the agent owns
+            // an RTCPeerConnection that streams ffmpeg's h264 stdout into a
+            // video track until the dashboard closes the session.
+            webrtc_stream::spawn_streaming_loop(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
