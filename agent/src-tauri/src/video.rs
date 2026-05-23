@@ -13,7 +13,11 @@ use std::process::{Command, Stdio};
 #[cfg(target_os = "macos")]
 use std::sync::OnceLock;
 
-const CLIP_DURATION_SECS: u32 = 10;
+// 30s captures show actual user activity — 10s was barely more than a
+// screenshot, customers couldn't tell what was happening between switches.
+// At 5fps that's 150 frames, x264 ultrafast crf 28 keeps the encoded clip
+// well under the 16 MB upload-video ceiling.
+const CLIP_DURATION_SECS: u32 = 30;
 const FRAMERATE: u32 = 5;
 const SCALE_FILTER: &str = "scale=1280:-2";
 
