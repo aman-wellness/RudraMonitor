@@ -38,9 +38,16 @@ use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
 
 const METRICS_INTERVAL_SECS: u64 = 60;
-const WINDOW_POLL_SECS: u64 = 10;
+const WINDOW_POLL_SECS: u64 = 5;
 // Periodically flush a long-running focus session so the dashboard stays fresh.
-const WINDOW_MAX_SESSION_SECS: i64 = 300;
+// Was 300s — that meant the currently-focused window didn't surface in the
+// browser/app tab until the user switched away or 5 full minutes elapsed. 30s
+// gives near-realtime visibility: a customer opening Chrome sees "Chrome" in
+// the dashboard within 30 seconds at the latest (a fresh switch is detected
+// at the next 5s window poll). Combined with the dashboard's Supabase
+// Realtime subscription on activity_logs INSERTs, updates land in the UI
+// almost instantly once they hit Postgres.
+const WINDOW_MAX_SESSION_SECS: i64 = 30;
 const SCREENSHOT_INTERVAL_SECS: u64 = 300;
 const IDLE_POLL_SECS: u64 = 30;
 const UPDATE_CHECK_INTERVAL_SECS: u64 = 30 * 60; // 30 minutes — balance bandwidth vs propagation speed
