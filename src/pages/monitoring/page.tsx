@@ -3,6 +3,7 @@ import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import MonitoringTabs, { type TabId } from './components/MonitoringTabs';
 import ApplicationsTab from './components/ApplicationsTab';
 import BrowserTab from './components/BrowserTab';
+import LiveTab from './components/LiveTab';
 import VideosTab from './components/VideosTab';
 import ScreenshotsTab from './components/ScreenshotsTab';
 import IdleTab from './components/IdleTab';
@@ -43,6 +44,7 @@ export default function MonitoringPage() {
         {/* Tab Content */}
         {activeTab === 'applications' && <ApplicationsTab />}
         {activeTab === 'browser' && <BrowserTab />}
+        {activeTab === 'live' && <LiveTab />}
         {activeTab === 'videos' && <VideosTab />}
         {activeTab === 'screenshots' && <ScreenshotsTab />}
         {activeTab === 'idle' && <IdleTab />}
