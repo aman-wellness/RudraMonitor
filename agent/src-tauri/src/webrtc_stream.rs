@@ -264,6 +264,14 @@ async fn handle_session(
     }
 
     // Watch for connection death so we can tear ffmpeg down.
+    //
+    // IMPORTANT: only tear down on Failed or Closed — NOT on Disconnected.
+    // The webrtc-rs ICE agent transiently dips through Disconnected during
+    // initial DTLS handshake on some networks (relay-to-relay through the
+    // same coturn instance especially). If we kill ffmpeg on the first
+    // Disconnected, the stream never recovers and the dashboard sees a
+    // hard "Peer connection disconnected" error within a few seconds of
+    // clicking Live. The proper terminal states are Failed and Closed.
     let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
     {
         let stop_flag = stop_flag.clone();
@@ -273,9 +281,7 @@ async fn handle_session(
                 log::info!("webrtc ice state: {s}");
                 if matches!(
                     s,
-                    RTCIceConnectionState::Failed
-                        | RTCIceConnectionState::Disconnected
-                        | RTCIceConnectionState::Closed
+                    RTCIceConnectionState::Failed | RTCIceConnectionState::Closed
                 ) {
                     stop_flag.store(true, std::sync::atomic::Ordering::SeqCst);
                 }
@@ -525,6 +531,29 @@ async fn pump_ffmpeg_into_track(
         .stdout
         .take()
         .ok_or_else(|| anyhow!("ffmpeg stdout missing"))?;
+
+    // Drain stderr concurrently so the pipe never fills (which would block
+    // ffmpeg's writes and freeze the pipeline). Log any lines we see — when
+    // capture fails, the explanation lives here, not in our return value.
+    if let Some(mut err) = child.stderr.take() {
+        tauri::async_runtime::spawn(async move {
+            let mut buf = vec![0u8; 4096];
+            loop {
+                match err.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let s = String::from_utf8_lossy(&buf[..n]);
+                        for line in s.lines() {
+                            if !line.trim().is_empty() {
+                                log::warn!("webrtc ffmpeg: {}", line);
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
 
     log::info!("webrtc: ffmpeg pipeline started, streaming h264 into track");
 
