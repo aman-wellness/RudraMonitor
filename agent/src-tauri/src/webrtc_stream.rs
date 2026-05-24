@@ -518,6 +518,13 @@ async fn pump_ffmpeg_into_track(
         .arg("-profile:v").arg("baseline")
         .arg("-g").arg("30")
         .arg("-keyint_min").arg("30")
+        // Re-emit SPS/PPS on EVERY keyframe. Without this, libx264 writes
+        // them once at the start of the stream and the dashboard (which
+        // typically joins mid-stream) never sees them → no decode → black
+        // video. `-bsf:v dump_extra` injects the codec extradata before
+        // each IDR so any consumer can sync up on the next keyframe.
+        .arg("-x264opts").arg("repeat-headers=1")
+        .arg("-bsf:v").arg("dump_extra")
         .arg("-vf").arg(format!("scale={}:-2", TARGET_WIDTH))
         .arg("-an")
         .arg("-f").arg("h264")
