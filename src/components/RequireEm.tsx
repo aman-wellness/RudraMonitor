@@ -9,7 +9,7 @@ import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import type { ReactNode } from 'react';
 
 export default function RequireEm({ children }: { children: ReactNode }) {
-  const { em_active, em_subscribed, subscription_status, trial_ends_at, loading } = useFeatures();
+  const { em_enabled, em_subscribed, subscription_status, trial_ends_at, loading } = useFeatures();
 
   if (loading) {
     return (
@@ -19,7 +19,7 @@ export default function RequireEm({ children }: { children: ReactNode }) {
     );
   }
 
-  if (em_active) {
+  if (em_enabled) {
     return <>{children}</>;
   }
 

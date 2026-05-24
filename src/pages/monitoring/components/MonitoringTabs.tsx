@@ -13,12 +13,20 @@ export type TabId = (typeof tabLabels)[number]['id'];
 interface Props {
   active: TabId;
   onChange: (id: TabId) => void;
+  // Optional whitelist of tab IDs to render. If omitted, every tab is shown
+  // (default behavior, matches pre-gating callers). Used by the monitoring
+  // page to hide Live / Remote / Videos / Screenshots when the org's plan
+  // doesn't include them.
+  visibleIds?: readonly TabId[];
 }
 
-export default function MonitoringTabs({ active, onChange }: Props) {
+export default function MonitoringTabs({ active, onChange, visibleIds }: Props) {
+  const tabs: ReadonlyArray<(typeof tabLabels)[number]> = visibleIds
+    ? tabLabels.filter((t) => visibleIds.includes(t.id))
+    : tabLabels;
   return (
     <div className="flex items-center gap-1 bg-dark-900 rounded-lg p-1 overflow-x-auto">
-      {tabLabels.map((tab) => (
+      {tabs.map((tab) => (
         <button
           key={tab.id}
           onClick={() => onChange(tab.id)}

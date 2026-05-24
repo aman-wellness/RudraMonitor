@@ -2,6 +2,8 @@ import { Suspense, lazy } from "react";
 import type { RouteObject } from "react-router-dom";
 import ProtectedRoute from "./ProtectedRoute";
 import RequireEm from "../components/RequireEm";
+import RequireFeature from "../components/RequireFeature";
+import type { FeatureCode } from "../lib/useFeatures";
 import { RequireSuperAdmin, RequirePartner } from "../lib/RequireRole";
 
 // Marketing pages: keep Home eager so the landing page paints instantly.
@@ -80,6 +82,11 @@ const superAdmin = (el: React.ReactNode) => protect(<RequireSuperAdmin>{el}</Req
 const partner    = (el: React.ReactNode) => protect(<RequirePartner>{el}</RequirePartner>);
 // Gate /employees/* behind the EM subscription (trial orgs pass through).
 const em        = (el: React.ReactNode) => protect(<RequireEm>{el}</RequireEm>);
+// Generic feature gate — route renders only when the org has the named
+// feature (or is on trial). Used for /dlp and any future
+// feature-restricted routes that aren't EM-suite.
+const requires = (code: FeatureCode, el: React.ReactNode) =>
+  protect(<RequireFeature code={code}>{el}</RequireFeature>);
 
 const routes: RouteObject[] = [
   { path: "/", element: <Home /> },
@@ -88,16 +95,20 @@ const routes: RouteObject[] = [
   { path: "/signup-success",  element: wrap(<SignupSuccess />) },
   { path: "/complete-signup", element: wrap(<CompleteSignup />) },
   { path: "/dashboard", element: protect(<Dashboard />) },
-  { path: "/monitoring", element: protect(<Monitoring />) },
-  { path: "/agents", element: protect(<Agents />) },
-  { path: "/agents/:agentId", element: protect(<AgentDetail />) },
-  { path: "/setup", element: protect(<Setup />) },
-  { path: "/alerts", element: protect(<Alerts />) },
-  { path: "/system-health", element: protect(<SystemHealth />) },
-  { path: "/performance-reports", element: protect(<PerformanceReports />) },
+  // Monitoring family — require the basic monitoring feature. EM-only
+  // customers (who haven't bought any monitoring tier) get the upgrade CTA.
+  { path: "/monitoring", element: requires("monitoring_basic", <Monitoring />) },
+  { path: "/agents", element: requires("monitoring_basic", <Agents />) },
+  { path: "/agents/:agentId", element: requires("monitoring_basic", <AgentDetail />) },
+  { path: "/setup", element: requires("monitoring_basic", <Setup />) },
+  { path: "/alerts", element: requires("monitoring_basic", <Alerts />) },
+  { path: "/system-health", element: requires("monitoring_basic", <SystemHealth />) },
+  { path: "/performance-reports", element: requires("monitoring_basic", <PerformanceReports />) },
   { path: "/admin-portal", element: protect(<AdminPortal />) },
-  { path: "/reports", element: protect(<Reports />) },
-  { path: "/dlp", element: protect(<DlpPage />) },
+  { path: "/reports", element: requires("monitoring_basic", <Reports />) },
+  // DLP — its own feature flag. Available on Pro, Enterprise, or as add-on
+  // layered onto Starter.
+  { path: "/dlp", element: requires("dlp", <DlpPage />) },
 
   // Employee Management — gated behind the EM subscription (trial orgs pass through).
   { path: "/employees",              element: em(<EmployeesList />) },

@@ -1,6 +1,8 @@
 import { useEffect, useState, useMemo } from 'react';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import { useAuth } from '@/context/AuthContext';
+import { useFeatures } from '@/lib/useFeatures';
+import UpgradeRequired from '@/components/UpgradeRequired';
 import {
   supabase,
   type DlpEvent,
@@ -22,7 +24,23 @@ const ALL_SEVERITIES: DlpSeverity[] = ['low', 'medium', 'high', 'critical'];
 
 export default function DlpPage() {
   const { organization } = useAuth();
+  const features = useFeatures();
   const [tab, setTab] = useState<Tab>('usb');
+
+  // Gate the whole page behind the DLP feature flag. While useFeatures is
+  // still resolving, fall through to the normal render — we don't want a
+  // flash of "upgrade required" on every fresh page-load.
+  if (!features.loading && !features.dlp_enabled) {
+    return (
+      <DashboardLayout>
+        <UpgradeRequired
+          feature="Data Loss Prevention"
+          icon="ri-shield-keyhole-line"
+          blurb="DLP monitors USB transfers, email attachments, and clipboard exfiltration with AI-powered classification. Available on Professional or as an add-on to Starter."
+        />
+      </DashboardLayout>
+    );
+  }
   const [rows, setRows] = useState<(DlpEvent & { agents?: { agent_name: string } | null })[]>([]);
   const [loading, setLoading] = useState(true);
 
