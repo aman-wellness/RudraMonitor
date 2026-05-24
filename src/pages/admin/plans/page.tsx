@@ -42,6 +42,28 @@ export default function AdminPlans() {
     await load();
   };
 
+  const deletePlan = async (p: Plan) => {
+    // Two-step confirm — typed name match. Plans are FK-referenced by
+    // `licenses.plan_id`, so a hard delete fails when any org subscribed
+    // to it. Tell the admin to deactivate first if they hit that case.
+    const typed = window.prompt(
+      `Type the plan code "${p.code}" to confirm permanent deletion. This removes the plan from the landing page, customer portal, and admin portal everywhere.`,
+    );
+    if (typed !== p.code) {
+      if (typed !== null) window.alert('Plan code did not match. Deletion cancelled.');
+      return;
+    }
+    const { error } = await supabase.from('plans').delete().eq('id', p.id);
+    if (error) {
+      window.alert(
+        `Delete failed: ${error.message}\n\nLikely cause: an organisation is still subscribed to this plan. ` +
+        `Deactivate it instead (click Active → Inactive) — that hides it from the storefront without breaking existing licenses.`,
+      );
+      return;
+    }
+    await load();
+  };
+
   return (
     <AdminLayout title="Plans">
       <div className="flex items-center justify-between mb-4">
@@ -94,7 +116,16 @@ export default function AdminPlans() {
                   </button>
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <button onClick={() => setEditing(p)} className="text-cyan-400 hover:text-cyan-300 text-xs">Edit</button>
+                  <div className="inline-flex items-center gap-3">
+                    <button onClick={() => setEditing(p)} className="text-cyan-400 hover:text-cyan-300 text-xs">Edit</button>
+                    <button
+                      onClick={() => deletePlan(p)}
+                      className="text-rose-400 hover:text-rose-300 text-xs"
+                      title="Permanently delete this plan everywhere"
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </td>
               </tr>
               );
