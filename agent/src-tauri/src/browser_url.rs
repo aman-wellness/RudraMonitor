@@ -130,50 +130,114 @@ pub fn current_for_app(app_name: &str) -> Option<BrowserContext> {
 // effective polling budget).
 #[cfg(target_os = "windows")]
 pub fn current_for_app(_app_name: &str) -> Option<BrowserContext> {
-    use uiautomation::UIAutomation;
-    use uiautomation::types::{Handle, TreeScope, UIProperty};
-    use uiautomation::variants::Variant;
-    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    // UIAutomation tree traversal on a focused browser is expensive — `find_all`
+    // can take 200-1500ms and holds COM apartment locks that briefly stall
+    // input processing in the browser itself (manifests as cursor / scroll
+    // lag for the end-user). Two mitigations:
+    //
+    //   1. Per-HWND title cache. We only re-query UIA when the foreground
+    //      window's title changes (which means a navigation or tab switch).
+    //      A user reading the same page for 30 minutes triggers exactly
+    //      ONE UIA walk, not 360.
+    //   2. Hard 400ms timeout via a worker thread + channel try_recv.
+    //      If UIA hasn't returned by then we abandon the query and fall
+    //      back to the window title. The orphaned thread will finish on
+    //      its own and we'll pick up its result on the next tick if the
+    //      title hasn't changed since.
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
+    use std::time::Duration;
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
 
-    // 1. Foreground HWND. `windows-rs` >= 0.52 wraps the handle as `*mut c_void`,
-    //    so `hwnd.0` is a raw pointer, not an integer.
+    static CACHE: OnceLock<Mutex<Option<CacheEntry>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+
+    // Cheap WinAPI title read — sub-millisecond. Used as the cache key.
     let hwnd = unsafe { GetForegroundWindow() };
     if hwnd.0.is_null() { return None; }
+    let hwnd_addr = hwnd.0 as usize;
+    let mut title_buf = [0u16; 512];
+    let title_len = unsafe { GetWindowTextW(hwnd, &mut title_buf) } as usize;
+    let title = if title_len > 0 {
+        Some(String::from_utf16_lossy(&title_buf[..title_len]))
+    } else {
+        None
+    };
 
-    // 2. Wrap in a UIA element. `uiautomation::Handle` is `pub struct Handle(pub isize)`,
-    //    so we cast the raw pointer to isize before constructing it.
-    let automation = UIAutomation::new().ok()?;
-    let handle = Handle::from(hwnd.0 as isize);
-    let root = automation.element_from_handle(handle).ok()?;
-
-    // Window title (used as a fallback for page title; Chromium browsers expose
-    // the active tab title here as "Page Title - Browser Name").
-    let title = root.get_name().ok().filter(|s| !s.is_empty());
-
-    // 3. Walk descendants looking for Edit controls. The address bar is always
-    //    an Edit (ControlType::Edit). On Chromium the AutomationId varies by
-    //    browser, but the address bar value always passes the URL/host regex
-    //    below. We grab the first Edit whose value looks like a URL.
-    let edit_cond = automation
-        .create_property_condition(UIProperty::ControlType, Variant::from(50004i32), None)
-        .ok()?;
-    let edits = root.find_all(TreeScope::Descendants, &edit_cond).ok()?;
-
-    let mut url: Option<String> = None;
-    for e in edits.iter() {
-        let value = e.get_property_value(UIProperty::ValueValue).ok()
-            .and_then(|v| v.get_string().ok())
-            .filter(|s| !s.is_empty());
-        if let Some(v) = value {
-            if looks_like_url(&v) {
-                url = Some(if v.contains("://") { v } else { format!("https://{}", v) });
-                break;
+    // Cache hit? (same window, same title — same tab + same URL).
+    if let Ok(guard) = cache.lock() {
+        if let Some(entry) = guard.as_ref() {
+            if entry.hwnd == hwnd_addr && entry.title == title {
+                return Some(BrowserContext {
+                    url: entry.url.clone(),
+                    page_title: entry.title.clone(),
+                });
             }
+        }
+    }
+
+    // Cache miss → do the expensive UIA walk on a worker thread with a
+    // 400ms ceiling. Anything slower than that is unacceptable; the user
+    // gets the title-only fallback this tick and a fresh attempt next
+    // tick (5s later). One stalled UIA worker doesn't stall the next.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(query_uia(hwnd_addr));
+    });
+    let url = match rx.recv_timeout(Duration::from_millis(400)) {
+        Ok(u) => u,
+        Err(_) => None,
+    };
+
+    // Update cache only when we got an answer — don't poison the cache on
+    // a timeout (next call will retry).
+    if url.is_some() {
+        if let Ok(mut guard) = cache.lock() {
+            *guard = Some(CacheEntry {
+                hwnd: hwnd_addr,
+                title: title.clone(),
+                url: url.clone(),
+            });
         }
     }
 
     if url.is_none() && title.is_none() { return None; }
     Some(BrowserContext { url, page_title: title })
+}
+
+#[cfg(target_os = "windows")]
+struct CacheEntry {
+    hwnd: usize,
+    title: Option<String>,
+    url: Option<String>,
+}
+
+#[cfg(target_os = "windows")]
+fn query_uia(hwnd_addr: usize) -> Option<String> {
+    use uiautomation::UIAutomation;
+    use uiautomation::types::{Handle, TreeScope, UIProperty};
+    use uiautomation::variants::Variant;
+
+    let automation = UIAutomation::new().ok()?;
+    let handle = Handle::from(hwnd_addr as isize);
+    let root = automation.element_from_handle(handle).ok()?;
+    let edit_cond = automation
+        .create_property_condition(UIProperty::ControlType, Variant::from(50004i32), None)
+        .ok()?;
+    let edits = root.find_all(TreeScope::Descendants, &edit_cond).ok()?;
+    for e in edits.iter() {
+        let value = e
+            .get_property_value(UIProperty::ValueValue)
+            .ok()
+            .and_then(|v| v.get_string().ok())
+            .filter(|s| !s.is_empty());
+        if let Some(v) = value {
+            if looks_like_url(&v) {
+                return Some(if v.contains("://") { v } else { format!("https://{}", v) });
+            }
+        }
+    }
+    None
 }
 
 #[cfg(target_os = "windows")]

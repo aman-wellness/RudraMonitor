@@ -180,7 +180,13 @@ fn respawn_agent() -> Result<()> {
     {
         use std::os::windows::process::CommandExt;
         const DETACHED_PROCESS: u32 = 0x0000_0008;
-        cmd.creation_flags(DETACHED_PROCESS);
+        // CREATE_NO_WINDOW must be set on EVERY respawn — without it the
+        // child briefly inherits a console window even though the agent
+        // EXE itself is built with windows_subsystem="windows". On crash-
+        // restart loops this manifests as random PowerShell/CMD flashes
+        // every few minutes. Matches the flag set in spawn_guardian.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW);
     }
     #[cfg(unix)]
     {
