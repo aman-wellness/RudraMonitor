@@ -3,14 +3,15 @@ import OSCard from './components/OSCard';
 import { useEffect, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useAgents } from '@/lib/dataHooks';
+import { supabase } from '@/lib/supabase';
 
 const RELEASES_BASE = 'https://api.rudrans.com/storage/v1/object/public/releases';
 // Builds are produced by .github/workflows/build-agent.yml on every workflow_dispatch / tag push.
 // File names embed the git ref (`v0.2.0` for tag pushes, `main` for branch builds).
 // We default to the latest tagged release and fetch the actual current version
 // from latest.json at runtime so the Setup page never drifts behind a code change.
-const BUILD_REF = 'v0.2.2';
-const FALLBACK_VERSION = '0.2.2';
+const BUILD_REF = 'v0.2.3';
+const FALLBACK_VERSION = '0.2.3';
 
 const buildOsData = (version: string, ref: string) => [
   {
@@ -103,6 +104,18 @@ export default function SetupPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [newAgentName, setNewAgentName] = useState('');
   const [newAgentDept, setNewAgentDept] = useState('Unassigned');
+  // Live department list for this org. Falls back to the static list below
+  // when the org hasn't customised departments yet (fresh signups).
+  const [orgDepts, setOrgDepts] = useState<string[] | null>(null);
+  useEffect(() => {
+    supabase.from('org_departments').select('name').order('name').then(({ data }) => {
+      if (!data) return;
+      const names = data.map((d) => d.name).filter(Boolean);
+      setOrgDepts(names.length > 0 ? names : null);
+    });
+  }, []);
+  const DEPT_FALLBACK = ['Unassigned', 'Development', 'HR', 'Finance', 'Design', 'Sales', 'Support', 'Marketing'];
+  const deptOptions = orgDepts ? ['Unassigned', ...orgDepts.filter((n) => n !== 'Unassigned')] : DEPT_FALLBACK;
   const [newAgentOS, setNewAgentOS] = useState('Windows');
   const [creating, setCreating] = useState(false);
   const { organization } = useAuth();
@@ -340,7 +353,7 @@ echo "Done. Launch Rudrans Agent and enter your License Key."
                           onChange={(e) => setNewAgentDept(e.target.value)}
                           className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500"
                         >
-                          {['Unassigned','Development','HR','Finance','Design','Sales','Support','Marketing'].map((d) => (
+                          {deptOptions.map((d) => (
                             <option key={d}>{d}</option>
                           ))}
                         </select>

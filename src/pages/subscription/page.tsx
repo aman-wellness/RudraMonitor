@@ -3,7 +3,7 @@
 // follow-up; for now the EM toggle flips the org flag immediately so admins
 // can test feature gating before the live payment flow is wired.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import { supabase } from '@/lib/supabase';
@@ -15,6 +15,29 @@ export default function SubscriptionPage() {
   const features = useFeatures();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Pull EM add-on pricing live from the `plans` table so the UI never drifts
+  // from billing reality. Both prices live on every plan row (a flat add-on),
+  // so we just take one row.
+  const [emPriceUsd, setEmPriceUsd] = useState<number | null>(null);
+  const [emPriceInr, setEmPriceInr] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    supabase
+      .from('plans')
+      .select('em_addon_price_usd, em_addon_price_inr')
+      .eq('is_active', true)
+      .limit(1)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (cancelled || !data) return;
+        setEmPriceUsd(Number(data.em_addon_price_usd));
+        setEmPriceInr(Number(data.em_addon_price_inr));
+      });
+    return () => { cancelled = true; };
+  }, []);
+  // Indian orgs see INR — everyone else USD. organization.country_code is set
+  // at signup; default to USD when unknown.
+  const showInr = (organization?.country_code ?? '').toUpperCase() === 'IN';
 
   const toggleEm = async (action: 'enable_em' | 'disable_em') => {
     if (action === 'disable_em' && !confirm('Disable Employee Management? You can re-enable anytime.')) return;
@@ -98,7 +121,11 @@ export default function SubscriptionPage() {
 
               <div className="bg-dark-900/60 border border-dark-700 rounded-lg p-3 mb-3">
                 <div className="flex items-baseline gap-2">
-                  <span className="text-2xl font-bold text-white">$100</span>
+                  <span className="text-2xl font-bold text-white">
+                    {showInr
+                      ? emPriceInr !== null ? `₹${emPriceInr.toLocaleString('en-IN')}` : '—'
+                      : emPriceUsd !== null ? `$${emPriceUsd}` : '—'}
+                  </span>
                   <span className="text-xs text-gray-400">/ month · unlimited users</span>
                 </div>
                 <p className="text-[11px] text-gray-500 mt-0.5">

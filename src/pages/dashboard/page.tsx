@@ -49,7 +49,10 @@ export default function Dashboard() {
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
               {trialBadge}
             </span>
-            <button className="px-3 py-1.5 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-300 text-xs font-medium transition-colors flex items-center gap-1.5">
+            <button
+              onClick={() => window.location.reload()}
+              className="px-3 py-1.5 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-300 text-xs font-medium transition-colors flex items-center gap-1.5"
+            >
               <span className="w-4 h-4 flex items-center justify-center">
                 <i className="ri-refresh-line text-sm" />
               </span>
