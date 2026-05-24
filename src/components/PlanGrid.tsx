@@ -11,6 +11,7 @@
 // a `usePlans()` hook query.
 
 import { useMemo, useState } from 'react';
+import { usePlans } from '@/lib/usePlans';
 
 export type Currency = 'INR' | 'USD';
 export type Cycle = 'monthly' | 'yearly';
@@ -94,7 +95,11 @@ const ENTERPRISE: PlanCard = {
   enterprise: true,
 };
 
-export const ALL_PLANS: PlanCard[] = [STARTER, PROFESSIONAL, EM_STANDALONE, ENTERPRISE];
+// Hardcoded defaults — used as a fallback when usePlans() is still
+// loading or the DB read fails. Once live data arrives, applyLivePrices()
+// patches the unit prices in place so super-admin edits show up
+// everywhere on next mount.
+const DEFAULT_PLANS: PlanCard[] = [STARTER, PROFESSIONAL, EM_STANDALONE, ENTERPRISE];
 
 export const ADDON_META: Record<AddonId, {
   code: { monthly: string; yearly: string };
@@ -190,6 +195,65 @@ export default function PlanGrid({
   const [cycle, setCycle] = useState<Cycle>(defaultCycle);
   const [seats, setSeats] = useState(defaultSeats);
   const [selectedAddons, setSelectedAddons] = useState<Record<string, Set<AddonId>>>({});
+  const { byCode } = usePlans();
+
+  // Build the live-priced plan + addon meta on every render. Reads from
+  // the DB-backed usePlans() and falls back to the hardcoded defaults so
+  // the landing page never renders blank prices while the query is
+  // in-flight. Super-admin edits at /admin/plans propagate here on the
+  // next mount.
+  const livePlan = (def: PlanCard): PlanCard => {
+    const m = byCode(def.code.monthly);
+    const y = byCode(def.code.yearly);
+    if (!m && !y) return def;
+    return {
+      ...def,
+      // Live name overrides the default ("Starter" stays consistent even
+      // if super-admin renames the row to "Starter v2").
+      name: m?.name || y?.name || def.name,
+      unit: {
+        monthly: {
+          inr: m?.price_inr ?? def.unit.monthly.inr,
+          usd: m?.price_usd ?? def.unit.monthly.usd,
+        },
+        yearly: {
+          inr: y?.price_inr ?? def.unit.yearly.inr,
+          usd: y?.price_usd ?? def.unit.yearly.usd,
+        },
+      },
+    };
+  };
+
+  const ALL_PLANS: PlanCard[] = useMemo(
+    () => DEFAULT_PLANS.map(livePlan),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [byCode],
+  );
+
+  // Same idea for add-ons.
+  const liveAddonMeta = (def: typeof ADDON_META[AddonId]) => {
+    const m = byCode(def.code.monthly);
+    const y = byCode(def.code.yearly);
+    if (!m && !y) return def;
+    return {
+      ...def,
+      unit: {
+        monthly: {
+          inr: m?.price_inr ?? def.unit.monthly.inr,
+          usd: m?.price_usd ?? def.unit.monthly.usd,
+        },
+        yearly: {
+          inr: y?.price_inr ?? def.unit.yearly.inr,
+          usd: y?.price_usd ?? def.unit.yearly.usd,
+        },
+      },
+    };
+  };
+  const LIVE_ADDONS = useMemo(() => ({
+    dlp: liveAddonMeta(ADDON_META.dlp),
+    em:  liveAddonMeta(ADDON_META.em),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [byCode]);
 
   const fmt = (inr: number, usd: number) =>
     currency === 'INR' ? `₹${inr.toLocaleString('en-IN')}` : `$${usd.toLocaleString('en-US')}`;
@@ -269,13 +333,14 @@ export default function PlanGrid({
             isCurrent={isCurrentCard(plan)}
             disableCtas={!!disableCtas}
             ctaLabelFor={ctaLabelFor}
+            addonMeta={LIVE_ADDONS}
             selectedAddons={selectedAddons[plan.name] ?? new Set()}
             onToggleAddon={(addon) => toggleAddon(plan.name, addon)}
             onSelect={() => onSelect({
               planCode: plan.code[cycle],
               cycle,
               seats,
-              addons: Array.from(selectedAddons[plan.name] ?? new Set()).map((id) => ADDON_META[id].code[cycle]),
+              addons: Array.from(selectedAddons[plan.name] ?? new Set()).map((id) => LIVE_ADDONS[id].code[cycle]),
               currency,
             })}
           />
@@ -287,7 +352,7 @@ export default function PlanGrid({
 
 function PlanCardView({
   plan, cycle, currency, seats, fmt, isCurrent, disableCtas, ctaLabelFor,
-  selectedAddons, onToggleAddon, onSelect,
+  addonMeta, selectedAddons, onToggleAddon, onSelect,
 }: {
   plan: PlanCard;
   cycle: Cycle;
@@ -297,6 +362,7 @@ function PlanCardView({
   isCurrent: boolean;
   disableCtas: boolean;
   ctaLabelFor?: (planCode: string, isCurrent: boolean) => string;
+  addonMeta: typeof ADDON_META;
   selectedAddons: Set<AddonId>;
   onToggleAddon: (a: AddonId) => void;
   onSelect: () => void;
@@ -305,7 +371,7 @@ function PlanCardView({
   const cycleWord = cycle === 'yearly' ? 'year' : 'month';
   const addonsTotal = Array.from(selectedAddons).reduce(
     (acc, id) => {
-      const a = ADDON_META[id];
+      const a = addonMeta[id];
       return { inr: acc.inr + a.unit[cycle].inr, usd: acc.usd + a.unit[cycle].usd };
     },
     { inr: 0, usd: 0 },
@@ -402,7 +468,7 @@ function PlanCardView({
               <AddonToggle
                 key={id}
                 active={selectedAddons.has(id)}
-                meta={ADDON_META[id]}
+                meta={addonMeta[id]}
                 cycle={cycle}
                 fmt={fmt}
                 onToggle={() => onToggleAddon(id)}
