@@ -53,6 +53,7 @@ const AdminCustomerDetail = lazy(() => import("../pages/admin/customers/detail")
 const AdminLicenses = lazy(() => import("../pages/admin/licenses/page"));
 const AdminInvoices = lazy(() => import("../pages/admin/invoices/page"));
 const AdminPlans = lazy(() => import("../pages/admin/plans/page"));
+const AdminMarketing = lazy(() => import("../pages/admin/marketing/page"));
 const AdminAudit = lazy(() => import("../pages/admin/audit/page"));
 const AdminDlp = lazy(() => import("../pages/admin/dlp/page"));
 const AdminIntegrations = lazy(() => import("../pages/admin/integrations/page"));
@@ -153,6 +154,7 @@ const routes: RouteObject[] = [
   { path: "/admin/licenses",  element: superAdmin(<AdminLicenses />) },
   { path: "/admin/invoices",  element: superAdmin(<AdminInvoices />) },
   { path: "/admin/plans",     element: superAdmin(<AdminPlans />) },
+  { path: "/admin/marketing", element: superAdmin(<AdminMarketing />) },
   { path: "/admin/dlp",       element: superAdmin(<AdminDlp />) },
   { path: "/admin/audit",     element: superAdmin(<AdminAudit />) },
   { path: "/admin/integrations", element: superAdmin(<AdminIntegrations />) },
