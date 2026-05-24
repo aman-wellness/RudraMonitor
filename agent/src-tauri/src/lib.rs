@@ -1095,6 +1095,30 @@ pub fn run() {
                 }
             }
 
+            // Best-effort orphan ffmpeg cleanup. A previous agent process
+            // (or a stuck WebRTC session that left a child holding
+            // avfoundation) can monopolise the macOS screen-capture device,
+            // which then starves both the screenshot poller AND new
+            // recording attempts. Kill any ffmpeg that's still holding our
+            // bundled binary path at startup — restricted by argv match so
+            // we don't accidentally clobber unrelated ffmpegs the user
+            // might be running for their own purposes.
+            #[cfg(target_os = "macos")]
+            {
+                let _ = std::process::Command::new("pkill")
+                    .args(["-f", "Rudrans Agent.app/Contents/Resources/ffmpeg"])
+                    .status();
+            }
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/F", "/IM", "ffmpeg.exe"])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .status();
+            }
+
             spawn_background_loop(state.clone());
             spawn_updater_loop(app.handle().clone());
             // DLP watcher always starts but loops short-circuit when

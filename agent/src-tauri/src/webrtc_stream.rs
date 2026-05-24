@@ -263,27 +263,43 @@ async fn handle_session(
         }));
     }
 
-    // Watch for connection death so we can tear ffmpeg down.
+    // Watch for connection death so we can tear ffmpeg down. Failed and
+    // Closed are immediate signals. Disconnected gets a 15s grace period
+    // (consent freshness can recover spontaneously on flaky networks); if
+    // it's still Disconnected after that, treat it as dead and kill ffmpeg.
     //
-    // IMPORTANT: only tear down on Failed or Closed — NOT on Disconnected.
-    // The webrtc-rs ICE agent transiently dips through Disconnected during
-    // initial DTLS handshake on some networks (relay-to-relay through the
-    // same coturn instance especially). If we kill ffmpeg on the first
-    // Disconnected, the stream never recovers and the dashboard sees a
-    // hard "Peer connection disconnected" error within a few seconds of
-    // clicking Live. The proper terminal states are Failed and Closed.
+    // Without the grace-period kill, a hung Disconnected leaves ffmpeg
+    // running indefinitely holding the macOS avfoundation screen device —
+    // which then starves the legitimate screenshot + video-clip recorders.
     let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let is_disconnected = Arc::new(std::sync::atomic::AtomicBool::new(false));
     {
         let stop_flag = stop_flag.clone();
+        let is_disconnected = is_disconnected.clone();
         pc.on_ice_connection_state_change(Box::new(move |s: RTCIceConnectionState| {
             let stop_flag = stop_flag.clone();
+            let is_disconnected = is_disconnected.clone();
             Box::pin(async move {
                 log::info!("webrtc ice state: {s}");
-                if matches!(
-                    s,
-                    RTCIceConnectionState::Failed | RTCIceConnectionState::Closed
-                ) {
-                    stop_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                match s {
+                    RTCIceConnectionState::Failed | RTCIceConnectionState::Closed => {
+                        stop_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    RTCIceConnectionState::Disconnected => {
+                        is_disconnected.store(true, std::sync::atomic::Ordering::SeqCst);
+                        let stop_flag = stop_flag.clone();
+                        let is_disconnected = is_disconnected.clone();
+                        tauri::async_runtime::spawn(async move {
+                            sleep(Duration::from_secs(15)).await;
+                            // Kill only if connection never recovered.
+                            if is_disconnected.load(std::sync::atomic::Ordering::SeqCst) {
+                                stop_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                            }
+                        });
+                    }
+                    _ => {
+                        is_disconnected.store(false, std::sync::atomic::Ordering::SeqCst);
+                    }
                 }
             })
         }));
