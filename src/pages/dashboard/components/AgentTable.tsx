@@ -220,6 +220,11 @@ export default function AgentTable() {
             </button>
           </div>
         )}
+        {!loading && agents.length > 0 && filtered.length === 0 && (
+          <div className="px-4 py-8 text-center text-xs text-gray-500">
+            No agents match your search or filter.
+          </div>
+        )}
         {loading && agents.length === 0 && (
           <div className="px-4 py-10 text-center text-xs text-gray-500">Loading agents…</div>
         )}

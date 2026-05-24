@@ -198,13 +198,14 @@ export default function PerformanceReportsPage() {
               <div className="space-y-2">
                 {hourlyData.map((h) => {
                   const total = h.active + h.idle + h.offline;
+                  const pct = (n: number) => (total > 0 ? (n / total) * 100 : 0);
                   return (
                     <div key={h.hour} className="flex items-center gap-3">
                       <span className="text-xs text-gray-500 w-8 text-right">{h.hour}</span>
                       <div className="flex-1 flex h-5 bg-dark-700 rounded overflow-hidden">
-                        <div className="bg-emerald-500 h-full" style={{ width: `${(h.active / total) * 100}%` }} />
-                        <div className="bg-amber-500 h-full" style={{ width: `${(h.idle / total) * 100}%` }} />
-                        <div className="bg-red-500 h-full" style={{ width: `${(h.offline / total) * 100}%` }} />
+                        <div className="bg-emerald-500 h-full" style={{ width: `${pct(h.active)}%` }} />
+                        <div className="bg-amber-500 h-full" style={{ width: `${pct(h.idle)}%` }} />
+                        <div className="bg-red-500 h-full" style={{ width: `${pct(h.offline)}%` }} />
                       </div>
                       <span className="text-xs text-gray-400 w-6 text-right">{total}</span>
                     </div>

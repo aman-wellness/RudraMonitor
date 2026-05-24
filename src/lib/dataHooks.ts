@@ -102,9 +102,16 @@ export function useAgents() {
   }, [organization, refresh]);
 
   const updateDepartment = async (agentId: string, department: string) => {
+    if (!organization) return;
     const prev = agents;
     setAgents((p) => p.map((a) => (a.id === agentId ? { ...a, department } : a)));
-    const { error } = await supabase.from('agents').update({ department }).eq('id', agentId);
+    // Defense-in-depth: RLS already scopes by org, but adding org_id to the
+    // filter makes a cross-org mutation impossible even if RLS misconfigures.
+    const { error } = await supabase
+      .from('agents')
+      .update({ department })
+      .eq('id', agentId)
+      .eq('org_id', organization.id);
     if (error) {
       setAgents(prev);
       setError(error.message);
@@ -130,7 +137,12 @@ export function useAgents() {
   };
 
   const deleteAgent = async (agentId: string) => {
-    const { error } = await supabase.from('agents').delete().eq('id', agentId);
+    if (!organization) throw new Error('No organization loaded');
+    const { error } = await supabase
+      .from('agents')
+      .delete()
+      .eq('id', agentId)
+      .eq('org_id', organization.id);
     if (error) throw error;
     await refresh();
   };
@@ -315,9 +327,14 @@ export function useOrgMembers() {
   };
 
   const removeMember = async (memberId: string) => {
+    if (!organization) throw new Error('No organization loaded');
     const prev = members;
     setMembers((p) => p.filter((m) => m.id !== memberId));
-    const { error } = await supabase.from('org_members').delete().eq('id', memberId);
+    const { error } = await supabase
+      .from('org_members')
+      .delete()
+      .eq('id', memberId)
+      .eq('org_id', organization.id);
     if (error) {
       setMembers(prev);
       throw error;

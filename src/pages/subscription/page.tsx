@@ -121,11 +121,15 @@ export default function SubscriptionPage() {
 
               <div className="bg-dark-900/60 border border-dark-700 rounded-lg p-3 mb-3">
                 <div className="flex items-baseline gap-2">
-                  <span className="text-2xl font-bold text-white">
-                    {showInr
-                      ? emPriceInr !== null ? `₹${emPriceInr.toLocaleString('en-IN')}` : '—'
-                      : emPriceUsd !== null ? `$${emPriceUsd}` : '—'}
-                  </span>
+                  {(showInr ? emPriceInr === null : emPriceUsd === null) ? (
+                    <span className="inline-block w-20 h-6 rounded bg-dark-700 animate-pulse" />
+                  ) : (
+                    <span className="text-2xl font-bold text-white">
+                      {showInr
+                        ? `₹${emPriceInr!.toLocaleString('en-IN')}`
+                        : `$${emPriceUsd}`}
+                    </span>
+                  )}
                   <span className="text-xs text-gray-400">/ month · unlimited users</span>
                 </div>
                 <p className="text-[11px] text-gray-500 mt-0.5">

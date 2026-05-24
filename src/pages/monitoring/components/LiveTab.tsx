@@ -195,9 +195,12 @@ export default function LiveTab() {
           <select
             value={selectedId ?? ''}
             onChange={(e) => setSelectedId(e.target.value || null)}
-            className="bg-dark-800 border border-dark-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none"
+            disabled={onlineAgents.length === 0}
+            className="bg-dark-800 border border-dark-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <option value="">Select agent…</option>
+            <option value="">
+              {onlineAgents.length === 0 ? 'No online agents' : 'Select agent…'}
+            </option>
             {onlineAgents.map((a) => (
               <option key={a.id} value={a.id}>{a.name} ({a.machine})</option>
             ))}

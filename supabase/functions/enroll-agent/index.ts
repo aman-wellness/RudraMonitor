@@ -111,7 +111,10 @@ Deno.serve(async (req) => {
     .eq("org_id", org.id)
     .eq("machine_name", machine_name)
     .maybeSingle();
-  if (lookupErr) return json({ error: lookupErr.message }, 500);
+  if (lookupErr) {
+    console.error("enroll-agent existing lookup:", lookupErr);
+    return json({ error: "internal error" }, 500);
+  }
 
   if (existing) {
     await admin
@@ -134,7 +137,10 @@ Deno.serve(async (req) => {
     })
     .select("id, enroll_token")
     .single();
-  if (insertErr) return json({ error: insertErr.message }, 500);
+  if (insertErr) {
+    console.error("enroll-agent insert:", insertErr);
+    return json({ error: "internal error" }, 500);
+  }
 
   return json({ agent_id: created.id, enroll_token: created.enroll_token, org_id: org.id });
 });

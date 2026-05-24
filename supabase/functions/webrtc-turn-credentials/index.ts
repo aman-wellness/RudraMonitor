@@ -86,14 +86,17 @@ Deno.serve(async (req) => {
     ttl: TTL_SECONDS,
     // RTCPeerConnection accepts the `iceServers` array directly — caller
     // can usually pass this through verbatim.
+    // Each transport on its own iceServers entry. webrtc-rs 0.13 has shown
+    // issues when given a bundled `urls: [...]` array — it allocates a
+    // relay but then never sends binding responses through it. Splitting
+    // keeps each ICE candidate gathering pass simple. We also drop the
+    // TCP/TURNS variants for now: the TLS listener isn't configured
+    // (Let's Encrypt cert path missing in coturn config), and TCP-TURN
+    // adds head-of-line blocking we don't want for screen video.
     iceServers: [
       { urls: `stun:${TURN_HOST}:3478` },
       {
-        urls: [
-          `turn:${TURN_HOST}:3478?transport=udp`,
-          `turn:${TURN_HOST}:3478?transport=tcp`,
-          `turns:${TURN_HOST}:5349?transport=tcp`,
-        ],
+        urls: `turn:${TURN_HOST}:3478?transport=udp`,
         username,
         credential,
       },

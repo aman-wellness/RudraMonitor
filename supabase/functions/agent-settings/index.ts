@@ -30,7 +30,10 @@ Deno.serve(async (req) => {
     .select("screenshots_enabled, active_window_enabled, screenshot_interval_secs, idle_threshold_secs, videos_enabled, video_interval_secs, dlp_enabled")
     .eq("enroll_token", token)
     .maybeSingle();
-  if (error) return json({ error: error.message }, 500);
+  if (error) {
+    console.error("agent-settings lookup:", error);
+    return json({ error: "internal error" }, 500);
+  }
   if (!data) return json({ error: "invalid token" }, 401);
 
   return json(data);
