@@ -398,12 +398,36 @@ html:not(.dark) .dashboard-shell .bg-emerald-500\/15 {
 }
 
 /* Input placeholders */
-html:not(.dark) .dashboard-shell input::placeholder {
-  color: #94a3b8 !important;
-}
+html:not(.dark) .dashboard-shell input::placeholder,
 html:not(.dark) .dashboard-shell textarea::placeholder {
   color: #94a3b8 !important;
+  opacity: 1;
 }
+
+/* Header search input — the parent div has bg-dark-900 (now white in
+   light mode), so the inner input's text-white needs to flip to dark too,
+   otherwise the placeholder + caret are invisible against the white surface. */
+html:not(.dark) .dashboard-shell header input.text-white,
+html:not(.dark) .dashboard-shell header input.bg-transparent {
+  color: var(--text-strong) !important;
+  caret-color: var(--accent) !important;
+}
+
+/* Icon-only header buttons — text-gray-400 in light mode goes to muted but
+   the hover:text-white pseudo-class still resolves to white-on-white. Force
+   hover to the strong text colour. */
+html:not(.dark) .dashboard-shell header .hover\:text-white:hover,
+html:not(.dark) .dashboard-shell header .text-gray-500,
+html:not(.dark) .dashboard-shell header .text-gray-400 {
+  color: var(--text-muted) !important;
+}
+html:not(.dark) .dashboard-shell header button:hover { color: var(--text-strong) !important; }
+
+/* Sticky page-header titles (Live Monitoring, Subscription, etc.) live
+   inside text-white h1's — already mapped above, but bump to font-weight 700
+   so they don't read too light against the bright background. */
+html:not(.dark) .dashboard-shell h1.text-white,
+html:not(.dark) .dashboard-shell h2.text-white { font-weight: 700; }
 
 /* Progress bars / range inputs */
 html:not(.dark) .dashboard-shell input[type="range"] {
