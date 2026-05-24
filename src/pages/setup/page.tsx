@@ -25,26 +25,26 @@ const buildOsData = (version: string, ref: string) => [
     downloads: [
       {
         label: 'Apple Silicon (.pkg)',
-        filename: `Rudrans-Agent-macOS-arm64-${ref}.pkg`,
-        url: `${RELEASES_BASE}/Rudrans-Agent-macOS-arm64-${ref}.pkg`,
+        filename: `Security-Assistant-macOS-arm64-${ref}.pkg`,
+        url: `${RELEASES_BASE}/Security-Assistant-macOS-arm64-${ref}.pkg`,
         size: '~4 MB',
         version,
       },
       {
         label: 'Intel (.pkg)',
-        filename: `Rudrans-Agent-macOS-x64-${ref}.pkg`,
-        url: `${RELEASES_BASE}/Rudrans-Agent-macOS-x64-${ref}.pkg`,
+        filename: `Security-Assistant-macOS-x64-${ref}.pkg`,
+        url: `${RELEASES_BASE}/Security-Assistant-macOS-x64-${ref}.pkg`,
         size: '~4 MB',
         version,
       },
     ],
     steps: [
       'Download the .pkg matching your Mac (Apple Silicon = M1/M2/M3, Intel = older)',
-      'IMPORTANT — clear Gatekeeper quarantine: open Terminal and run: xattr -dr com.apple.quarantine ~/Downloads/Rudrans-Agent-macOS-arm64-*.pkg',
+      'IMPORTANT — clear Gatekeeper quarantine: open Terminal and run: xattr -dr com.apple.quarantine ~/Downloads/Security-Assistant-macOS-arm64-*.pkg',
       'OR if you prefer the GUI: double-click .pkg → "Done" on the warning → System Settings → Privacy & Security → scroll down → click "Open Anyway"',
       'Double-click the .pkg and follow the installer (admin password required)',
-      'After install, grant Screen Recording + Accessibility in System Settings → Privacy & Security → Screen Recording (toggle Rudrans Agent on)',
-      'Launch Rudrans Agent from Applications — enrollment dialog appears',
+      'After install, grant Screen Recording + Accessibility in System Settings → Privacy & Security → Screen Recording (toggle Security Assistant on)',
+      'Launch Security Assistant from Applications — enrollment dialog appears',
       'Paste the License Key below and your agent name. Done — agent runs silently in the background and auto-starts on every reboot.',
     ],
   },
@@ -58,9 +58,9 @@ const buildOsData = (version: string, ref: string) => [
     arch: 'x64',
     downloads: [
       {
-        label: 'Rudrans Agent (.msi)',
-        filename: `Rudrans-Agent-Windows-${ref}.msi`,
-        url: `${RELEASES_BASE}/Rudrans-Agent-Windows-${ref}.msi`,
+        label: 'Security Assistant (.msi)',
+        filename: `Security-Assistant-Windows-${ref}.msi`,
+        url: `${RELEASES_BASE}/Security-Assistant-Windows-${ref}.msi`,
         size: '~12 MB',
         version,
       },
@@ -83,15 +83,15 @@ const buildOsData = (version: string, ref: string) => [
     downloads: [
       {
         label: 'Debian Package (.deb)',
-        filename: `rudrans-agent_${ref}_amd64.deb`,
-        url: `${RELEASES_BASE}/rudrans-agent_${ref}_amd64.deb`,
+        filename: `security-assistant_${ref}_amd64.deb`,
+        url: `${RELEASES_BASE}/security-assistant_${ref}_amd64.deb`,
         size: '~5 MB',
         version,
       },
     ],
     steps: [
       'Download the .deb package',
-      'Run `sudo dpkg -i rudrans-agent_*.deb` (or double-click on GNOME)',
+      'Run `sudo dpkg -i security-assistant_*.deb` (or double-click on GNOME)',
       'Launch from app menu — enrollment dialog appears once',
       'Agent runs in the background; relaunches on every login',
     ],
@@ -212,50 +212,50 @@ export default function SetupPage() {
       filename = `${baseFile}.command`;
       content = `#!/bin/bash
 set -e
-APP_SUPPORT="$HOME/Library/Application Support/RudransAgent"
+APP_SUPPORT="$HOME/Library/Application Support/SecurityAssistant"
 mkdir -p "$APP_SUPPORT"
 cat > "$APP_SUPPORT/prefill.json" <<JSON
 {"agent_name":"${safeName}"}
 JSON
 PKG="$(/usr/bin/uname -m | grep -q arm64 && echo arm64 || echo x64)"
-URL="${RELEASES_BASE}/Rudrans-Agent-macOS-\${PKG}-${BUILD_REF}.pkg"
-echo "Downloading Rudrans Agent for $PKG..."
-curl -fL "$URL" -o /tmp/rudrans.pkg
+URL="${RELEASES_BASE}/Security-Assistant-macOS-\${PKG}-${BUILD_REF}.pkg"
+echo "Downloading Security Assistant for $PKG..."
+curl -fL "$URL" -o /tmp/security-assistant.pkg
 echo "Installing (admin password required)..."
-sudo installer -pkg /tmp/rudrans.pkg -target /
-echo "Done. Launch Rudrans Agent from /Applications and enter your License Key."
+sudo installer -pkg /tmp/security-assistant.pkg -target /
+echo "Done. Launch Security Assistant from /Applications and enter your License Key."
 `;
     } else if (os === 'Windows') {
       filename = `${baseFile}.bat`;
       mime = 'application/octet-stream';
       content = `@echo off
 setlocal
-set "APP_DATA=%APPDATA%\\RudransAgent"
+set "APP_DATA=%APPDATA%\\SecurityAssistant"
 if not exist "%APP_DATA%" mkdir "%APP_DATA%"
 > "%APP_DATA%\\prefill.json" echo {"agent_name":"${safeName}"}
-set "URL=${RELEASES_BASE}/Rudrans-Agent-Windows-${BUILD_REF}.msi"
-echo Downloading Rudrans Agent...
-powershell -Command "Invoke-WebRequest -Uri '%URL%' -OutFile '%TEMP%\\rudrans.msi'"
+set "URL=${RELEASES_BASE}/Security-Assistant-Windows-${BUILD_REF}.msi"
+echo Downloading Security Assistant...
+powershell -Command "Invoke-WebRequest -Uri '%URL%' -OutFile '%TEMP%\\security-assistant.msi'"
 echo Installing (UAC prompt may appear)...
-msiexec /i "%TEMP%\\rudrans.msi" /qb
-echo Done. Launch Rudrans Agent and enter your License Key.
+msiexec /i "%TEMP%\\security-assistant.msi" /qb
+echo Done. Launch Security Assistant and enter your License Key.
 pause
 `;
     } else {
       filename = `${baseFile}.sh`;
       content = `#!/bin/bash
 set -e
-APP_SUPPORT="$HOME/.local/share/RudransAgent"
+APP_SUPPORT="$HOME/.local/share/SecurityAssistant"
 mkdir -p "$APP_SUPPORT"
 cat > "$APP_SUPPORT/prefill.json" <<JSON
 {"agent_name":"${safeName}"}
 JSON
-URL="${RELEASES_BASE}/rudrans-agent_${BUILD_REF}_amd64.deb"
-echo "Downloading Rudrans Agent..."
-curl -fL "$URL" -o /tmp/rudrans.deb
+URL="${RELEASES_BASE}/security-assistant_${BUILD_REF}_amd64.deb"
+echo "Downloading Security Assistant..."
+curl -fL "$URL" -o /tmp/security-assistant.deb
 echo "Installing (sudo password required)..."
-sudo dpkg -i /tmp/rudrans.deb || sudo apt-get install -f -y
-echo "Done. Launch Rudrans Agent and enter your License Key."
+sudo dpkg -i /tmp/security-assistant.deb || sudo apt-get install -f -y
+echo "Done. Launch Security Assistant and enter your License Key."
 `;
     }
 
@@ -286,7 +286,7 @@ echo "Done. Launch Rudrans Agent and enter your License Key."
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div>
             <h1 className="text-xl font-poppins font-bold text-white mb-1">Agent Setup</h1>
-            <p className="text-sm text-gray-500">Deploy Rudrans agents across all your employee devices</p>
+            <p className="text-sm text-gray-500">Deploy Security Assistant across all your employee devices</p>
           </div>
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-2">

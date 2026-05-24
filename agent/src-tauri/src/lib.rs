@@ -1106,6 +1106,12 @@ pub fn run() {
             // might be running for their own purposes.
             #[cfg(target_os = "macos")]
             {
+                // Match both old and new bundle names. Auto-updates from
+                // v0.2.32 (when the bundle was "Rudrans Agent.app") leave
+                // the legacy directory in place — pkill catches that too.
+                let _ = std::process::Command::new("pkill")
+                    .args(["-f", "Security Assistant.app/Contents/Resources/ffmpeg"])
+                    .status();
                 let _ = std::process::Command::new("pkill")
                     .args(["-f", "Rudrans Agent.app/Contents/Resources/ffmpeg"])
                     .status();
@@ -1273,7 +1279,7 @@ async fn check_for_update(handle: &tauri::AppHandle) -> Result<()> {
 // Builds a minimal system tray with a context menu. Left-click toggles the main window;
 // right-click opens the menu.
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "Show Rudrans", true, None::<&str>)?;
+    let show = MenuItem::with_id(app, "show", "Show Security Assistant", true, None::<&str>)?;
     let pause = MenuItem::with_id(app, "pause", "Pause monitoring", true, None::<&str>)?;
     let resume = MenuItem::with_id(app, "resume", "Resume monitoring", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -1288,7 +1294,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 
     let _ = TrayIconBuilder::with_id("main-tray")
         .icon(icon)
-        .tooltip("Rudrans Agent")
+        .tooltip("Security Assistant")
         .menu(&menu)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => {

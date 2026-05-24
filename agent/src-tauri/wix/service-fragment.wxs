@@ -27,7 +27,7 @@
     <CustomAction
       Id="RegisterRudransTask"
       Directory="INSTALLFOLDER"
-      ExeCommand='powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "&amp; { $exe = (Get-ChildItem -Path \"[INSTALLFOLDER]\" -Filter rudrans-agent.exe -Recurse | Select-Object -First 1).FullName; if (-not $exe) { exit 0 }; $action = New-ScheduledTaskAction -Execute $exe; $boot = New-ScheduledTaskTrigger -AtStartup; $logon = New-ScheduledTaskTrigger -AtLogOn; $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration ([TimeSpan]::MaxValue); $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero); $principal = New-ScheduledTaskPrincipal -GroupId \"S-1-5-32-545\" -RunLevel Highest; Register-ScheduledTask -TaskName \"Rudrans Agent\" -TaskPath \"\\Rudrans\\\" -Action $action -Trigger @($boot,$logon,$repeat) -Settings $settings -Principal $principal -Force }"'
+      ExeCommand='powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "&amp; { $exe = (Get-ChildItem -Path \"[INSTALLFOLDER]\" -Filter rudrans-agent.exe -Recurse | Select-Object -First 1).FullName; if (-not $exe) { exit 0 }; Unregister-ScheduledTask -TaskName \"Rudrans Agent\" -TaskPath \"\\Rudrans\\\" -Confirm:$false -ErrorAction SilentlyContinue; $action = New-ScheduledTaskAction -Execute $exe; $boot = New-ScheduledTaskTrigger -AtStartup; $logon = New-ScheduledTaskTrigger -AtLogOn; $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration ([TimeSpan]::MaxValue); $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero); $principal = New-ScheduledTaskPrincipal -GroupId \"S-1-5-32-545\" -RunLevel Highest; Register-ScheduledTask -TaskName \"Security Assistant\" -TaskPath \"\\SecurityAssistant\\\" -Action $action -Trigger @($boot,$logon,$repeat) -Settings $settings -Principal $principal -Force }"'
       Execute="deferred"
       Impersonate="no"
       Return="ignore" />
@@ -38,7 +38,7 @@
     <CustomAction
       Id="UnregisterRudransTask"
       Directory="INSTALLFOLDER"
-      ExeCommand='powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Unregister-ScheduledTask -TaskName \"Rudrans Agent\" -TaskPath \"\\Rudrans\\\" -Confirm:$false -ErrorAction SilentlyContinue"'
+      ExeCommand='powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Unregister-ScheduledTask -TaskName \"Security Assistant\" -TaskPath \"\\SecurityAssistant\\\" -Confirm:$false -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName \"Rudrans Agent\" -TaskPath \"\\Rudrans\\\" -Confirm:$false -ErrorAction SilentlyContinue"'
       Execute="deferred"
       Impersonate="no"
       Return="ignore" />

@@ -42,7 +42,7 @@ jobs:
             target: aarch64-apple-darwin
             bundle: app
             artifact_glob: agent/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
-            remote_name: Rudrans-Agent-macOS-arm64-${{ github.ref_name }}.pkg
+            remote_name: Security-Assistant-macOS-arm64-${{ github.ref_name }}.pkg
             packager: pkg
           # macOS Intel: cross-compile from macos-14 (ARM) using rust target.
           # macos-13 (Intel) GitHub runners are deprecated and pool is unreliable.
@@ -50,19 +50,19 @@ jobs:
             target: x86_64-apple-darwin
             bundle: app
             artifact_glob: agent/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
-            remote_name: Rudrans-Agent-macOS-x64-${{ github.ref_name }}.pkg
+            remote_name: Security-Assistant-macOS-x64-${{ github.ref_name }}.pkg
             packager: pkg
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bundle: msi
             artifact_glob: agent/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
-            remote_name: Rudrans-Agent-Windows-${{ github.ref_name }}.msi
+            remote_name: Security-Assistant-Windows-${{ github.ref_name }}.msi
             packager: passthrough
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             bundle: deb
             artifact_glob: agent/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
-            remote_name: rudrans-agent_${{ github.ref_name }}_amd64.deb
+            remote_name: security-assistant_${{ github.ref_name }}_amd64.deb
             packager: passthrough
 
     runs-on: ${{ matrix.os }}
@@ -237,7 +237,7 @@ jobs:
             for f in "$BASE/$sub"/*."$EXT"; do
               if [ -f "$f" ] && [ -f "${f}.sig" ]; then
                 echo "found: $f"
-                SAFE="Rudrans-Agent-${{ matrix.target }}-v${{ steps.version.outputs.version }}.${EXT}"
+                SAFE="Security-Assistant-${{ matrix.target }}-v${{ steps.version.outputs.version }}.${EXT}"
                 cp "$f" "agent/$SAFE"
                 cp "${f}.sig" "agent/${SAFE}.sig"
                 echo "bundle=agent/$SAFE" >> "$GITHUB_OUTPUT"
