@@ -265,7 +265,10 @@ def upload(local: Path, remote_path: str, content_type: str) -> str:
 # --- DB ops ----------------------------------------------------------------
 
 def load_settings(cur) -> dict[str, Any]:
-    cur.execute("SELECT brand_voice, value_props, target_audience, content_style, visual_style FROM marketing_settings WHERE id=1")
+    cur.execute(
+        "SELECT brand_voice, value_props, target_audience, content_style, "
+        "visual_style, enabled FROM marketing_settings WHERE id=1"
+    )
     row = cur.fetchone()
     if not row:
         raise RuntimeError("marketing_settings row missing — seed migration didn't run?")
@@ -318,6 +321,12 @@ def main(kind: str) -> None:
                 print(f"already generated {kind} for {today}, skipping")
                 return
             s = load_settings(cur)
+            # Hard stop — super-admin flipped `enabled` to false in
+            # marketing_settings (or the migration default if seeded
+            # off). No OpenAI calls, no DALL-E, no ffmpeg, no cost.
+            if not s.get("enabled", True):
+                print(f"marketing_settings.enabled = false, skipping {kind} run (no OpenAI calls).")
+                return
 
         # 1. Trend search.
         trend_prompt = (
