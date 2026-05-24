@@ -5,6 +5,7 @@ import { useAgents, useOrgMembers } from '@/lib/dataHooks';
 import { useOrgRole } from '@/lib/useOrgRole';
 import { supabase } from '@/lib/supabase';
 import DepartmentsTab from './components/DepartmentsTab';
+import PlanGrid from '@/components/PlanGrid';
 
 interface OrgUser {
   id: string;
@@ -1029,13 +1030,9 @@ function SubscriptionTab({
   plans: Plan[];
   currentPlanId: string | null;
 }) {
-  const [showAll, setShowAll] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
-  const [emOn, setEmOn] = useState<boolean>(!!organization?.em_subscribed);
   const [pendingReq, setPendingReq] = useState<{ plan_id: string; plan_name: string; created_at: string } | null>(null);
-
-  useEffect(() => { setEmOn(!!organization?.em_subscribed); }, [organization?.em_subscribed]);
 
   useEffect(() => {
     if (!organization?.id) return;
@@ -1057,21 +1054,29 @@ function SubscriptionTab({
 
   const isTrial = organization?.subscription_status === 'trial';
   const current = plans.find((p) => p.id === currentPlanId) ?? null;
-  const featureLabels: Record<string, string> = {
-    productivity_reports: 'Productivity reports',
-    screenshots: 'Screenshots',
-    video_recording: 'Video recording',
-    ai_alerts: 'Smart AI alerts',
-    dlp: 'DLP (USB / Email)',
-  };
-  const priceOf = (p: Plan) =>
-    p.code === 'scale-100' || /enterprise/i.test(p.name) ? 'Custom' : `₹ ${Number(p.price_inr).toLocaleString('en-IN')}`;
-  const cycleOf = (p: Plan) =>
-    p.code === 'scale-100' || /enterprise/i.test(p.name) ? '' : `/${p.billing_cycle === 'yearly' ? 'year' : 'month'}`;
+  const currentPlanCode = current?.code ?? null;
 
-  const startUpgrade = async (p: Plan) => {
+  // Pick the closest v2 plan SKU for an upgrade request when the user
+  // clicks a tier in PlanGrid. The grid hands us back a v2 code (e.g.
+  // 'pro-y'); if that exact code doesn't exist yet in the customer's
+  // `plans` table (rare — they all get seeded), fall back to a legacy
+  // SKU with the same family.
+  const findPlanRowByCode = (v2Code: string): Plan | null => {
+    // Exact match first.
+    const exact = plans.find((p) => p.code === v2Code);
+    if (exact) return exact;
+    // Fall back: match by tier family.
+    if (v2Code.startsWith('starter-')) return plans.find((p) => /^starter/i.test(p.code)) ?? null;
+    if (v2Code.startsWith('pro-'))     return plans.find((p) => /^(pro|growth)/i.test(p.code)) ?? null;
+    if (v2Code.startsWith('em-'))      return plans.find((p) => /^em/i.test(p.code)) ?? null;
+    if (v2Code === 'enterprise')       return plans.find((p) => /^scale|enterprise/i.test(p.code)) ?? null;
+    return null;
+  };
+
+  const startUpgrade = async (p: Plan, extraNote?: string) => {
     if (!organization?.id) { setMsg({ kind: 'err', text: 'Missing org context' }); return; }
-    if (!confirm(`Request upgrade to "${p.name}"? Our team will reach out within one business day to finalize billing and switch your plan.`)) return;
+    const msg = `Request upgrade to "${p.name}"${extraNote ? ` (${extraNote})` : ''}? Our team will reach out within one business day to finalize billing.`;
+    if (!confirm(msg)) return;
     setBusy(`plan-${p.id}`); setMsg(null);
     const { error, data } = await supabase
       .from('plan_upgrade_requests')
@@ -1084,24 +1089,22 @@ function SubscriptionTab({
     setMsg({ kind: 'ok', text: `Upgrade requested — we'll reach out shortly to switch you to ${p.name}.` });
   };
 
-  const toggleEm = async (enable: boolean) => {
-    setBusy('em'); setMsg(null);
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const r = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/org-subscription-update`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token ?? ''}` },
-        body: JSON.stringify({ action: enable ? 'enable_em' : 'disable_em' }),
-      });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
-      setEmOn(enable);
-      setMsg({ kind: 'ok', text: enable ? 'Employee Management add-on enabled.' : 'Employee Management add-on disabled.' });
-    } catch (e) {
-      setMsg({ kind: 'err', text: (e as Error).message });
-    } finally {
-      setBusy(null);
+  // Bridge between PlanGrid's onSelect (plan code + cycle + seats + addons)
+  // and the existing email-Rudrans `plan_upgrade_requests` flow. Phase 7
+  // (Razorpay) will replace this with direct Razorpay checkout.
+  const handlePlanSelect = (sel: { planCode: string; seats: number; addons: string[] }) => {
+    if (sel.planCode === 'enterprise') {
+      window.open('mailto:hello@rudrans.com?subject=Enterprise%20plan%20enquiry', '_blank');
+      return;
     }
+    const row = findPlanRowByCode(sel.planCode);
+    if (!row) {
+      setMsg({ kind: 'err', text: `Plan ${sel.planCode} not found. Contact support.` });
+      return;
+    }
+    const noteParts: string[] = [`${sel.seats} seats`];
+    if (sel.addons.length > 0) noteParts.push(`add-ons: ${sel.addons.join(', ')}`);
+    void startUpgrade(row, noteParts.join(' · '));
   };
 
   const cancelRequest = async () => {
@@ -1147,188 +1150,53 @@ function SubscriptionTab({
         </div>
       )}
 
-      {/* ===== CURRENT SUBSCRIPTION ===== */}
+      {/* ===== CURRENT SUBSCRIPTION (banner only) ===== */}
       <div className="bg-gradient-to-br from-emerald-500/10 to-cyan-500/10 border border-emerald-500/25 rounded-xl p-6">
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="w-5 h-5 flex items-center justify-center"><i className="ri-vip-crown-line text-emerald-400" /></span>
-              <p className="text-[11px] uppercase tracking-wider text-emerald-300 font-medium">Your Current Plan</p>
-              {isTrial && (
-                <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 text-[10px] font-semibold border border-blue-500/30">
-                  14-Day Trial · all features unlocked
-                </span>
-              )}
-            </div>
-            <h2 className="text-2xl font-poppins font-bold text-white">{current?.name ?? (isTrial ? 'Free Trial' : '—')}</h2>
-            {current && (
-              <p className="text-sm text-gray-300 mt-1">
-                <span className="text-white font-semibold">{priceOf(current)}</span>
-                <span className="text-gray-500">{cycleOf(current)}</span>
-                <span className="text-gray-500 mx-2">·</span>
-                <span>{current.seat_count} agents</span>
-              </p>
-            )}
-            {!current && organization?.license_count != null && (
-              <p className="text-sm text-gray-300 mt-1">{organization.license_count} agents · {isTrial ? 'Trial period' : 'No active plan'}</p>
-            )}
-            {isTrial && organization?.trial_ends_at && (
-              <p className="text-xs text-amber-300 mt-2">
-                Trial ends {new Date(organization.trial_ends_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
-                {' — upgrade now to keep your data and features.'}
-              </p>
-            )}
-            {current?.features_included && current.features_included.length > 0 && (() => {
-              // Trial users get every feature unlocked, including DLP, even
-              // when the plan's stored feature list doesn't enumerate it.
-              const features = isTrial && !current.features_included.includes('dlp')
-                ? [...current.features_included, 'dlp']
-                : current.features_included;
-              return (
-                <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5">
-                  {features.map((k) => (
-                    <li key={k} className="flex items-center gap-1.5 text-xs text-gray-300">
-                      <i className="ri-check-line text-emerald-400" />
-                      {featureLabels[k] ?? k}
-                    </li>
-                  ))}
-                </ul>
-              );
-            })()}
-          </div>
-          <button
-            onClick={() => setShowAll((v) => !v)}
-            className="px-4 py-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-white text-sm font-medium transition-colors flex items-center gap-2 shrink-0"
-          >
-            <i className={showAll ? 'ri-arrow-up-s-line' : 'ri-arrow-up-circle-line'} />
-            {showAll ? 'Hide plans' : (isTrial ? 'Choose a plan' : 'Compare & Upgrade')}
-          </button>
+        <div className="flex items-center gap-2 mb-2">
+          <span className="w-5 h-5 flex items-center justify-center"><i className="ri-vip-crown-line text-emerald-400" /></span>
+          <p className="text-[11px] uppercase tracking-wider text-emerald-300 font-medium">Your Current Plan</p>
+          {isTrial && (
+            <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 text-[10px] font-semibold border border-blue-500/30">
+              14-Day Trial · all features unlocked
+            </span>
+          )}
         </div>
-      </div>
-
-      {/* ===== ADD-ONS ===== */}
-      <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <i className="ri-puzzle-line text-cyan-400" />
-            <h3 className="text-sm font-semibold text-white">Add-on Subscriptions</h3>
-          </div>
-          <span className="text-[11px] text-gray-500">Layer extra modules onto your current plan</span>
-        </div>
-
-        <div className="rounded-lg border border-dark-700 bg-dark-900 p-4 flex items-start gap-4">
-          <span className="w-10 h-10 rounded-lg bg-emerald-500/15 text-emerald-400 flex items-center justify-center shrink-0">
-            <i className="ri-team-line text-xl" />
-          </span>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap mb-1">
-              <h4 className="text-sm font-bold text-white">Employee Management Unlimited</h4>
-              {(emOn || isTrial) && (
-                <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
-                  emOn
-                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
-                    : 'bg-blue-500/20 text-blue-300 border-blue-500/30'
-                }`}>
-                  {emOn ? 'Active' : 'Via trial'}
-                </span>
-              )}
-              <span className="text-[11px] text-gray-500">₹ 8,500 / month · unlimited users</span>
-            </div>
-            <p className="text-xs text-gray-400 leading-relaxed">
-              Provision Microsoft 365 & Google Workspace users, manage groups & teams,
-              credentials vault with self-service requests, IT hardware inventory, and
-              orchestrated offboarding.
-            </p>
-            <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-gray-400">
-              <li>✓ M365 + Google two-way sync</li>
-              <li>✓ Credentials vault</li>
-              <li>✓ IT hardware tracking</li>
-              <li>✓ Offboarding pipeline</li>
-            </ul>
-          </div>
-          <div className="shrink-0">
-            {emOn ? (
-              <button
-                onClick={() => toggleEm(false)}
-                disabled={busy === 'em'}
-                className="px-3 py-1.5 rounded-lg text-xs font-medium bg-rose-500/15 text-rose-300 border border-rose-500/30 hover:bg-rose-500/25 disabled:opacity-40"
-              >
-                {busy === 'em' ? '…' : 'Disable add-on'}
-              </button>
-            ) : (
-              <button
-                onClick={() => toggleEm(true)}
-                disabled={busy === 'em'}
-                className="px-4 py-2 rounded-lg text-xs font-medium bg-emerald-500 hover:bg-emerald-400 text-white disabled:opacity-40"
-              >
-                {busy === 'em' ? '…' : (isTrial ? 'Subscribe (₹8,500/mo)' : 'Enable add-on')}
-              </button>
-            )}
-          </div>
-        </div>
-        {isTrial && (
-          <p className="text-[11px] text-gray-500 mt-3">
-            During trial, all add-ons are unlocked automatically. After trial ends, subscribe to keep using this module.
+        <h2 className="text-2xl font-poppins font-bold text-white">{current?.name ?? (isTrial ? 'Free Trial' : '—')}</h2>
+        {current && (
+          <p className="text-sm text-gray-300 mt-1">
+            {current.seat_count} agent{current.seat_count === 1 ? '' : 's'}
+            {' · '}{current.billing_cycle}
+          </p>
+        )}
+        {!current && organization?.license_count != null && (
+          <p className="text-sm text-gray-300 mt-1">{organization.license_count} agents · {isTrial ? 'Trial period' : 'No active plan'}</p>
+        )}
+        {isTrial && organization?.trial_ends_at && (
+          <p className="text-xs text-amber-300 mt-2">
+            Trial ends {new Date(organization.trial_ends_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+            {' — choose a plan below to keep your data and features.'}
           </p>
         )}
       </div>
 
-      {/* ===== ALL PLANS (collapsible) ===== */}
-      {showAll && (
-        <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold text-white">Available Plans</h3>
-            <p className="text-[11px] text-gray-500">Choose a plan to email Rudrans for upgrade</p>
-          </div>
-          {plans.length === 0 ? (
-            <p className="text-xs text-gray-500">No plans available right now. Contact support to set up your subscription.</p>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {plans.map((p) => {
-                const isCurrent = p.id === currentPlanId;
-                return (
-                  <div key={p.id} className={`rounded-xl border p-5 flex flex-col ${isCurrent ? 'bg-emerald-500/5 border-emerald-500/40 ring-1 ring-emerald-500/30' : 'bg-dark-900 border-dark-700'}`}>
-                    <div className="flex items-center justify-between mb-3">
-                      <h4 className="text-sm font-bold text-white">{p.name}</h4>
-                      {isCurrent && <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-semibold">Current</span>}
-                    </div>
-                    <p className="text-lg font-bold text-white mb-1">{priceOf(p)}<span className="text-xs text-gray-500 font-normal">{cycleOf(p)}</span></p>
-                    <p className="text-xs text-gray-500 mb-3">{p.seat_count} agents</p>
-                    <ul className="space-y-1.5 mb-4 flex-1">
-                      {(p.features_included ?? []).map((key) => (
-                        <li key={key} className="flex items-center gap-1.5 text-xs text-gray-400">
-                          <i className="ri-check-line text-emerald-400 text-xs" />
-                          {featureLabels[key] ?? key}
-                        </li>
-                      ))}
-                    </ul>
-                    <button
-                      disabled={isCurrent || !!pendingReq || busy === `plan-${p.id}`}
-                      onClick={() => startUpgrade(p)}
-                      className={`w-full py-2 rounded-lg text-xs font-medium transition-colors ${
-                        isCurrent
-                          ? 'bg-emerald-500/10 text-emerald-300 cursor-default border border-emerald-500/25'
-                          : pendingReq
-                            ? 'bg-dark-700 text-gray-500 border border-dark-600 cursor-not-allowed'
-                            : 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/25'
-                      }`}
-                    >
-                      {isCurrent ? 'Active Plan'
-                        : busy === `plan-${p.id}` ? 'Requesting…'
-                        : pendingReq ? 'Request pending'
-                        : /enterprise/i.test(p.name) ? 'Contact Sales'
-                        : 'Select & Upgrade'}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          <p className="text-[11px] text-gray-500 mt-4">
-            Upgrades require Rudrans admin action. Click <strong>Select & Upgrade</strong> to email us; we&apos;ll switch your plan within one business day.
-          </p>
-        </div>
-      )}
+      {/* ===== AVAILABLE PLANS — shared PlanGrid (matches landing + /subscription) ===== */}
+      <div className="pt-2">
+        <PlanGrid
+          currentPlanCode={currentPlanCode}
+          disableCtas={!!pendingReq}
+          ctaLabelFor={(planCode, isCurrent) => {
+            if (isCurrent) return 'Active Plan';
+            if (pendingReq) return 'Request pending';
+            if (planCode === 'enterprise') return 'Contact Sales';
+            return 'Select & Upgrade';
+          }}
+          onSelect={handlePlanSelect}
+        />
+        <p className="text-[11px] text-gray-500 mt-6 text-center max-w-3xl mx-auto">
+          Razorpay billing for v2 plans is rolling out. For now, clicking <strong>Select &amp; Upgrade</strong>
+          {' '}submits a request to our team — we&apos;ll switch your plan within one business day.
+        </p>
+      </div>
     </div>
   );
 }
