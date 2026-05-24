@@ -4,6 +4,7 @@ import MonitoringTabs, { type TabId } from './components/MonitoringTabs';
 import ApplicationsTab from './components/ApplicationsTab';
 import BrowserTab from './components/BrowserTab';
 import LiveTab from './components/LiveTab';
+import RemoteTab from './components/RemoteTab';
 import VideosTab from './components/VideosTab';
 import ScreenshotsTab from './components/ScreenshotsTab';
 import IdleTab from './components/IdleTab';
@@ -45,6 +46,7 @@ export default function MonitoringPage() {
         {activeTab === 'applications' && <ApplicationsTab />}
         {activeTab === 'browser' && <BrowserTab />}
         {activeTab === 'live' && <LiveTab />}
+        {activeTab === 'remote' && <RemoteTab />}
         {activeTab === 'videos' && <VideosTab />}
         {activeTab === 'screenshots' && <ScreenshotsTab />}
         {activeTab === 'idle' && <IdleTab />}

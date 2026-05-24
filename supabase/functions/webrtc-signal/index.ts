@@ -175,6 +175,41 @@ async function handlePost(
       .eq("org_id", orgId)
       .maybeSingle();
     if (!member) return json({ error: "not an org member" }, 403);
+
+    // Remote-Desktop gate. An offer whose SDP contains `m=application`
+    // requests a data channel — only admins/owners can remote-control.
+    // Live (video-only) offers go through with normal org membership.
+    // We also mint an audit row in `remote_sessions` here so we always
+    // know who tried (even if the connection ultimately fails).
+    if (kind === "offer") {
+      const sdp = typeof (payload as { sdp?: string })?.sdp === "string"
+        ? (payload as { sdp: string }).sdp
+        : "";
+      if (sdp.includes("m=application")) {
+        const role = String((member as { role: string }).role ?? "");
+        if (role !== "admin" && role !== "owner") {
+          return json({ error: "remote control requires admin role" }, 403);
+        }
+        // Idempotent upsert on session_id (UNIQUE in the table). Same
+        // session re-posting offer (e.g. after ICE restart) won't dupe.
+        await admin.from("remote_sessions").upsert({
+          session_id: sessionId,
+          org_id: orgId,
+          agent_id: agentId,
+          controller_user: caller.userId!,
+        }, { onConflict: "session_id" });
+      }
+    }
+  }
+
+  // Agent → dashboard `answer`: if a remote_sessions row exists for this
+  // session, mark it as started (i.e. the agent acknowledged the offer).
+  if (caller.type === "agent" && kind === "answer") {
+    await admin
+      .from("remote_sessions")
+      .update({ started_at: new Date().toISOString() })
+      .eq("session_id", sessionId)
+      .is("started_at", null);
   }
 
   const { error: insertErr } = await admin.from("webrtc_signaling").insert({

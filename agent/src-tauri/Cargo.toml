@@ -1,6 +1,6 @@
 [package]
 name = "rudrans-agent"
-version = "0.2.31"
+version = "0.2.32"
 description = "Rudrans employee monitoring agent"
 edition = "2021"
 rust-version = "1.77"
@@ -49,6 +49,10 @@ hex = "0.4"
 webrtc = "0.13"
 bytes = "1"
 uuid = { version = "1", features = ["v4"] }
+# Remote Desktop: cross-platform input synthesis (CGEvent on macOS, SendInput
+# on Windows) + text clipboard. Used by the Remote tab's WebRTC data channel.
+enigo = "0.3"
+arboard = { version = "3", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

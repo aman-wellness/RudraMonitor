@@ -31,6 +31,8 @@ use tokio::process::{Child, Command};
 use tokio::time::sleep;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
+use webrtc::data_channel::data_channel_message::DataChannelMessage;
+use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
 use webrtc::ice_transport::ice_server::RTCIceServer;
@@ -42,6 +44,7 @@ use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
 
+use crate::input::{self, InputEvent, MouseButton};
 use crate::{api, config, AppState};
 
 const TARGET_FPS: u32 = 15;
@@ -301,6 +304,21 @@ async fn handle_session(
                         is_disconnected.store(false, std::sync::atomic::Ordering::SeqCst);
                     }
                 }
+            })
+        }));
+    }
+
+    // Remote-control data channel. If the dashboard's offer SDP contains an
+    // `m=application` section (Remote tab — not Live tab), webrtc-rs surfaces
+    // the channel via this callback once SDP negotiation completes. We then
+    // attach our message router which forwards JSON-encoded input events to
+    // the input thread. Live-tab connections never trigger this — they only
+    // negotiate a video m-section, so the callback simply never fires.
+    {
+        pc.on_data_channel(Box::new(|dc: Arc<RTCDataChannel>| {
+            Box::pin(async move {
+                log::info!("webrtc: data channel '{}' attached", dc.label());
+                attach_control_channel(dc);
             })
         }));
     }
@@ -666,4 +684,138 @@ fn urlencoding(s: &str) -> String {
         }
     }
     out
+}
+
+// ------------ Remote-control data channel ------------
+//
+// JSON wire protocol — one message per WebRTC SCTP message. All fields are
+// `t`-tagged. Coordinates from the dashboard are normalized 0..1 against the
+// streamed display's logical resolution; we multiply by the local primary
+// monitor's dimensions before handing to enigo.
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "t", rename_all = "snake_case")]
+enum InboundMsg {
+    Hello { #[serde(default)] proto: u32 },
+    MouseMove { x: f64, y: f64 },
+    MouseButton { btn: String, down: bool },
+    MouseWheel { #[serde(default)] dx: i32, #[serde(default)] dy: i32 },
+    Key { code: String, down: bool },
+    ClipSet { text: String },
+    ClipGet,
+    Ping { #[serde(default)] id: u64 },
+}
+
+fn screen_dims() -> (i32, i32) {
+    // Use xcap (already a dep for screenshots) to get the primary monitor's
+    // logical pixel size. Same display the ffmpeg capture is reading from.
+    match xcap::Monitor::all() {
+        Ok(mons) => {
+            let mon = mons.iter().find(|m| m.is_primary().unwrap_or(false))
+                .or_else(|| mons.first());
+            if let Some(m) = mon {
+                let w = m.width().unwrap_or(1920) as i32;
+                let h = m.height().unwrap_or(1080) as i32;
+                return (w.max(1), h.max(1));
+            }
+        }
+        Err(e) => log::warn!("screen_dims: xcap failed: {e}"),
+    }
+    (1920, 1080)
+}
+
+fn attach_control_channel(dc: Arc<RTCDataChannel>) {
+    let (w, h) = screen_dims();
+
+    // On open: send screen_info so the dashboard can de-normalize coords on
+    // its end if it wants to display a cursor reticle in-page.
+    {
+        let dc_open = Arc::clone(&dc);
+        dc.on_open(Box::new(move || {
+            let dc = dc_open.clone();
+            Box::pin(async move {
+                let msg = json!({"t": "screen_info", "w": w, "h": h, "scale": 1});
+                let _ = dc.send_text(msg.to_string()).await;
+            })
+        }));
+    }
+
+    // Per-message router. Each callback is its own future so they don't block
+    // the data-channel read loop. Heavy work (input injection, clipboard) is
+    // offloaded to the dedicated `rudrans-input` thread via input::sender().
+    let dc_msg = Arc::clone(&dc);
+    dc.on_message(Box::new(move |m: DataChannelMessage| {
+        let dc = dc_msg.clone();
+        Box::pin(async move {
+            // Only handle text frames — we don't speak binary on this DC.
+            if !m.is_string {
+                return;
+            }
+            let text = match std::str::from_utf8(&m.data) {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            let msg: InboundMsg = match serde_json::from_str(text) {
+                Ok(m) => m,
+                Err(e) => {
+                    log::warn!("control: bad json {e}: {text}");
+                    return;
+                }
+            };
+            handle_control_msg(&dc, msg, w, h).await;
+        })
+    }));
+}
+
+async fn handle_control_msg(dc: &Arc<RTCDataChannel>, msg: InboundMsg, w: i32, h: i32) {
+    let Some(tx) = input::sender() else {
+        log::warn!("control: input thread not ready");
+        return;
+    };
+    match msg {
+        InboundMsg::Hello { proto: _ } => {
+            // Already replied with screen_info on_open. Re-send on explicit
+            // hello in case the dashboard missed the first one (timing race).
+            let reply = json!({"t": "screen_info", "w": w, "h": h, "scale": 1});
+            let _ = dc.send_text(reply.to_string()).await;
+        }
+        InboundMsg::MouseMove { x, y } => {
+            let px = (x.clamp(0.0, 1.0) * w as f64).round() as i32;
+            let py = (y.clamp(0.0, 1.0) * h as f64).round() as i32;
+            let _ = tx.send(InputEvent::MouseMove { x: px, y: py });
+        }
+        InboundMsg::MouseButton { btn, down } => {
+            let button = match btn.as_str() {
+                "left" => MouseButton::Left,
+                "right" => MouseButton::Right,
+                "middle" => MouseButton::Middle,
+                _ => return,
+            };
+            let _ = tx.send(InputEvent::MouseButton { button, down });
+        }
+        InboundMsg::MouseWheel { dx, dy } => {
+            let _ = tx.send(InputEvent::MouseWheel { dx, dy });
+        }
+        InboundMsg::Key { code, down } => {
+            let _ = tx.send(InputEvent::Key { code, down });
+        }
+        InboundMsg::ClipSet { text } => {
+            let _ = tx.send(InputEvent::ClipSet { text });
+        }
+        InboundMsg::ClipGet => {
+            let (rtx, rrx) = tokio::sync::oneshot::channel();
+            let _ = tx.send(InputEvent::ClipGet(rtx));
+            // Bounded wait so a hung clipboard read can't stall the DC.
+            let text = match tokio::time::timeout(Duration::from_millis(500), rrx).await {
+                Ok(Ok(v)) => v.unwrap_or_default(),
+                _ => String::new(),
+            };
+            let reply = json!({"t": "clip_data", "text": text});
+            let _ = dc.send_text(reply.to_string()).await;
+        }
+        InboundMsg::Ping { id } => {
+            let reply = json!({"t": "pong", "id": id});
+            let _ = dc.send_text(reply.to_string()).await;
+        }
+    }
 }

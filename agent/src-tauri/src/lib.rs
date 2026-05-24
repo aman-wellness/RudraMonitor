@@ -12,6 +12,7 @@ mod watchdog;
 
 pub use watchdog::{is_guardian_invocation, run_guardian_loop, mark_graceful_shutdown};
 mod idle;
+mod input;
 mod metrics;
 mod screenshots;
 mod video;
@@ -1118,6 +1119,10 @@ pub fn run() {
                     .creation_flags(CREATE_NO_WINDOW)
                     .status();
             }
+
+            // Remote Desktop input thread. Owns enigo + arboard. Idle
+            // unless the WebRTC data channel pushes events at it.
+            input::spawn();
 
             spawn_background_loop(state.clone());
             spawn_updater_loop(app.handle().clone());

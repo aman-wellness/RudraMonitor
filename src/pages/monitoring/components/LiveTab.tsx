@@ -103,6 +103,7 @@ export default function LiveTab() {
         }
       };
       pc.oniceconnectionstatechange = () => {
+        console.log('[LiveTab] iceConnectionState →', pc.iceConnectionState);
         if (stopFlag.current) return;
         const s = pc.iceConnectionState;
         if (s === 'connected' || s === 'completed') setStatus('live');
@@ -111,9 +112,25 @@ export default function LiveTab() {
           setErrorMsg(`Peer connection ${s}`);
         }
       };
+      pc.onicegatheringstatechange = () => {
+        console.log('[LiveTab] iceGatheringState →', pc.iceGatheringState);
+      };
+      pc.onicecandidateerror = (ev) => {
+        const e = ev as RTCPeerConnectionIceErrorEvent;
+        console.warn('[LiveTab] icecandidate error', {
+          address: e.address,
+          port: e.port,
+          url: e.url,
+          errorCode: e.errorCode,
+          errorText: e.errorText,
+        });
+      };
       pc.onicecandidate = (ev) => {
         if (ev.candidate) {
+          console.log('[LiveTab] local candidate', ev.candidate.candidate);
           void postSignal(jwt, sessionId, agentId, 'to_agent', 'ice_candidate', ev.candidate.toJSON());
+        } else {
+          console.log('[LiveTab] local ICE gathering complete (null candidate)');
         }
       };
 
