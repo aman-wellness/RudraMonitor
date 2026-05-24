@@ -130,16 +130,18 @@ def json_chat(system: str, user: str) -> tuple[dict[str, Any], float]:
     return (json.loads(j["choices"][0]["message"]["content"]), _gpt_cost(j.get("usage")))
 
 def gen_image(prompt: str, out_path: Path, size: str = "1024x1024") -> float:
+    # dall-e-3 was deprecated. Current image model is gpt-image-1 — same
+    # endpoint, returns b64_json by default, supports the same square
+    # 1024 size we want for square social-media posts.
     r = requests.post(
         f"{OPENAI_API}/images/generations",
         headers={"Authorization": f"Bearer {OPENAI_KEY}", "Content-Type": "application/json"},
         json={
-            "model": "dall-e-3",
-            "prompt": prompt[:3500],  # DALL-E prompt cap is 4000
+            "model": "gpt-image-1",
+            "prompt": prompt[:3500],
             "size": size,
             "n": 1,
-            "response_format": "b64_json",
-            "quality": "standard",
+            "quality": "medium",  # gpt-image-1 sizes: low / medium / high
         },
         timeout=180,
     )
@@ -148,9 +150,18 @@ def gen_image(prompt: str, out_path: Path, size: str = "1024x1024") -> float:
         # the scenes that did succeed.
         print(f"[warn] DALL-E image failed for prompt {prompt[:60]!r}: {r.status_code} {r.text[:200]}")
         return 0.0
-    import base64
-    b64 = r.json()["data"][0]["b64_json"]
-    out_path.write_bytes(base64.b64decode(b64))
+    j = r.json()
+    item = (j.get("data") or [{}])[0]
+    if item.get("b64_json"):
+        import base64
+        out_path.write_bytes(base64.b64decode(item["b64_json"]))
+    elif item.get("url"):
+        dl = requests.get(item["url"], timeout=120)
+        dl.raise_for_status()
+        out_path.write_bytes(dl.content)
+    else:
+        print(f"[warn] DALL-E response had neither url nor b64_json: {j}")
+        return 0.0
     return PRICE["dalle3_std"]
 
 def tts(text: str, out_path: Path, voice: str = "nova") -> float:
