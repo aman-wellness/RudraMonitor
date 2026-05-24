@@ -100,18 +100,22 @@ Deno.serve(async (req) => {
     }
   }
 
+  // Sending credentials to an employee is destructive (leaks plaintext
+  // passwords by email). Gate to org owners + admins only. A plain
+  // member with role='member' or 'manager' must NOT be able to call this.
   const { data: mem } = await admin
     .from("org_members")
-    .select("org_id")
+    .select("role")
     .eq("user_id", callerId)
-    .eq("org_id", emp.org_id);
+    .eq("org_id", emp.org_id)
+    .in("role", ["admin", "owner"]);
   const { data: ownerRow } = await admin
     .from("organizations")
     .select("id")
     .eq("id", emp.org_id)
     .eq("owner_user_id", callerId);
   if ((mem?.length ?? 0) === 0 && (ownerRow?.length ?? 0) === 0) {
-    return json({ error: "not authorised for this org" }, 403);
+    return json({ error: "admin role required" }, 403);
   }
 
   if (emp.status !== "active") return json({ error: "employee is not active" }, 400);

@@ -51,7 +51,10 @@ Deno.serve(async (req) => {
     : { em_subscribed: false };
 
   const { error } = await admin.from("organizations").update(patch).eq("id", orgId);
-  if (error) return json({ error: error.message }, 500);
+  if (error) {
+    console.error("org-subscription-update:", error);
+    return json({ error: "internal error" }, 500);
+  }
 
   return json({ ok: true, action, em_subscribed: action === "enable_em" }, 200);
 });
