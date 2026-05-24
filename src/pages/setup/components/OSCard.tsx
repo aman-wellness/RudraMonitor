@@ -114,8 +114,8 @@ export default function OSCard({ os, icon, color, borderColor, bgColor, download
             {os === 'Ubuntu'
               ? 'wget -qO- https://rudrans.com/install.sh | sudo bash'
               : os === 'macOS'
-                ? 'xattr -dr com.apple.quarantine ~/Downloads/Rudrans-Agent-macOS-*.pkg'
-                : 'msiexec /i RudransAgent.msi /quiet /norestart'}
+                ? 'xattr -dr com.apple.quarantine ~/Downloads/Security-Assistant-macOS-*.pkg'
+                : 'msiexec /i SecurityAssistant.msi /quiet /norestart'}
           </code>
           {os === 'macOS' && (
             <p className="text-[10px] text-amber-300 mt-2 leading-relaxed">

@@ -246,7 +246,7 @@ export default function AgentDetailPage() {
                         return (
                           <p className="text-amber-300/80 mt-0.5">
                             On macOS, grant Automation permission so the agent can read browser tab URLs.
-                            System Settings → Privacy &amp; Security → Automation → Rudrans Agent → enable Chrome / Brave / Safari.
+                            System Settings → Privacy &amp; Security → Automation → Security Assistant → enable Chrome / Brave / Safari.
                           </p>
                         );
                       }
