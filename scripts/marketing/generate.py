@@ -46,18 +46,21 @@ import requests
 
 # --- Config from env -------------------------------------------------------
 
-OPENAI_KEY  = os.environ.get("MARKETING_OPENAI_API_KEY", "")
+# Required: the host's connection to Supabase + Postgres. Set in
+# /etc/rudrans-marketing.env (see Implementation order #5).
 SUPABASE_URL = os.environ.get("SUPABASE_URL",  "http://localhost:8000")
 SR_KEY      = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 PG_DSN      = os.environ.get("PG_DSN", "postgresql://postgres:postgres@localhost:5432/postgres")
-
 BUCKET = "marketing-media"
 
-if not OPENAI_KEY:
-    sys.exit("MARKETING_OPENAI_API_KEY not set")
 if not SR_KEY:
     sys.exit("SUPABASE_SERVICE_ROLE_KEY not set")
 
+# OpenAI key resolution: DB-first (integrations table row managed via
+# /admin/integrations in the dashboard), env var fallback for back-compat.
+# Resolved lazily inside main() so the DB read can short-circuit if the
+# `enabled` flag is off — saves one query when paused.
+OPENAI_KEY: str = ""
 OPENAI_API = "https://api.openai.com/v1"
 
 # --- OpenAI helpers --------------------------------------------------------
@@ -274,6 +277,27 @@ def load_settings(cur) -> dict[str, Any]:
         raise RuntimeError("marketing_settings row missing — seed migration didn't run?")
     return dict(row)
 
+
+def load_openai_key(cur) -> str:
+    """DB-first lookup of the marketing OpenAI key. Admin manages this via
+    /admin/integrations in the dashboard (key=MARKETING_OPENAI_API_KEY).
+    Falls back to the MARKETING_OPENAI_API_KEY env var for back-compat
+    with pre-DB-lookup deployments."""
+    cur.execute(
+        "SELECT value FROM integrations WHERE key='MARKETING_OPENAI_API_KEY'"
+    )
+    row = cur.fetchone()
+    db_value = (row.get("value") if row else None) or ""
+    if db_value.strip():
+        return db_value.strip()
+    env_value = os.environ.get("MARKETING_OPENAI_API_KEY", "").strip()
+    if env_value:
+        return env_value
+    raise RuntimeError(
+        "MARKETING_OPENAI_API_KEY not set anywhere. Set it in the "
+        "super-admin dashboard at /admin/integrations (Marketing OpenAI Key)."
+    )
+
 def already_generated_today(cur, kind: str, today: dt.date) -> bool:
     cur.execute(
         "SELECT 1 FROM marketing_drafts WHERE kind=%s AND scheduled_for=%s LIMIT 1",
@@ -327,6 +351,12 @@ def main(kind: str) -> None:
             if not s.get("enabled", True):
                 print(f"marketing_settings.enabled = false, skipping {kind} run (no OpenAI calls).")
                 return
+            # Resolve the OpenAI key from the integrations table (admin
+            # manages this in /admin/integrations). Failing here is loud
+            # and gives the admin the exact place to fix it.
+            global OPENAI_KEY
+            OPENAI_KEY = load_openai_key(cur)
+            print(f"openai key loaded ({len(OPENAI_KEY)} chars, prefix {OPENAI_KEY[:7]}…)")
 
         # 1. Trend search.
         trend_prompt = (
