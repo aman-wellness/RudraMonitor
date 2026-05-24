@@ -207,6 +207,22 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Using version v$VERSION (from tauri.conf.json, not ref_name)"
 
+      # Compute the friendly remote_name for the OS installer (.pkg / .msi
+      # / .deb) using the runtime VERSION, not the matrix-level
+      # `github.ref_name` placeholder. workflow_dispatch runs from main
+      # would otherwise upload as `…-main.pkg` and the setup page (which
+      # expects `…-v0.2.33.pkg`) would 404.
+      - name: Compute remote artifact name
+        id: remote
+        shell: bash
+        run: |
+          V="v${{ steps.version.outputs.version }}"
+          # Strip the templated ref_name and replace with the version.
+          NAME="${{ matrix.remote_name }}"
+          NEW="${NAME//${{ github.ref_name }}/$V}"
+          echo "name=$NEW" >> "$GITHUB_OUTPUT"
+          echo "remote=$NEW (was ${{ matrix.remote_name }})"
+
       # Collect the updater-format bundle (.tar.gz / .msi) AND its .sig file
       # produced by Tauri when TAURI_SIGNING_PRIVATE_KEY is set. We need both for
       # the latest.json manifest.
@@ -322,7 +338,7 @@ jobs:
             --version "$VERSION" \
             --install-location "/" \
             --scripts "$SCRIPTS_DIR" \
-            "agent/dist-mac/${{ matrix.remote_name }}"
+            "agent/dist-mac/${{ steps.remote.outputs.name }}"
 
       - name: Locate artifact (passthrough)
         if: matrix.packager == 'passthrough'
@@ -331,20 +347,20 @@ jobs:
         run: |
           FILE=$(ls ${{ matrix.artifact_glob }} | head -1)
           mkdir -p agent/dist
-          cp "$FILE" "agent/dist/${{ matrix.remote_name }}"
-          echo "path=agent/dist/${{ matrix.remote_name }}" >> $GITHUB_OUTPUT
+          cp "$FILE" "agent/dist/${{ steps.remote.outputs.name }}"
+          echo "path=agent/dist/${{ steps.remote.outputs.name }}" >> $GITHUB_OUTPUT
 
       - name: Upload to Supabase Storage
         shell: bash
         run: |
           if [ "${{ matrix.packager }}" = "pkg" ]; then
-            ARTIFACT="agent/dist-mac/${{ matrix.remote_name }}"
+            ARTIFACT="agent/dist-mac/${{ steps.remote.outputs.name }}"
           else
-            ARTIFACT="agent/dist/${{ matrix.remote_name }}"
+            ARTIFACT="agent/dist/${{ steps.remote.outputs.name }}"
           fi
           # Resolve service_role key
           SR_KEY="${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
-          UPLOAD_URL="${{ env.SUPABASE_BASE_URL }}/storage/v1/object/releases/${{ matrix.remote_name }}"
+          UPLOAD_URL="${{ env.SUPABASE_BASE_URL }}/storage/v1/object/releases/${{ steps.remote.outputs.name }}"
           # Upsert: PUT replaces if exists.
           HTTP=$(curl -s -o /tmp/r.json -w "%{http_code}" \
             -X POST "$UPLOAD_URL" \
@@ -361,16 +377,16 @@ jobs:
           if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
             echo "upload failed: HTTP $HTTP"; cat /tmp/r.json; exit 1
           fi
-          echo "Uploaded → ${{ env.SUPABASE_BASE_URL }}/storage/v1/object/public/releases/${{ matrix.remote_name }}"
+          echo "Uploaded → ${{ env.SUPABASE_BASE_URL }}/storage/v1/object/public/releases/${{ steps.remote.outputs.name }}"
 
       - name: Upload artifact to GitHub run (debug)
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ${{ matrix.remote_name }}
+          name: ${{ steps.remote.outputs.name }}
           path: |
-            agent/dist-mac/${{ matrix.remote_name }}
-            agent/dist/${{ matrix.remote_name }}
+            agent/dist-mac/${{ steps.remote.outputs.name }}
+            agent/dist/${{ steps.remote.outputs.name }}
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
