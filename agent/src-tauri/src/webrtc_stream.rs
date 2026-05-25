@@ -47,7 +47,12 @@ use webrtc::track::track_local::TrackLocal;
 use crate::input::{self, InputEvent, MouseButton};
 use crate::{api, config, AppState};
 
-const TARGET_FPS: u32 = 15;
+// 30 fps capture so the dashboard cursor catches up with the operator's
+// real mouse motion. At 15 fps the customer saw a "drag" / hang feeling
+// because each frame ate 66 ms before the next paint — by the time the
+// dashboard rendered the cursor at position N, the operator had already
+// moved to position N+3 in their head.
+const TARGET_FPS: u32 = 30;
 const TARGET_WIDTH: u32 = 1280;
 
 #[derive(Debug, Deserialize)]
@@ -533,6 +538,20 @@ async fn pump_ffmpeg_into_track(
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     cmd.arg("-hide_banner").arg("-loglevel").arg("error");
+    // Strip every drop of input-side buffering. Without these flags ffmpeg
+    // spends ~200 ms probing the source format and a further frame or two
+    // sitting in the demuxer queue before encode starts — that's the lag
+    // the operator feels as "mouse hangs / delay" on the dashboard.
+    //   -fflags nobuffer        skip the input buffer
+    //   -flags low_delay        compositor delay = 0
+    //   -probesize 32           don't read 5 MB before deciding format
+    //   -analyzeduration 0      don't sample N seconds before reporting
+    //   -thread_queue_size 8    keep the input-thread queue tiny
+    cmd.arg("-fflags").arg("nobuffer")
+        .arg("-flags").arg("low_delay")
+        .arg("-probesize").arg("32")
+        .arg("-analyzeduration").arg("0")
+        .arg("-thread_queue_size").arg("8");
     cmd.arg("-framerate").arg(TARGET_FPS.to_string());
     #[cfg(target_os = "macos")]
     {

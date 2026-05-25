@@ -43,6 +43,46 @@ export default function RemoteTab() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [controlling, setControlling] = useState(false);
   const [dcReady, setDcReady] = useState(false);
+  // Short-lived status toast next to the Copy/Paste buttons so customers
+  // can SEE whether the clipboard round-trip actually succeeded. Previously
+  // the buttons fired silently; if the agent was on a stale build (which
+  // it often was while the auto-update flow was still broken) nothing
+  // happened and the customer assumed copy/paste was unimplemented.
+  const [clipStatus, setClipStatus] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const clipStatusTimer = useRef<number | null>(null);
+  const showClipStatus = (kind: 'ok' | 'err', text: string) => {
+    setClipStatus({ kind, text });
+    if (clipStatusTimer.current) window.clearTimeout(clipStatusTimer.current);
+    clipStatusTimer.current = window.setTimeout(() => setClipStatus(null), 4000);
+  };
+
+  // Viewing-size controls. Customers can't see the agent screen properly
+  // in the default 16:9 inline frame, so:
+  //   • Expand: video container takes over the full dashboard content
+  //     area (still inside the React tree, sidebar/header visible).
+  //   • Fullscreen: native HTML Fullscreen API — eats the entire monitor.
+  //     Esc exits as usual.
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(document.fullscreenElement === containerRef.current);
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
+  const toggleFullscreen = async () => {
+    const el = containerRef.current;
+    if (!el) return;
+    try {
+      if (document.fullscreenElement === el) {
+        await document.exitFullscreen();
+      } else {
+        await el.requestFullscreen({ navigationUI: 'hide' });
+      }
+    } catch (e) {
+      console.warn('fullscreen toggle failed', e);
+    }
+  };
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -67,9 +107,6 @@ export default function RemoteTab() {
   const teardown = () => {
     setControlling(false);
     setDcReady(false);
-    if (document.pointerLockElement === videoRef.current) {
-      try { document.exitPointerLock(); } catch { /* ignore */ }
-    }
     if (dcRef.current) {
       try { dcRef.current.close(); } catch { /* ignore */ }
       dcRef.current = null;
@@ -133,7 +170,16 @@ export default function RemoteTab() {
         try {
           const msg = JSON.parse(ev.data as string);
           if (msg.t === 'clip_data' && typeof msg.text === 'string') {
-            void navigator.clipboard.writeText(msg.text).catch(() => { /* ignore */ });
+            if (msg.text.length === 0) {
+              showClipStatus('err', 'Remote clipboard is empty');
+            } else {
+              navigator.clipboard.writeText(msg.text).then(() => {
+                const preview = msg.text.length > 40 ? msg.text.slice(0, 40) + '…' : msg.text;
+                showClipStatus('ok', `Copied from remote: "${preview}"`);
+              }).catch((err) => {
+                showClipStatus('err', `Couldn't write to your clipboard: ${err?.message ?? err}`);
+              });
+            }
           }
           // screen_info / pong: nothing to do client-side right now.
         } catch { /* ignore non-JSON */ }
@@ -144,6 +190,18 @@ export default function RemoteTab() {
           videoRef.current.srcObject = ev.streams[0];
           videoRef.current.play().catch(() => { /* muted, no gesture needed */ });
         }
+        // Tell the browser to use the smallest possible jitter buffer for
+        // this track. The default tries to absorb network variance and
+        // ends up adding 100-200 ms of latency — the operator feels that
+        // as "cursor drag / hang" on the dashboard because their real
+        // mouse has already moved on by the time the video catches up.
+        // playoutDelayHint=0 hints "play it as soon as it arrives". Only
+        // Chromium implements this property (Safari ignores the assignment
+        // silently, which is fine — falls back to default behaviour).
+        try {
+          // Use Chromium's non-standard property without TS complaints.
+          (ev.receiver as RTCRtpReceiver & { playoutDelayHint?: number }).playoutDelayHint = 0;
+        } catch { /* ignore */ }
       };
       pc.oniceconnectionstatechange = () => {
         if (stopFlag.current) return;
@@ -210,33 +268,38 @@ export default function RemoteTab() {
 
   // ---- Input capture wiring (only active while `controlling`) ----
 
-  const enterControl = async () => {
+  // Control mode toggle. Previously this called requestPointerLock(), which
+  // captured the dashboard user's mouse to the video element — the cursor
+  // disappeared on their local desktop and they had to press Esc to escape.
+  // Customers couldn't copy from agent and paste locally because the local
+  // cursor was trapped. New behaviour matches AnyDesk / Chrome Remote
+  // Desktop: control mode just enables event forwarding while the mouse
+  // is over the video. Move off the video and you're back on your own
+  // machine. No Esc dance, no captured cursor.
+  const enterControl = () => {
     const v = videoRef.current;
     if (!v || !dcReady) return;
-    try {
-      await v.requestPointerLock();
-      setControlling(true);
-      v.focus();
-    } catch (e) {
-      console.warn('pointer lock failed', e);
-    }
+    setControlling(true);
+    v.focus();
   };
 
   const exitControl = () => {
-    if (document.pointerLockElement === videoRef.current) {
-      try { document.exitPointerLock(); } catch { /* ignore */ }
-    }
     setControlling(false);
   };
 
-  // Watch for the user pressing Esc (browser exits pointer-lock unilaterally).
+  // Esc still useful as a "stop sending input" shortcut even though we
+  // no longer pointer-lock — saves a trip to the Stop button.
   useEffect(() => {
-    const onChange = () => {
-      if (document.pointerLockElement !== videoRef.current) setControlling(false);
+    if (!controlling) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setControlling(false);
+      }
     };
-    document.addEventListener('pointerlockchange', onChange);
-    return () => document.removeEventListener('pointerlockchange', onChange);
-  }, []);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [controlling]);
 
   // Heartbeat ping while controlling.
   useEffect(() => {
@@ -257,19 +320,22 @@ export default function RemoteTab() {
     const v = videoRef.current;
     if (!v) return;
     const rect = v.getBoundingClientRect();
-    // Pointer-lock mode: e.clientX/Y are still raw (browser reports last
-    // visible position) — what we actually want is movementX/Y aggregated.
-    // We track an absolute virtual cursor in the video's coordinate space.
-    pendingMove.current = pendingMove.current || { x: rect.width / 2, y: rect.height / 2 };
-    pendingMove.current.x = Math.max(0, Math.min(rect.width, pendingMove.current.x + e.movementX));
-    pendingMove.current.y = Math.max(0, Math.min(rect.height, pendingMove.current.y + e.movementY));
+    // Absolute positioning: pointer is NOT locked, so e.clientX/Y are
+    // real cursor coordinates. Translate to normalized 0..1 inside the
+    // video element. Drop events that wandered off the video — the
+    // remote cursor freezes at its last in-bounds position, leaving the
+    // user free to use their own machine.
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+    if (x < 0 || x > 1 || y < 0 || y > 1) return;
+    pendingMove.current = { x, y };
     if (!rafScheduled.current) {
       rafScheduled.current = true;
       requestAnimationFrame(() => {
         rafScheduled.current = false;
         const p = pendingMove.current;
         if (!p) return;
-        sendDC({ t: 'mouse_move', x: p.x / rect.width, y: p.y / rect.height });
+        sendDC({ t: 'mouse_move', x: p.x, y: p.y });
       });
     }
   };
@@ -355,20 +421,97 @@ export default function RemoteTab() {
             </button>
           )}
           {controlling && (
-            <button
-              onClick={exitControl}
-              className="px-3 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-red-300 text-xs font-medium"
-            >
-              Release (Esc)
-            </button>
+            <>
+              <button
+                onClick={exitControl}
+                className="px-3 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-red-300 text-xs font-medium"
+              >
+                Release (Esc)
+              </button>
+              {/* Explicit clipboard sync buttons. The Ctrl+C / Ctrl+V
+                  intercept on the video only fires when the video has
+                  focus, and even then competes with the keystroke we
+                  forward to the agent. Buttons remove the ambiguity:
+                  one-shot copy from remote, one-shot paste to remote. */}
+              <button
+                onClick={() => {
+                  if (!dcRef.current || dcRef.current.readyState !== 'open') {
+                    showClipStatus('err', 'Not connected to remote');
+                    return;
+                  }
+                  sendDC({ t: 'clip_get' });
+                  showClipStatus('ok', 'Asking remote for its clipboard…');
+                }}
+                title="Copy the remote machine's clipboard into yours"
+                className="px-3 py-1.5 rounded-lg bg-dark-700 hover:bg-dark-600 border border-dark-600 text-gray-200 text-xs font-medium"
+              >
+                <i className="ri-arrow-down-line mr-1" />Copy from remote
+              </button>
+              <button
+                onClick={async () => {
+                  if (!dcRef.current || dcRef.current.readyState !== 'open') {
+                    showClipStatus('err', 'Not connected to remote');
+                    return;
+                  }
+                  try {
+                    const text = await navigator.clipboard.readText();
+                    if (!text) {
+                      showClipStatus('err', 'Your clipboard is empty');
+                      return;
+                    }
+                    sendDC({ t: 'clip_set', text });
+                    const preview = text.length > 40 ? text.slice(0, 40) + '…' : text;
+                    showClipStatus('ok', `Pushed to remote: "${preview}"`);
+                  } catch (err) {
+                    // navigator.clipboard.readText() is gated behind a
+                    // clipboard-read permission AND a user-gesture. Either
+                    // missing → DOMException. Surface the reason so the
+                    // customer knows to grant the permission in browser.
+                    const e = err instanceof Error ? err.message : String(err);
+                    showClipStatus('err', `Couldn't read your clipboard: ${e}`);
+                  }
+                }}
+                title="Push your clipboard to the remote machine"
+                className="px-3 py-1.5 rounded-lg bg-dark-700 hover:bg-dark-600 border border-dark-600 text-gray-200 text-xs font-medium"
+              >
+                <i className="ri-arrow-up-line mr-1" />Paste to remote
+              </button>
+              {clipStatus && (
+                <span className={`px-2.5 py-1 text-[11px] rounded border ${
+                  clipStatus.kind === 'ok'
+                    ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                    : 'bg-rose-500/10 text-rose-300 border-rose-500/30'
+                }`}>
+                  {clipStatus.text}
+                </span>
+              )}
+            </>
           )}
           {selectedId && (
-            <button
-              onClick={() => { stopFlag.current = true; setSelectedId(null); teardown(); }}
-              className="px-3 py-1.5 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-300 text-xs font-medium"
-            >
-              Stop
-            </button>
+            <>
+              <button
+                onClick={() => setExpanded((v) => !v)}
+                title={expanded ? 'Shrink to default 16:9 frame' : 'Expand to fill the page'}
+                className="px-3 py-1.5 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-300 text-xs font-medium"
+              >
+                <i className={`mr-1 ${expanded ? 'ri-collapse-diagonal-line' : 'ri-expand-diagonal-line'}`} />
+                {expanded ? 'Shrink' : 'Expand'}
+              </button>
+              <button
+                onClick={() => void toggleFullscreen()}
+                title={isFullscreen ? 'Exit fullscreen (Esc)' : 'Open agent screen in fullscreen'}
+                className="px-3 py-1.5 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-300 text-xs font-medium"
+              >
+                <i className={`mr-1 ${isFullscreen ? 'ri-fullscreen-exit-line' : 'ri-fullscreen-line'}`} />
+                {isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+              </button>
+              <button
+                onClick={() => { stopFlag.current = true; setSelectedId(null); teardown(); }}
+                className="px-3 py-1.5 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-300 text-xs font-medium"
+              >
+                Stop
+              </button>
+            </>
           )}
         </div>
         <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium ${
@@ -393,7 +536,16 @@ export default function RemoteTab() {
         </span>
       </div>
 
-      <div className="aspect-video bg-dark-900 border border-dark-700 rounded-xl overflow-hidden relative">
+      <div
+        ref={containerRef}
+        className={
+          isFullscreen
+            ? 'fixed inset-0 z-50 bg-black flex items-center justify-center'
+            : expanded
+              ? 'h-[calc(100vh-160px)] bg-dark-900 border border-dark-700 rounded-xl overflow-hidden relative'
+              : 'aspect-video bg-dark-900 border border-dark-700 rounded-xl overflow-hidden relative'
+        }
+      >
         {selectedId ? (
           <video
             ref={videoRef}
