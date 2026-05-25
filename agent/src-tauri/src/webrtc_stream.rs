@@ -536,6 +536,17 @@ async fn pump_ffmpeg_into_track(
     cmd.arg("-framerate").arg(TARGET_FPS.to_string());
     #[cfg(target_os = "macos")]
     {
+        // avfoundation defaults to NOT drawing the mouse cursor — the
+        // captured frames are exactly what the OS painted onto the back
+        // buffer, and macOS composites the cursor in a separate layer.
+        // -capture_cursor 1 forces avfoundation to alpha-blend the cursor
+        // into every frame; -capture_mouse_clicks 1 paints a flash at
+        // click points which is nice UX during remote sessions. Without
+        // these the operator sees their mouse moving on the agent but
+        // can't see WHERE on the dashboard — exactly the customer
+        // complaint that landed this fix.
+        cmd.arg("-capture_cursor").arg("1");
+        cmd.arg("-capture_mouse_clicks").arg("1");
         // Reuse the dynamic screen-index probe from video.rs so a Mac with a
         // weird device layout (multi-camera, virtual displays) still picks
         // the right "Capture screen 0".
@@ -544,10 +555,16 @@ async fn pump_ffmpeg_into_track(
     }
     #[cfg(target_os = "windows")]
     {
+        // gdigrab's draw_mouse defaults to 1 on most builds but it's been
+        // toggled in upstream ffmpeg over the years; pin it explicitly so
+        // we always render the cursor into the stream regardless of
+        // which bundled ffmpeg version is in use.
+        cmd.arg("-draw_mouse").arg("1");
         cmd.arg("-f").arg("gdigrab").arg("-i").arg("desktop");
     }
     #[cfg(target_os = "linux")]
     {
+        cmd.arg("-draw_mouse").arg("1");
         cmd.arg("-f").arg("x11grab").arg("-i").arg(":0.0");
     }
 
