@@ -65,6 +65,36 @@ export default function RemoteTab() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // Reticle = small visible dot on the dashboard at the position we're
+  // currently telling the agent to move its cursor to. Lets the operator
+  // confirm dashboard-side wiring even when the agent's painted cursor
+  // is missing (pre-v0.2.42 builds, or TCC-denied on macOS).
+  const [reticle, setReticle] = useState<{ x: number; y: number } | null>(null);
+
+  // Detailed diagnostic state so the operator can see WHERE the wire-up
+  // is stuck instead of staring at an indefinite "Connecting…" pill. The
+  // customer kept reporting "connect just hangs" — without states like
+  // "answer received", "ICE candidates exchanged" being visible there's
+  // no way to know whether the agent is even responding.
+  const [diag, setDiag] = useState<{
+    elapsedMs: number;
+    answerReceived: boolean;
+    candidatesIn: number;
+    candidatesOut: number;
+    iceState: string;
+    connState: string;
+  }>({ elapsedMs: 0, answerReceived: false, candidatesIn: 0, candidatesOut: 0, iceState: 'new', connState: 'new' });
+  const diagStartRef = useRef<number | null>(null);
+  // Tick a wall-clock counter so the operator sees seconds ticking by.
+  // 250ms cadence is fine — it's just UI.
+  useEffect(() => {
+    if (status !== 'connecting') return;
+    diagStartRef.current = Date.now();
+    const t = window.setInterval(() => {
+      setDiag((d) => ({ ...d, elapsedMs: Date.now() - (diagStartRef.current ?? Date.now()) }));
+    }, 250);
+    return () => window.clearInterval(t);
+  }, [status]);
   useEffect(() => {
     const onFsChange = () => setIsFullscreen(document.fullscreenElement === containerRef.current);
     document.addEventListener('fullscreenchange', onFsChange);
@@ -206,14 +236,22 @@ export default function RemoteTab() {
       pc.oniceconnectionstatechange = () => {
         if (stopFlag.current) return;
         const s = pc.iceConnectionState;
+        setDiag((d) => ({ ...d, iceState: s }));
         if (s === 'connected' || s === 'completed') setStatus('live');
         else if (s === 'failed' || s === 'closed') {
           setStatus('failed');
           setErrorMsg(`Peer connection ${s}`);
         }
       };
+      // Also track the overall connectionState — it's the more reliable
+      // signal in modern Chromium and surfaces transitions ICE doesn't.
+      pc.onconnectionstatechange = () => {
+        if (stopFlag.current) return;
+        setDiag((d) => ({ ...d, connState: pc.connectionState }));
+      };
       pc.onicecandidate = (ev) => {
         if (ev.candidate) {
+          setDiag((d) => ({ ...d, candidatesOut: d.candidatesOut + 1 }));
           void postSignal(jwt, sessionId, agentId, 'to_agent', 'ice_candidate', ev.candidate.toJSON());
         }
       };
@@ -251,9 +289,11 @@ export default function RemoteTab() {
           since = msg.created_at;
           if (msg.kind === 'answer' && typeof msg.payload.sdp === 'string') {
             await pc.setRemoteDescription({ type: 'answer', sdp: msg.payload.sdp });
+            setDiag((d) => ({ ...d, answerReceived: true }));
           } else if (msg.kind === 'ice_candidate') {
             try {
               await pc.addIceCandidate(msg.payload as RTCIceCandidateInit);
+              setDiag((d) => ({ ...d, candidatesIn: d.candidatesIn + 1 }));
             } catch (e) {
               console.warn('addIceCandidate failed', e);
             }
@@ -286,6 +326,77 @@ export default function RemoteTab() {
   const exitControl = () => {
     setControlling(false);
   };
+
+  // Adaptive-bitrate sampler. Every 4 s we pull pc.getStats() and look at
+  // the outbound video receiver's available bandwidth + recent packet loss.
+  // The result picks one of the rungs in the ladder, and if the rung
+  // differs from the current one we send {t:'set_quality', width, bitrate_kbps}
+  // to the agent over the control DataChannel. Agent restarts ffmpeg with
+  // the new params (≤500 ms hiccup) and the stream keeps flowing without
+  // tanking on a congested link.
+  //
+  // Ladder is mirrored on the agent's clamp range (320..2560 width,
+  // 200..8000 kbps). Roughly:
+  //   1080p / 4.5 Mbps  → good ethernet
+  //    720p / 2.5 Mbps  → default
+  //    480p /   1 Mbps  → slow wifi
+  //    360p / 0.5 Mbps  → cellular / overloaded link
+  const lastSentRungRef = useRef<number>(-1);
+  useEffect(() => {
+    if (status !== 'live') return;
+    const RUNGS: { width: number; bitrate_kbps: number; floorBps: number }[] = [
+      { width:  640, bitrate_kbps:  500, floorBps:       0 },  // floor — always usable
+      { width:  854, bitrate_kbps: 1000, floorBps:   900_000 },
+      { width: 1280, bitrate_kbps: 2500, floorBps: 2_000_000 },
+      { width: 1920, bitrate_kbps: 4500, floorBps: 4_500_000 },
+    ];
+    const pickRung = (availBps: number, lossPct: number): number => {
+      // Heavy loss: drop to the lowest rung regardless of bandwidth.
+      if (lossPct > 5) return 0;
+      // Otherwise pick the highest rung whose floor we exceed.
+      for (let i = RUNGS.length - 1; i >= 0; i--) {
+        if (availBps >= RUNGS[i].floorBps) return i;
+      }
+      return 0;
+    };
+    const pc = pcRef.current;
+    if (!pc) return;
+    let lastPacketsLost = 0;
+    let lastPacketsRecv = 0;
+    const t = window.setInterval(async () => {
+      try {
+        const stats = await pc.getStats();
+        let availBps = 0;
+        let packetsLost = 0;
+        let packetsRecv = 0;
+        stats.forEach((s) => {
+          // candidate-pair carries availableOutgoingBitrate / availableIncomingBitrate
+          if (s.type === 'candidate-pair' && (s as { nominated?: boolean }).nominated) {
+            const s2 = s as unknown as { availableIncomingBitrate?: number };
+            if (s2.availableIncomingBitrate) availBps = Math.max(availBps, s2.availableIncomingBitrate);
+          }
+          // inbound-rtp for the video track exposes packetsLost
+          if (s.type === 'inbound-rtp' && (s as { kind?: string }).kind === 'video') {
+            const s2 = s as unknown as { packetsLost?: number; packetsReceived?: number };
+            packetsLost = s2.packetsLost ?? 0;
+            packetsRecv = s2.packetsReceived ?? 0;
+          }
+        });
+        const recvDelta = packetsRecv - lastPacketsRecv;
+        const lossDelta = packetsLost - lastPacketsLost;
+        lastPacketsRecv = packetsRecv;
+        lastPacketsLost = packetsLost;
+        const lossPct = recvDelta > 0 ? (lossDelta * 100) / (recvDelta + lossDelta) : 0;
+        const rung = pickRung(availBps, lossPct);
+        if (rung !== lastSentRungRef.current) {
+          lastSentRungRef.current = rung;
+          sendDC({ t: 'set_quality', width: RUNGS[rung].width, bitrate_kbps: RUNGS[rung].bitrate_kbps });
+          console.info(`[remote] adaptive: avail=${(availBps/1e6).toFixed(2)}Mbps loss=${lossPct.toFixed(1)}% → rung ${rung} (${RUNGS[rung].width}p @ ${RUNGS[rung].bitrate_kbps}k)`);
+        }
+      } catch { /* getStats can throw mid-teardown; ignore */ }
+    }, 4_000);
+    return () => window.clearInterval(t);
+  }, [status]);
 
   // Esc still useful as a "stop sending input" shortcut even though we
   // no longer pointer-lock — saves a trip to the Stop button.
@@ -329,6 +440,11 @@ export default function RemoteTab() {
     const y = (e.clientY - rect.top) / rect.height;
     if (x < 0 || x > 1 || y < 0 || y > 1) return;
     pendingMove.current = { x, y };
+    // Update the on-video reticle every move so the operator has visible
+    // confirmation that the dashboard is in fact tracking + sending the
+    // position. If the agent's own cursor capture is missing (pre-v0.2.42
+    // build) the reticle is the only way to know where the click WILL land.
+    setReticle({ x: e.clientX - rect.left, y: e.clientY - rect.top });
     if (!rafScheduled.current) {
       rafScheduled.current = true;
       requestAnimationFrame(() => {
@@ -339,6 +455,7 @@ export default function RemoteTab() {
       });
     }
   };
+  const onMouseLeave = () => { if (controlling) setReticle(null); };
 
   const onMouseDown = (e: React.MouseEvent<HTMLVideoElement>) => {
     if (!controlling) return;
@@ -547,19 +664,31 @@ export default function RemoteTab() {
         }
       >
         {selectedId ? (
-          <video
-            ref={videoRef}
-            tabIndex={0}
-            onMouseMove={onMouseMove}
-            onMouseDown={onMouseDown}
-            onMouseUp={onMouseUp}
-            onWheel={onWheel}
-            onContextMenu={(e) => e.preventDefault()}
-            className={`w-full h-full object-contain bg-black ${controlling ? 'cursor-none' : ''}`}
-            autoPlay
-            playsInline
-            muted
-          />
+          <>
+            <video
+              ref={videoRef}
+              tabIndex={0}
+              onMouseMove={onMouseMove}
+              onMouseDown={onMouseDown}
+              onMouseUp={onMouseUp}
+              onMouseLeave={onMouseLeave}
+              onWheel={onWheel}
+              onContextMenu={(e) => e.preventDefault()}
+              className={`w-full h-full object-contain bg-black ${controlling ? 'cursor-none' : ''}`}
+              autoPlay
+              playsInline
+              muted
+            />
+            {controlling && reticle && (
+              <div
+                className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-1/2"
+                style={{ left: reticle.x, top: reticle.y }}
+              >
+                <div className="w-5 h-5 rounded-full border-2 border-emerald-400 bg-emerald-400/20 shadow-[0_0_8px_rgba(52,211,153,0.7)]" />
+                <div className="absolute inset-0 m-auto w-1 h-1 rounded-full bg-emerald-200" />
+              </div>
+            )}
+          </>
         ) : (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="text-center">
@@ -573,8 +702,42 @@ export default function RemoteTab() {
         )}
       </div>
 
+      {status === 'connecting' && diag.elapsedMs > 3000 && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-3 text-xs text-amber-200">
+          <p className="font-medium mb-1">
+            Connecting… <span className="text-amber-400">({Math.round(diag.elapsedMs / 1000)}s)</span>
+          </p>
+          <p className="text-[11px] text-amber-300/80 mb-2">
+            {diag.answerReceived
+              ? `Agent replied · ICE candidates out ${diag.candidatesOut} / in ${diag.candidatesIn} · state ${diag.iceState}/${diag.connState}`
+              : 'Waiting for agent answer — agent may be offline or on an old build.'}
+          </p>
+          {diag.elapsedMs > 10_000 && (
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
+              <span className="text-rose-300">Connection taking too long.</span>
+              <button
+                onClick={() => { stopFlag.current = false; if (selectedId) { teardown(); setTimeout(() => void startStream(selectedId), 300); } }}
+                className="px-2.5 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-100"
+              >
+                Retry connection
+              </button>
+              <span className="text-[11px] text-amber-300/70">
+                If this persists the agent is likely outdated — reinstall the latest installer on that machine.
+              </span>
+            </div>
+          )}
+        </div>
+      )}
       {status === 'failed' && errorMsg && (
-        <p className="text-xs text-red-400">Error: {errorMsg}</p>
+        <div className="bg-rose-500/10 border border-rose-500/30 rounded-lg px-4 py-3 text-xs text-rose-300 flex items-center justify-between gap-3">
+          <span>Error: {errorMsg}</span>
+          <button
+            onClick={() => { if (selectedId) { teardown(); setTimeout(() => void startStream(selectedId), 300); } }}
+            className="px-2.5 py-1 rounded bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-100"
+          >
+            Retry
+          </button>
+        </div>
       )}
     </div>
   );

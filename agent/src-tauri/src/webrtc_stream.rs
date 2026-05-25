@@ -54,6 +54,25 @@ use crate::{api, config, AppState};
 // moved to position N+3 in their head.
 const TARGET_FPS: u32 = 30;
 const TARGET_WIDTH: u32 = 1280;
+// Default bitrate (kbps) at the default 1280 width. Acts as the starting
+// rung in the adaptive ladder. The dashboard's pc.getStats() sampler can
+// dial this up or down via the `set_quality` control message; we restart
+// ffmpeg with the new -b:v + -maxrate when the request differs from the
+// current value by more than 20%.
+const DEFAULT_BITRATE_KBPS: u32 = 2_500;
+
+/// Shared mutable stream parameters. The control DataChannel writes to
+/// these via `InboundMsg::SetQuality`; the ffmpeg pump reads them when
+/// it (re)spawns the encoder. Backed by tokio::Mutex so the lock is
+/// async-friendly across awaits.
+#[derive(Clone, Copy, Debug)]
+pub struct StreamParams {
+    pub width: u32,
+    pub bitrate_kbps: u32,
+}
+impl Default for StreamParams {
+    fn default() -> Self { Self { width: TARGET_WIDTH, bitrate_kbps: DEFAULT_BITRATE_KBPS } }
+}
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -332,11 +351,21 @@ async fn handle_session(
     // attach our message router which forwards JSON-encoded input events to
     // the input thread. Live-tab connections never trigger this — they only
     // negotiate a video m-section, so the callback simply never fires.
+    // Shared stream-quality knobs. The control DataChannel writes to
+    // these on `set_quality`; the ffmpeg pump reads them and respawns
+    // when they change. Wrapped in an Arc<Mutex<>> so both sides can
+    // hold their own reference across awaits.
+    let stream_params = Arc::new(tokio::sync::Mutex::new(StreamParams::default()));
+    let reload_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
     {
-        pc.on_data_channel(Box::new(|dc: Arc<RTCDataChannel>| {
+        let params_for_dc = stream_params.clone();
+        let reload_for_dc = reload_flag.clone();
+        pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
+            let params = params_for_dc.clone();
+            let reload = reload_for_dc.clone();
             Box::pin(async move {
                 log::info!("webrtc: data channel '{}' attached", dc.label());
-                attach_control_channel(dc);
+                attach_control_channel(dc, params, reload);
             })
         }));
     }
@@ -403,7 +432,7 @@ async fn handle_session(
 
     // Spawn ffmpeg + pump frames into the video track. Blocks until either
     // ffmpeg exits, the peer disconnects, or we hit an unrecoverable error.
-    pump_ffmpeg_into_track(video_track, stop_flag.clone()).await?;
+    pump_ffmpeg_into_track(video_track, stop_flag.clone(), stream_params.clone(), reload_flag.clone()).await?;
 
     // Cleanup.
     let _ = pc.close().await;
@@ -539,17 +568,15 @@ async fn poll_remote_ice(
     Ok((newest, candidates))
 }
 
-/// Spawn the bundled ffmpeg with a screen-capture input + raw H.264 stdout,
-/// parse NAL units, and feed each frame into the WebRTC track. Returns when
-/// `stop_flag` flips (peer disconnected) or ffmpeg exits.
-async fn pump_ffmpeg_into_track(
-    track: Arc<TrackLocalStaticSample>,
-    stop_flag: Arc<std::sync::atomic::AtomicBool>,
-) -> Result<()> {
-    let ffmpeg_bin = crate::ffmpeg::locate_ffmpeg()
-        .ok_or_else(|| anyhow!("ffmpeg not bundled"))?;
-
-    let mut cmd = Command::new(&ffmpeg_bin);
+/// Build the ffmpeg command for the current StreamParams. Factored out
+/// so `pump_ffmpeg_into_track` can respawn the subprocess when adaptive
+/// bitrate fires a `set_quality` request without duplicating the long
+/// argument list. Returns the spawned Child + its stdout pipe.
+async fn spawn_ffmpeg_with_params(
+    ffmpeg_bin: &std::path::Path,
+    params: StreamParams,
+) -> Result<(Child, tokio::process::ChildStdout)> {
+    let mut cmd = Command::new(ffmpeg_bin);
     // tokio::process::Command has its own creation_flags method (mirrors
     // the std one). win_proc::no_window is std-only, so inline the flag.
     #[cfg(windows)]
@@ -589,7 +616,7 @@ async fn pump_ffmpeg_into_track(
         // Reuse the dynamic screen-index probe from video.rs so a Mac with a
         // weird device layout (multi-camera, virtual displays) still picks
         // the right "Capture screen 0".
-        let idx = crate::video::macos_screen_index_for_screenshot(&ffmpeg_bin);
+        let idx = crate::video::macos_screen_index_for_screenshot(&ffmpeg_bin.to_path_buf());
         cmd.arg("-f").arg("avfoundation").arg("-i").arg(format!("{}:none", idx));
     }
     #[cfg(target_os = "windows")]
@@ -617,11 +644,19 @@ async fn pump_ffmpeg_into_track(
     // disappears. ffmpeg already ships every encoder we need — this is
     // a one-line swap, not an architectural change. Falls back to
     // libx264 if no hardware path is available.
-    let encoder = crate::ffmpeg::pick_h264_encoder(&ffmpeg_bin);
+    let encoder = crate::ffmpeg::pick_h264_encoder(&ffmpeg_bin.to_path_buf());
     for arg in crate::ffmpeg::encoder_args(encoder) {
         cmd.arg(arg);
     }
-    cmd.arg("-vf").arg(format!("scale={}:-2", TARGET_WIDTH))
+    // Apply adaptive bitrate: -b:v sets target, -maxrate caps the peak,
+    // -bufsize sizes the rate-control buffer. Pegged at the same value
+    // for CBR-ish behaviour which plays well with WebRTC GCC.
+    let b = format!("{}k", params.bitrate_kbps);
+    let bufsize = format!("{}k", params.bitrate_kbps);
+    cmd.arg("-b:v").arg(&b)
+        .arg("-maxrate").arg(&b)
+        .arg("-bufsize").arg(&bufsize);
+    cmd.arg("-vf").arg(format!("scale={}:-2", params.width))
         .arg("-an")
         .arg("-f").arg("h264")
         .arg("-")
@@ -630,7 +665,7 @@ async fn pump_ffmpeg_into_track(
         .kill_on_drop(true);
 
     let mut child: Child = cmd.spawn().context("spawn ffmpeg for webrtc")?;
-    let mut stdout = child
+    let stdout = child
         .stdout
         .take()
         .ok_or_else(|| anyhow!("ffmpeg stdout missing"))?;
@@ -658,10 +693,35 @@ async fn pump_ffmpeg_into_track(
         });
     }
 
-    log::info!("webrtc: ffmpeg pipeline started, streaming h264 into track");
+    log::info!(
+        "webrtc: ffmpeg started encoder={encoder} width={} bitrate={}kbps",
+        params.width, params.bitrate_kbps,
+    );
+    Ok((child, stdout))
+}
 
-    let mut buf = Vec::with_capacity(64 * 1024);
-    let mut tmp = vec![0u8; 32 * 1024];
+/// Spawn the bundled ffmpeg with a screen-capture input + raw H.264 stdout,
+/// parse NAL units, and feed each frame into the WebRTC track. Returns when
+/// `stop_flag` flips (peer disconnected) or ffmpeg exits. On `reload_flag`
+/// the inner ffmpeg child is killed and restarted with the latest
+/// StreamParams — that's how adaptive bitrate gets honoured mid-stream.
+async fn pump_ffmpeg_into_track(
+    track: Arc<TrackLocalStaticSample>,
+    stop_flag: Arc<std::sync::atomic::AtomicBool>,
+    params: Arc<tokio::sync::Mutex<StreamParams>>,
+    reload_flag: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<()> {
+    let ffmpeg_bin = crate::ffmpeg::locate_ffmpeg()
+        .ok_or_else(|| anyhow!("ffmpeg not bundled"))?;
+    let frame_duration = Duration::from_millis(1000 / TARGET_FPS as u64);
+
+    'outer: loop {
+        let current = *params.lock().await;
+        reload_flag.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (mut child, mut stdout) = spawn_ffmpeg_with_params(&ffmpeg_bin, current).await?;
+
+        let mut buf = Vec::with_capacity(64 * 1024);
+        let mut tmp = vec![0u8; 32 * 1024];
     // Access-unit accumulator. Every H.264 picture is a sequence of NAL
     // units (typically SPS + PPS + IDR slice for keyframes, or just one
     // non-IDR slice for delta frames). The CORRECT way to feed webrtc-rs
@@ -672,69 +732,85 @@ async fn pump_ffmpeg_into_track(
     // duration=0 for non-slices) led to mis-paced or partially-marked
     // frames and the receiver decoded only the top of each picture,
     // leaving everything below as the decoder's "no data" green surface
-    // — the exact artefact customers kept reporting through v0.2.37 and
-    // v0.2.39. Aggregating into a per-frame Sample fixes that for good.
-    let mut au: Vec<u8> = Vec::with_capacity(64 * 1024);
+        // — the exact artefact customers kept reporting through v0.2.37 and
+        // v0.2.39. Aggregating into a per-frame Sample fixes that for good.
+        let mut au: Vec<u8> = Vec::with_capacity(64 * 1024);
 
-    loop {
-        if stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
-            log::info!("webrtc: stop_flag set, killing ffmpeg");
-            let _ = child.kill().await;
-            break;
-        }
-        let n = match stdout.read(&mut tmp).await {
-            Ok(0) => break, // eof
-            Ok(n) => n,
-            Err(e) => {
-                log::warn!("ffmpeg stdout read error: {e}");
-                break;
+        loop {
+            if stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                log::info!("webrtc: stop_flag set, killing ffmpeg");
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                break 'outer;
             }
-        };
-        buf.extend_from_slice(&tmp[..n]);
-
-        // Pull NAL units out of the buffer. Each NAL is appended to the
-        // current access-unit buffer. A slice NAL (type 1 or 5) terminates
-        // the picture — we flush the accumulated AU as one Sample with
-        // the wall-clock frame_duration so RTP timestamps stay aligned
-        // with real-time playback. AUDs (type 9) are also treated as a
-        // boundary: their presence usually means the next slice belongs
-        // to the NEXT picture, so we flush BEFORE adding the AUD.
-        while let Some(unit) = take_nal_unit(&mut buf) {
-            if unit.is_empty() {
-                continue;
+            // Adaptive-bitrate restart path. The control channel writes new
+            // params and flips this flag; we kill ffmpeg + respawn at the
+            // top of the outer loop. There's a ~500 ms freeze during restart
+            // which is much smaller than the freeze the network would cause
+            // if we kept blasting frames at the wrong bitrate.
+            if reload_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                log::info!("webrtc: reload_flag set, restarting ffmpeg for new quality");
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                continue 'outer;
             }
-            let nal_type = nal_unit_type(&unit);
-            // AUD boundary: flush whatever we have, then start fresh with
-            // this AUD opening the next picture.
-            if nal_type == 9 && !au.is_empty() {
-                let sample = Sample {
-                    data: std::mem::take(&mut au).into(),
-                    duration: frame_duration,
-                    ..Default::default()
-                };
-                if let Err(e) = track.write_sample(&sample).await {
-                    log::warn!("track write_sample failed: {e}");
+            let n = match stdout.read(&mut tmp).await {
+                Ok(0) => break, // eof
+                Ok(n) => n,
+                Err(e) => {
+                    log::warn!("ffmpeg stdout read error: {e}");
                     break;
                 }
-            }
-            au.extend_from_slice(&unit);
-            // Slice NAL ends the access unit.
-            if matches!(nal_type, 1 | 5) {
-                let sample = Sample {
-                    data: std::mem::take(&mut au).into(),
-                    duration: frame_duration,
-                    ..Default::default()
-                };
-                if let Err(e) = track.write_sample(&sample).await {
-                    log::warn!("track write_sample failed: {e}");
-                    break;
+            };
+            buf.extend_from_slice(&tmp[..n]);
+
+            // Pull NAL units out of the buffer. Each NAL is appended to the
+            // current access-unit buffer. A slice NAL (type 1 or 5) terminates
+            // the picture — we flush the accumulated AU as one Sample with
+            // the wall-clock frame_duration so RTP timestamps stay aligned
+            // with real-time playback. AUDs (type 9) are also treated as a
+            // boundary: their presence usually means the next slice belongs
+            // to the NEXT picture, so we flush BEFORE adding the AUD.
+            while let Some(unit) = take_nal_unit(&mut buf) {
+                if unit.is_empty() {
+                    continue;
+                }
+                let nal_type = nal_unit_type(&unit);
+                // AUD boundary: flush whatever we have, then start fresh with
+                // this AUD opening the next picture.
+                if nal_type == 9 && !au.is_empty() {
+                    let sample = Sample {
+                        data: std::mem::take(&mut au).into(),
+                        duration: frame_duration,
+                        ..Default::default()
+                    };
+                    if let Err(e) = track.write_sample(&sample).await {
+                        log::warn!("track write_sample failed: {e}");
+                        break;
+                    }
+                }
+                au.extend_from_slice(&unit);
+                // Slice NAL ends the access unit.
+                if matches!(nal_type, 1 | 5) {
+                    let sample = Sample {
+                        data: std::mem::take(&mut au).into(),
+                        duration: frame_duration,
+                        ..Default::default()
+                    };
+                    if let Err(e) = track.write_sample(&sample).await {
+                        log::warn!("track write_sample failed: {e}");
+                        break;
+                    }
                 }
             }
         }
+
+        // ffmpeg exited on its own (not via stop_flag / reload). Treat that
+        // as an unexpected death and bail out of the session entirely.
+        let _ = child.wait().await;
+        log::warn!("webrtc: ffmpeg pipeline exited unexpectedly");
+        break 'outer;
     }
-
-    let _ = child.wait().await;
-    log::info!("webrtc: ffmpeg pipeline exited");
     Ok(())
 }
 
@@ -818,6 +894,17 @@ enum InboundMsg {
     ClipSet { text: String },
     ClipGet,
     Ping { #[serde(default)] id: u64 },
+    // Adaptive-bitrate control from the dashboard. The dashboard samples
+    // pc.getStats() every few seconds and picks a rung from the ladder:
+    //   { width: 1920, bitrate_kbps: 4500 }  // 1080p
+    //   { width: 1280, bitrate_kbps: 2500 }  // 720p (default)
+    //   { width:  854, bitrate_kbps: 1000 }  //  480p
+    //   { width:  640, bitrate_kbps:  500 }  //  360p
+    // Agent reads the request, updates shared StreamParams, and the pump
+    // loop respawns ffmpeg with the new params if either knob changed
+    // beyond a small dead-band. Restart causes a ~500 ms freeze; we skip
+    // restarts that don't change the actual ffmpeg command line.
+    SetQuality { width: u32, bitrate_kbps: u32 },
 }
 
 fn screen_dims() -> (i32, i32) {
@@ -838,7 +925,11 @@ fn screen_dims() -> (i32, i32) {
     (1920, 1080)
 }
 
-fn attach_control_channel(dc: Arc<RTCDataChannel>) {
+fn attach_control_channel(
+    dc: Arc<RTCDataChannel>,
+    params: Arc<tokio::sync::Mutex<StreamParams>>,
+    reload_flag: Arc<std::sync::atomic::AtomicBool>,
+) {
     let (w, h) = screen_dims();
 
     // On open: send screen_info so the dashboard can de-normalize coords on
@@ -860,6 +951,8 @@ fn attach_control_channel(dc: Arc<RTCDataChannel>) {
     let dc_msg = Arc::clone(&dc);
     dc.on_message(Box::new(move |m: DataChannelMessage| {
         let dc = dc_msg.clone();
+        let params = params.clone();
+        let reload = reload_flag.clone();
         Box::pin(async move {
             // Only handle text frames — we don't speak binary on this DC.
             if !m.is_string {
@@ -876,12 +969,19 @@ fn attach_control_channel(dc: Arc<RTCDataChannel>) {
                     return;
                 }
             };
-            handle_control_msg(&dc, msg, w, h).await;
+            handle_control_msg(&dc, msg, w, h, &params, &reload).await;
         })
     }));
 }
 
-async fn handle_control_msg(dc: &Arc<RTCDataChannel>, msg: InboundMsg, w: i32, h: i32) {
+async fn handle_control_msg(
+    dc: &Arc<RTCDataChannel>,
+    msg: InboundMsg,
+    w: i32,
+    h: i32,
+    params: &Arc<tokio::sync::Mutex<StreamParams>>,
+    reload_flag: &Arc<std::sync::atomic::AtomicBool>,
+) {
     let Some(tx) = input::sender() else {
         log::warn!("control: input thread not ready");
         return;
@@ -930,6 +1030,31 @@ async fn handle_control_msg(dc: &Arc<RTCDataChannel>, msg: InboundMsg, w: i32, h
         InboundMsg::Ping { id } => {
             let reply = json!({"t": "pong", "id": id});
             let _ = dc.send_text(reply.to_string()).await;
+        }
+        InboundMsg::SetQuality { width, bitrate_kbps } => {
+            // Clamp to a sane range so a misbehaving dashboard can't ask
+            // for 8K or 10 kbps. The default ladder maxes at 1920 + 5 Mbps.
+            let new_w = width.clamp(320, 2560);
+            let new_b = bitrate_kbps.clamp(200, 8000);
+            let mut p = params.lock().await;
+            // Dead-band: skip a restart if the request is within 15 % of the
+            // current bitrate AND the width is unchanged. Restart costs
+            // ~500 ms freeze; not worth it for a noise-level adjustment.
+            let same_width = p.width == new_w;
+            let drift = (p.bitrate_kbps as i32 - new_b as i32).abs() as u32 * 100
+                / p.bitrate_kbps.max(1);
+            if same_width && drift < 15 {
+                log::debug!("set_quality ignored (within dead-band): {new_w}x@{new_b}kbps");
+                return;
+            }
+            log::info!(
+                "set_quality: {}x{}kbps -> {}x{}kbps (restarting encoder)",
+                p.width, p.bitrate_kbps, new_w, new_b,
+            );
+            p.width = new_w;
+            p.bitrate_kbps = new_b;
+            drop(p);
+            reload_flag.store(true, std::sync::atomic::Ordering::SeqCst);
         }
     }
 }
