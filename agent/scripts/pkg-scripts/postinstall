@@ -12,7 +12,23 @@
 
 set -e
 
-APP="/Applications/Rudrans Agent.app"
+# v0.2.33 renamed the bundle. Probe BOTH paths so this script keeps working
+# when a customer upgrades from v0.2.32 (Rudrans Agent.app) — the old
+# directory may still be present alongside the new one for a tick.
+APP=""
+for candidate in \
+  "/Applications/Security Assistant.app" \
+  "/Applications/Rudrans Agent.app"
+do
+  if [ -d "$candidate" ]; then
+    APP="$candidate"
+    break
+  fi
+done
+# Fall back to the new name even if neither exists yet (Installer may not
+# have finished writing the bundle when postinstall fires on some macOS
+# versions).
+APP="${APP:-/Applications/Security Assistant.app}"
 
 # Tauri 2 mirrors source-side resources/ layout, so the .cer can live in either
 # of two paths depending on which bundling pass produced it. Probe both.
@@ -49,5 +65,70 @@ fi
 /usr/bin/tccutil reset ScreenCapture com.rudrans.agent 2>/dev/null || true
 /usr/bin/tccutil reset Accessibility com.rudrans.agent 2>/dev/null || true
 /usr/bin/tccutil reset SystemPolicyAllFiles com.rudrans.agent 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Auto-start on boot and re-login.
+#
+# We want the agent to come up automatically:
+#   • on every system reboot (before the user touches the dock)
+#   • on every user login (so it always runs in the active session)
+#   • respawn if it gets killed (launchd KeepAlive)
+#
+# LaunchAgent (not LaunchDaemon): screen capture / accessibility / input
+# monitoring TCC grants are bound to the LOGGED-IN user's session. Daemons
+# run as root in session 0 and can't capture the user's screen. A plist in
+# /Library/LaunchAgents is the per-user, every-user variant launchd loads
+# at every login — exactly what's needed.
+#
+# Without this block customers have to manually open the .app after every
+# restart, which the in-process guardian (watchdog.rs) can't help with —
+# after reboot everything in memory is gone.
+# ---------------------------------------------------------------------------
+LABEL="com.rudrans.agent"
+LA_PLIST="/Library/LaunchAgents/${LABEL}.plist"
+APP_BIN="${APP}/Contents/MacOS/Security Assistant"
+if [ ! -x "$APP_BIN" ]; then
+  for cand in \
+    "${APP}/Contents/MacOS/Rudrans Agent" \
+    "${APP}/Contents/MacOS/rudrans-agent"
+  do
+    if [ -x "$cand" ]; then APP_BIN="$cand"; break; fi
+  done
+fi
+
+if [ -x "$APP_BIN" ]; then
+  cat > "$LA_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${APP_BIN}</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>5</integer>
+  <key>LimitLoadToSessionType</key>
+  <array><string>Aqua</string></array>
+  <key>ProcessType</key><string>Interactive</string>
+</dict>
+</plist>
+EOF
+  chown root:wheel "$LA_PLIST"
+  chmod 644 "$LA_PLIST"
+
+  # Bootstrap into the current console user's gui session so the agent
+  # starts immediately after install (no log-out / log-in cycle needed).
+  CONSOLE_USER=$(/usr/bin/stat -f%Su /dev/console 2>/dev/null || echo "")
+  if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+    CONSOLE_UID=$(/usr/bin/id -u "$CONSOLE_USER" 2>/dev/null || echo "")
+    if [ -n "$CONSOLE_UID" ]; then
+      /bin/launchctl bootout "gui/${CONSOLE_UID}/${LABEL}" 2>/dev/null || true
+      /bin/launchctl bootstrap "gui/${CONSOLE_UID}" "$LA_PLIST" 2>/dev/null || true
+    fi
+  fi
+fi
 
 exit 0

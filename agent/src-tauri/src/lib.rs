@@ -96,6 +96,14 @@ pub struct AppState {
     /// build) clears the flag and gives macOS another chance.
     video_capture_disabled: Arc<AtomicBool>,
     screenshot_capture_disabled: Arc<AtomicBool>,
+    /// Unix-second timestamp of the last successful ingest() call. The
+    /// connection watchdog reads this every few seconds; if it's been more
+    /// than CONNECTION_STALE_SECS (= 30s) since the last success, the
+    /// watchdog forces a fast metrics push to reach out to the server
+    /// rather than waiting on the next 5-minute screenshot tick. Backed
+    /// by AtomicU64 so we can update it without contending on a Mutex
+    /// from every tick.
+    last_ingest_unix: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl AppState {
@@ -113,8 +121,25 @@ impl AppState {
             license_reason: Arc::new(Mutex::new(None)),
             video_capture_disabled: Arc::new(AtomicBool::new(false)),
             screenshot_capture_disabled: Arc::new(AtomicBool::new(false)),
+            last_ingest_unix: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
+}
+
+/// Threshold for the connection watchdog. If no ingest() has succeeded in
+/// this many seconds, the watchdog pushes a fresh heartbeat instead of
+/// waiting on the next slow interval (default screenshot tick is 5 min).
+const CONNECTION_STALE_SECS: u64 = 30;
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn mark_ingest_ok(state: &AppState) {
+    state.last_ingest_unix.store(now_unix(), std::sync::atomic::Ordering::Relaxed);
 }
 
 #[derive(Serialize)]
@@ -347,7 +372,9 @@ async fn push_kind(state: &AppState, kind: &str, payload: Value) -> Result<()> {
         &enrollment.enroll_token,
         &api::IngestRequest { kind, payload: vec![payload], agent_version: env!("CARGO_PKG_VERSION") },
     )
-    .await
+    .await?;
+    mark_ingest_ok(state);
+    Ok(())
 }
 
 async fn push_activity(state: &AppState, payload: Value) -> Result<()> {
@@ -611,11 +638,40 @@ async fn metrics_tick(state: &AppState) -> Result<()> {
         },
     )
     .await?;
+    mark_ingest_ok(state);
     // After metrics push: check thresholds and emit alerts. Failures are logged but don't break the tick.
     if let Err(e) = maybe_emit_alerts(state, &sample).await {
         log::warn!("alerts emit failed: {e}");
     }
     Ok(())
+}
+
+/// Connection watchdog. Runs alongside the slow tick loops (metrics every
+/// 30s+, screenshots every 5 min by default). If we haven't successfully
+/// hit the server in CONNECTION_STALE_SECS (30s), we fire an extra
+/// heartbeat — and keep firing every 10s until contact is restored. This
+/// matches the customer's "30s disconnect → reconnect" requirement
+/// without rewriting the whole transport layer onto a websocket.
+async fn connection_watchdog(state: AppState) {
+    // Seed the timestamp on startup so we don't immediately think we're
+    // offline before any tick has run.
+    mark_ingest_ok(&state);
+    loop {
+        sleep(Duration::from_secs(5)).await;
+        if state.paused.load(std::sync::atomic::Ordering::Relaxed) { continue; }
+        if !license_ok(&state) { continue; }
+        let last = state.last_ingest_unix.load(std::sync::atomic::Ordering::Relaxed);
+        if last == 0 { continue; }
+        let gap = now_unix().saturating_sub(last);
+        if gap < CONNECTION_STALE_SECS { continue; }
+        log::warn!("connection_watchdog: {}s since last successful ingest — forcing heartbeat", gap);
+        // Reach out via metrics_tick — it's the cheapest payload and any
+        // 200 response resets our "last_ingest" clock so the watchdog
+        // calms back down. Any error is logged and we'll retry in 5s.
+        if let Err(e) = metrics_tick(&state).await {
+            log::warn!("connection_watchdog: heartbeat failed: {e}");
+        }
+    }
 }
 
 // One-shot: wait for the agent to be enrolled + Supabase-configured, then emit a single
@@ -644,6 +700,15 @@ fn spawn_session_start(state: AppState) {
 
 fn spawn_background_loop(state: AppState) {
     spawn_session_start(state.clone());
+
+    // Connection watchdog — fires an extra heartbeat whenever the agent
+    // has been silent for >CONNECTION_STALE_SECS (currently 30s). Keeps
+    // working through network drops without waiting for the slow 5-minute
+    // screenshot tick to retry.
+    {
+        let state = state.clone();
+        tauri::async_runtime::spawn(async move { connection_watchdog(state).await });
+    }
 
     // Settings poller — fetches once early, then every SETTINGS_REFRESH_SECS.
     {
