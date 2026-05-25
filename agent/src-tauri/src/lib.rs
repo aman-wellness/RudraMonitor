@@ -1326,15 +1326,57 @@ fn spawn_updater_loop(handle: tauri::AppHandle) {
 }
 
 async fn check_for_update(handle: &tauri::AppHandle) -> Result<()> {
-    let updater = handle.updater().map_err(|e| anyhow!(e.to_string()))?;
-    if let Some(update) = updater.check().await.map_err(|e| anyhow!(e.to_string()))? {
-        log::info!("downloading update {}", update.version);
-        update
-            .download_and_install(|_chunk_len, _content_len| {}, || {})
-            .await
-            .map_err(|e| anyhow!(e.to_string()))?;
-        log::info!("update installed; restarting");
-        handle.restart();
+    // Customers reported "agents not updating" — add structured logs at
+    // every step so we can read /tmp/rudrans-agent.log (mac) or
+    // %LOCALAPPDATA%\com.rudrans.agent\logs\… (win) to see which step
+    // failed without needing remote access.
+    let current = env!("CARGO_PKG_VERSION");
+    log::info!("updater: checking for update (current version {current})");
+    let updater = handle.updater().map_err(|e| {
+        log::warn!("updater: handle.updater() failed: {e}");
+        anyhow!(e.to_string())
+    })?;
+    let check_result = updater.check().await.map_err(|e| {
+        log::warn!("updater: check() failed: {e}");
+        anyhow!(e.to_string())
+    })?;
+    match check_result {
+        None => {
+            log::info!("updater: no update available (current {current})");
+        }
+        Some(update) => {
+            log::info!("updater: update {} available, downloading + installing", update.version);
+            let mut bytes_seen: u64 = 0;
+            let result = update
+                .download_and_install(
+                    |chunk_len, total_len| {
+                        bytes_seen += chunk_len as u64;
+                        if let Some(total) = total_len {
+                            // Log only at the start and end so we don't spam.
+                            if bytes_seen == chunk_len as u64 {
+                                log::info!("updater: download started ({total} bytes)");
+                            } else if bytes_seen >= total {
+                                log::info!("updater: download complete ({total} bytes)");
+                            }
+                        }
+                    },
+                    || log::info!("updater: install starting (installer process spawned)"),
+                )
+                .await;
+            match result {
+                Ok(_) => {
+                    log::info!("updater: install reported success; restarting agent");
+                    handle.restart();
+                }
+                Err(e) => {
+                    // Windows: most common failure modes are UAC declined,
+                    // running .exe file-locked, or missing admin token.
+                    // Don't propagate the error — keep the loop alive so the
+                    // next 30-min tick retries.
+                    log::warn!("updater: download_and_install failed: {e}");
+                }
+            }
+        }
     }
     Ok(())
 }
