@@ -87,6 +87,147 @@ fn works(path: &PathBuf) -> bool {
         .unwrap_or(false)
 }
 
+/// One-shot probe: run `ffmpeg -encoders` and return the set of encoder
+/// names the binary actually ships with. Used by `pick_h264_encoder` so
+/// we don't pass `-vcodec h264_nvenc` to an ffmpeg build that wasn't
+/// compiled with NVENC support — that produces a hard "Unknown encoder"
+/// failure with no fallback.
+fn list_encoders(path: &PathBuf) -> std::collections::HashSet<String> {
+    let mut cmd = Command::new(path);
+    crate::win_proc::no_window(&mut cmd);
+    let out = cmd.arg("-hide_banner").arg("-encoders")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+    let mut set = std::collections::HashSet::new();
+    if let Ok(o) = out {
+        let stdout = String::from_utf8_lossy(&o.stdout);
+        for line in stdout.lines() {
+            // Format: " V..... h264_nvenc           NVIDIA NVENC H.264 encoder ..."
+            // We want the second whitespace-delimited token.
+            let trimmed = line.trim();
+            let mut it = trimmed.split_whitespace();
+            let flags = it.next().unwrap_or("");
+            let name = it.next().unwrap_or("").to_string();
+            // Only video encoders (flags start with 'V').
+            if flags.starts_with('V') && !name.is_empty() {
+                set.insert(name);
+            }
+        }
+    }
+    set
+}
+
+/// Pick the best available H.264 encoder for this machine. Hardware
+/// encoders are dramatically faster (2–8 ms per frame vs 10–30 ms for
+/// libx264 ultrafast) and free up the CPU during a Live/Remote session.
+/// Order is the same one Parsec/Moonlight use:
+///   1. Platform-native hardware (VideoToolbox / NVENC / AMF / QSV / VAAPI)
+///   2. libx264 software fallback
+///
+/// Cached after the first call — the answer never changes within a
+/// process lifetime and the probe is ~50 ms.
+pub fn pick_h264_encoder(ffmpeg_bin: &PathBuf) -> &'static str {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<&'static str> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let available = list_encoders(ffmpeg_bin);
+        // Preference order. First match wins.
+        #[cfg(target_os = "macos")]
+        let order = ["h264_videotoolbox", "libx264"];
+        #[cfg(target_os = "windows")]
+        let order = ["h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "libx264"];
+        #[cfg(target_os = "linux")]
+        let order = ["h264_nvenc", "h264_vaapi", "h264_qsv", "h264_amf", "libx264"];
+        for name in order {
+            if available.contains(name) {
+                log::info!("h264 encoder picked: {name}");
+                return name;
+            }
+        }
+        log::warn!("no known H.264 encoder available in ffmpeg; falling back to libx264 by name");
+        "libx264"
+    })
+}
+
+/// Return the ffmpeg `-vcodec <name>` argument bundle for low-latency
+/// streaming with the chosen encoder. Each hardware encoder has its own
+/// flag dialect; this is the single place that knows them all.
+///
+/// All variants share the same intent: real-time, low-delay, single-slice,
+/// frequent keyframes, no B-frames. The encoder-specific flags below have
+/// been chosen from each vendor's tuning guide.
+pub fn encoder_args(encoder: &str) -> Vec<&'static str> {
+    match encoder {
+        "h264_videotoolbox" => vec![
+            "-vcodec", "h264_videotoolbox",
+            "-realtime", "1",        // VT-specific: skip quality re-encodes
+            "-allow_sw", "1",        // graceful fall-back if HW path is busy
+            "-pix_fmt", "yuv420p",
+            "-profile:v", "baseline",
+            "-g", "30",
+            "-bf", "0",              // no B-frames — keep zero-latency contract
+        ],
+        "h264_nvenc" => vec![
+            "-vcodec", "h264_nvenc",
+            "-preset", "p1",         // p1 = lowest latency, p7 = best quality
+            "-tune", "ll",           // low-latency tune
+            "-rc", "cbr",            // constant-bitrate so REMB throttle works
+            "-zerolatency", "1",
+            "-pix_fmt", "yuv420p",
+            "-profile:v", "baseline",
+            "-g", "30",
+            "-bf", "0",
+        ],
+        "h264_qsv" => vec![
+            "-vcodec", "h264_qsv",
+            "-preset", "veryfast",
+            "-async_depth", "1",     // single-frame pipeline = lowest delay
+            "-pix_fmt", "nv12",      // QSV's native fmt; saves a copy
+            "-profile:v", "baseline",
+            "-g", "30",
+            "-bf", "0",
+        ],
+        "h264_amf" => vec![
+            "-vcodec", "h264_amf",
+            "-usage", "lowlatency",
+            "-quality", "speed",
+            "-rc", "cbr",
+            "-pix_fmt", "yuv420p",
+            "-profile:v", "baseline",
+            "-g", "30",
+            "-bf", "0",
+        ],
+        "h264_mf" => vec![
+            // Microsoft Media Foundation — uses whatever hardware Windows
+            // exposes. Fewer knobs than vendor-specific encoders.
+            "-vcodec", "h264_mf",
+            "-pix_fmt", "yuv420p",
+            "-profile:v", "baseline",
+            "-g", "30",
+        ],
+        "h264_vaapi" => vec![
+            "-vcodec", "h264_vaapi",
+            "-qp", "23",
+            "-bf", "0",
+            "-g", "30",
+        ],
+        // Software fallback: identical to what we had before this change.
+        _ => vec![
+            "-vcodec", "libx264",
+            "-tune", "zerolatency",
+            "-preset", "ultrafast",
+            "-pix_fmt", "yuv420p",
+            "-profile:v", "baseline",
+            "-g", "30",
+            "-keyint_min", "30",
+            "-x264opts", "repeat-headers=1:slices=1:sliced-threads=0",
+            "-threads", "1",
+            "-bsf:v", "dump_extra",
+        ],
+    }
+}
+
 /// Synchronous lookup of an already-present ffmpeg (bundled, cached, or on
 /// PATH). Skips the download path so it can be called from blocking contexts
 /// like screenshot capture. Returns None if none of the known locations have
