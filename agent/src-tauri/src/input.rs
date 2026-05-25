@@ -89,9 +89,40 @@ pub fn spawn() {
             log::info!("input: thread ready");
 
             // tokio Receiver::blocking_recv exists on UnboundedReceiver too.
-            while let Some(ev) = rx.blocking_recv() {
+            //
+            // A single-slot "next event" buffer lets us coalesce consecutive
+            // MouseMove events. The dashboard sends pixel-precise mousemove
+            // at >60 Hz; each enigo.move_mouse on Windows takes ~2-5 ms, so
+            // a serial drain quickly falls behind, the unbounded mpsc fills,
+            // and the cursor appears laggy by 1-2 seconds. Coalescing means
+            // we apply only the LATEST position when several moves queued up
+            // back-to-back — the customer reports of "mouse lag bahut" while
+            // remoting fix here without changing the wire protocol.
+            let mut pending: Option<InputEvent> = None;
+            loop {
+                let ev = if let Some(p) = pending.take() {
+                    p
+                } else {
+                    match rx.blocking_recv() {
+                        Some(e) => e,
+                        None => break,
+                    }
+                };
                 match ev {
-                    InputEvent::MouseMove { x, y } => {
+                    InputEvent::MouseMove { mut x, mut y } => {
+                        // Drain the queue, keeping only the latest mouse
+                        // coordinate. Any non-MouseMove gets parked in
+                        // `pending` so the next loop iteration handles it
+                        // in original order.
+                        loop {
+                            match rx.try_recv() {
+                                Ok(InputEvent::MouseMove { x: nx, y: ny }) => {
+                                    x = nx; y = ny;
+                                }
+                                Ok(other) => { pending = Some(other); break; }
+                                Err(_) => break,
+                            }
+                        }
                         if let Err(e) = enigo.move_mouse(x, y, Coordinate::Abs) {
                             log::warn!("move_mouse: {e}");
                         }

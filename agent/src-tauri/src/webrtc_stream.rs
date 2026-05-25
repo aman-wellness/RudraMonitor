@@ -626,13 +626,26 @@ async fn pump_ffmpeg_into_track(
 
         // Flush every full NAL unit we can extract. Annex-B format means
         // each NAL is preceded by 0x00 0x00 0x00 0x01 or 0x00 0x00 0x01.
+        //
+        // Important: ONE picture is usually 2-4 NALs (SPS+PPS+IDR slice, or
+        // a non-IDR slice possibly preceded by AUD/SEI). Previously we set
+        // `duration = frame_duration` on every NAL — webrtc-rs then advanced
+        // the RTP timestamp by frame_duration per NAL, so a 15 fps video
+        // with 3 NALs per frame produced 45 RTP "frames" per second of
+        // wall-clock data. The browser's H.264 decoder saw timestamp jumps
+        // that did not match real frame boundaries and rendered a green /
+        // frozen surface after the first decode. Fix: only slice NALs
+        // (types 1 = non-IDR, 5 = IDR) actually advance the picture clock;
+        // SPS/PPS/SEI/AUD share the slice's instant and carry duration=0.
         while let Some(unit) = take_nal_unit(&mut buf) {
             if unit.is_empty() {
                 continue;
             }
+            let nal_type = nal_unit_type(&unit);
+            let is_slice = matches!(nal_type, 1 | 5);
             let sample = Sample {
                 data: unit.into(),
-                duration: frame_duration,
+                duration: if is_slice { frame_duration } else { Duration::ZERO },
                 ..Default::default()
             };
             if let Err(e) = track.write_sample(&sample).await {
@@ -659,6 +672,22 @@ fn take_nal_unit(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
     let unit: Vec<u8> = buf[first..next].to_vec();
     buf.drain(..next);
     Some(unit)
+}
+
+/// Extract the H.264 NAL unit type (5-bit field in the first byte after the
+/// Annex-B start code). Returns 0 for malformed input so the caller falls
+/// through to its non-slice path (safer than blindly attaching a duration).
+///
+/// Common types: 1=non-IDR slice, 5=IDR slice, 6=SEI, 7=SPS, 8=PPS, 9=AUD.
+fn nal_unit_type(unit: &[u8]) -> u8 {
+    let hdr_idx = if unit.len() >= 4 && unit[0..4] == [0, 0, 0, 1] {
+        4
+    } else if unit.len() >= 3 && unit[0..3] == [0, 0, 1] {
+        3
+    } else {
+        return 0;
+    };
+    unit.get(hdr_idx).map(|b| b & 0x1F).unwrap_or(0)
 }
 
 fn find_start_code(buf: &[u8], from: usize) -> Option<usize> {
