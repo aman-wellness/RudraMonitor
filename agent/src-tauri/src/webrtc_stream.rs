@@ -617,6 +617,19 @@ async fn pump_ffmpeg_into_track(
 
     let mut buf = Vec::with_capacity(64 * 1024);
     let mut tmp = vec![0u8; 32 * 1024];
+    // Access-unit accumulator. Every H.264 picture is a sequence of NAL
+    // units (typically SPS + PPS + IDR slice for keyframes, or just one
+    // non-IDR slice for delta frames). The CORRECT way to feed webrtc-rs
+    // is one Sample per ACCESS UNIT — webrtc-rs then packetizes the AU
+    // into RTP packets sharing one timestamp, sets the marker bit on the
+    // last packet, and the browser decodes a complete picture. Previous
+    // approaches (one Sample per NAL with duration=frame_duration, or
+    // duration=0 for non-slices) led to mis-paced or partially-marked
+    // frames and the receiver decoded only the top of each picture,
+    // leaving everything below as the decoder's "no data" green surface
+    // — the exact artefact customers kept reporting through v0.2.37 and
+    // v0.2.39. Aggregating into a per-frame Sample fixes that for good.
+    let mut au: Vec<u8> = Vec::with_capacity(64 * 1024);
 
     loop {
         if stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
@@ -634,33 +647,43 @@ async fn pump_ffmpeg_into_track(
         };
         buf.extend_from_slice(&tmp[..n]);
 
-        // Flush every full NAL unit we can extract. Annex-B format means
-        // each NAL is preceded by 0x00 0x00 0x00 0x01 or 0x00 0x00 0x01.
-        //
-        // Important: ONE picture is usually 2-4 NALs (SPS+PPS+IDR slice, or
-        // a non-IDR slice possibly preceded by AUD/SEI). Previously we set
-        // `duration = frame_duration` on every NAL — webrtc-rs then advanced
-        // the RTP timestamp by frame_duration per NAL, so a 15 fps video
-        // with 3 NALs per frame produced 45 RTP "frames" per second of
-        // wall-clock data. The browser's H.264 decoder saw timestamp jumps
-        // that did not match real frame boundaries and rendered a green /
-        // frozen surface after the first decode. Fix: only slice NALs
-        // (types 1 = non-IDR, 5 = IDR) actually advance the picture clock;
-        // SPS/PPS/SEI/AUD share the slice's instant and carry duration=0.
+        // Pull NAL units out of the buffer. Each NAL is appended to the
+        // current access-unit buffer. A slice NAL (type 1 or 5) terminates
+        // the picture — we flush the accumulated AU as one Sample with
+        // the wall-clock frame_duration so RTP timestamps stay aligned
+        // with real-time playback. AUDs (type 9) are also treated as a
+        // boundary: their presence usually means the next slice belongs
+        // to the NEXT picture, so we flush BEFORE adding the AUD.
         while let Some(unit) = take_nal_unit(&mut buf) {
             if unit.is_empty() {
                 continue;
             }
             let nal_type = nal_unit_type(&unit);
-            let is_slice = matches!(nal_type, 1 | 5);
-            let sample = Sample {
-                data: unit.into(),
-                duration: if is_slice { frame_duration } else { Duration::ZERO },
-                ..Default::default()
-            };
-            if let Err(e) = track.write_sample(&sample).await {
-                log::warn!("track write_sample failed: {e}");
-                break;
+            // AUD boundary: flush whatever we have, then start fresh with
+            // this AUD opening the next picture.
+            if nal_type == 9 && !au.is_empty() {
+                let sample = Sample {
+                    data: std::mem::take(&mut au).into(),
+                    duration: frame_duration,
+                    ..Default::default()
+                };
+                if let Err(e) = track.write_sample(&sample).await {
+                    log::warn!("track write_sample failed: {e}");
+                    break;
+                }
+            }
+            au.extend_from_slice(&unit);
+            // Slice NAL ends the access unit.
+            if matches!(nal_type, 1 | 5) {
+                let sample = Sample {
+                    data: std::mem::take(&mut au).into(),
+                    duration: frame_duration,
+                    ..Default::default()
+                };
+                if let Err(e) = track.write_sample(&sample).await {
+                    log::warn!("track write_sample failed: {e}");
+                    break;
+                }
             }
         }
     }
