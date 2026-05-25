@@ -77,8 +77,9 @@ fn bundled_paths() -> Vec<PathBuf> {
 }
 
 fn works(path: &PathBuf) -> bool {
-    Command::new(path)
-        .arg("-version")
+    let mut cmd = Command::new(path);
+    crate::win_proc::no_window(&mut cmd);
+    cmd.arg("-version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()

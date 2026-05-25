@@ -525,6 +525,13 @@ async fn pump_ffmpeg_into_track(
         .ok_or_else(|| anyhow!("ffmpeg not bundled"))?;
 
     let mut cmd = Command::new(&ffmpeg_bin);
+    // tokio::process::Command has its own creation_flags method (mirrors
+    // the std one). win_proc::no_window is std-only, so inline the flag.
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     cmd.arg("-hide_banner").arg("-loglevel").arg("error");
     cmd.arg("-framerate").arg(TARGET_FPS.to_string());
     #[cfg(target_os = "macos")]

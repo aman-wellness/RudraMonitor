@@ -118,6 +118,7 @@ fn record_clip_blocking(ffmpeg_bin: &PathBuf) -> Result<CapturedClip> {
     let framerate = FRAMERATE.to_string();
 
     let mut cmd = Command::new(ffmpeg_bin);
+    crate::win_proc::no_window(&mut cmd);
     cmd.arg("-y")
         .arg("-loglevel").arg("error")
         .arg("-framerate").arg(&framerate);

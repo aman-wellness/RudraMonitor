@@ -9,6 +9,7 @@ mod config;
 mod dlp;
 mod ffmpeg;
 mod watchdog;
+mod win_proc;
 
 pub use watchdog::{is_guardian_invocation, run_guardian_loop, mark_graceful_shutdown};
 mod idle;
@@ -931,9 +932,9 @@ pub fn uninstall_self() -> Result<()> {
                     if pid == my_pid { continue; }
                     #[cfg(target_os = "windows")]
                     {
-                        let _ = std::process::Command::new("taskkill")
-                            .args(["/F", "/PID", &pid.to_string()])
-                            .status();
+                        let mut cmd = std::process::Command::new("taskkill");
+                        crate::win_proc::no_window(&mut cmd);
+                        let _ = cmd.args(["/F", "/PID", &pid.to_string()]).status();
                     }
                     #[cfg(unix)]
                     unsafe {
@@ -964,15 +965,15 @@ pub fn uninstall_self() -> Result<()> {
     #[cfg(target_os = "windows")]
     {
         // HKCU\Software\Microsoft\Windows\CurrentVersion\Run\<value>
-        let _ = std::process::Command::new("reg")
-            .args([
-                "delete",
-                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
-                "/v",
-                "Rudrans Agent",
-                "/f",
-            ])
-            .status();
+        let mut cmd = std::process::Command::new("reg");
+        crate::win_proc::no_window(&mut cmd);
+        let _ = cmd.args([
+            "delete",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+            "/v",
+            "Rudrans Agent",
+            "/f",
+        ]).status();
     }
     #[cfg(target_os = "linux")]
     {
@@ -993,12 +994,12 @@ pub fn uninstall_self() -> Result<()> {
             #[cfg(target_os = "windows")]
             if dir.exists() {
                 let dir_str = dir.display().to_string();
-                let _ = std::process::Command::new("cmd")
-                    .args([
-                        "/C",
-                        &format!("ping 127.0.0.1 -n 5 > nul && rmdir /s /q \"{}\"", dir_str),
-                    ])
-                    .spawn();
+                let mut cmd = std::process::Command::new("cmd");
+                crate::win_proc::no_window(&mut cmd);
+                let _ = cmd.args([
+                    "/C",
+                    &format!("ping 127.0.0.1 -n 5 > nul && rmdir /s /q \"{}\"", dir_str),
+                ]).spawn();
             }
         }
     }
@@ -1026,15 +1027,12 @@ pub fn uninstall_self() -> Result<()> {
         if let Ok(exe) = std::env::current_exe() {
             if let Some(dir) = exe.parent() {
                 let dir_str = dir.display().to_string();
-                let _ = std::process::Command::new("cmd")
-                    .args([
-                        "/C",
-                        &format!(
-                            "ping 127.0.0.1 -n 3 > nul && rmdir /s /q \"{}\"",
-                            dir_str
-                        ),
-                    ])
-                    .spawn();
+                let mut cmd = std::process::Command::new("cmd");
+                crate::win_proc::no_window(&mut cmd);
+                let _ = cmd.args([
+                    "/C",
+                    &format!("ping 127.0.0.1 -n 3 > nul && rmdir /s /q \"{}\"", dir_str),
+                ]).spawn();
             }
         }
     }
