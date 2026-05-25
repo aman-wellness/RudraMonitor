@@ -32,7 +32,13 @@ type Direction = "to_agent" | "to_dashboard";
 type Kind = "offer" | "answer" | "ice_candidate";
 
 const LONG_POLL_TIMEOUT_MS = 25_000;
-const POLL_INTERVAL_MS = 500;
+// 100 ms tick inside the long-poll loop. The original 500 ms cap meant an
+// offer/answer round-trip could waste up to a second on polling alone —
+// noticeable when the user is waiting for the Remote tab to wire up. At
+// 100 ms the polling delay is ≤200 ms total for an offer + answer round
+// trip, and the DB load is still well within Supabase's budget for our
+// scale (typical session has ~10 messages over its lifetime).
+const POLL_INTERVAL_MS = 100;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });

@@ -183,10 +183,22 @@ async fn poll_once(state: &AppState, since: &str) -> Result<Option<String>> {
         // Handle the session in a dedicated task so the polling loop keeps
         // running. A flaky connection can stall for tens of seconds during
         // ICE negotiation and we don't want signaling to back up behind it.
+        //
+        // Pass the offer's created_at down as `ice_since` so the per-session
+        // ICE poller picks up any candidates the dashboard posted in the
+        // same window as the offer. Previously the ICE poller used
+        // `now()` as its starting cursor, which silently dropped every
+        // candidate that arrived before the offer-handler had spawned its
+        // task — and dashboards trickle their candidates the instant
+        // setLocalDescription returns, often a few hundred ms BEFORE the
+        // agent finishes building its peer connection. That dropped batch
+        // forced ICE to fall back to TURN relay, which is the "remote
+        // takes 10-20 seconds to connect" lag the customer reported.
+        let ice_since = msg.created_at.clone();
         let st = state.clone();
         let eid = enrollment.agent_id.clone();
         tauri::async_runtime::spawn(async move {
-            if let Err(e) = handle_session(&st, &session_id, &eid, &sdp).await {
+            if let Err(e) = handle_session(&st, &session_id, &eid, &sdp, &ice_since).await {
                 log::warn!("webrtc session {} failed: {}", session_id, e);
             }
         });
@@ -199,6 +211,7 @@ async fn handle_session(
     session_id: &str,
     agent_id: &str,
     offer_sdp: &str,
+    ice_since: &str,
 ) -> Result<()> {
     let ice_servers = fetch_ice_servers(state).await?;
 
@@ -358,8 +371,15 @@ async fn handle_session(
         let st = state.clone();
         let sid = session_id.to_string();
         let stop_flag = stop_flag.clone();
+        // Anchor the ICE cursor to the offer's timestamp so any candidates
+        // posted in parallel with the offer (trickle ICE — dashboards start
+        // emitting them the instant setLocalDescription returns) are
+        // included in the very first poll. now()-based anchoring used to
+        // lose this batch, forcing ICE to TURN-relay and dragging the
+        // connect time out to 10-20 s.
+        let initial_since = ice_since.to_string();
         tauri::async_runtime::spawn(async move {
-            let mut since = chrono::Utc::now().to_rfc3339();
+            let mut since = initial_since;
             while !stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
                 match poll_remote_ice(&st, &sid, &since).await {
                     Ok((newest, candidates)) => {
