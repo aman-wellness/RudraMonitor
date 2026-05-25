@@ -147,8 +147,21 @@ pub fn spawn() {
                         }
                     }
                     InputEvent::Key { code, down } => {
-                        if let Some(k) = map_code(&code) {
-                            let dir = if down { Direction::Press } else { Direction::Release };
+                        let dir = if down { Direction::Press } else { Direction::Release };
+                        // Prefer the platform-raw keycode path. That sends a
+                        // real WM_KEYDOWN (Windows) / kCGEventKeyDown (macOS)
+                        // / XK_* (Linux) so the OS sees a physical key press
+                        // — shortcuts, modifier composition and IME-aware
+                        // keyboards all work as expected.
+                        if let Some(vk) = os_keycode(&code) {
+                            if let Err(e) = enigo.key(Key::Other(vk), dir) {
+                                log::warn!("key {code} (raw {vk:#x}): {e}");
+                            }
+                        } else if let Some(k) = map_code(&code) {
+                            // Named/named-modifier keys (Shift, Ctrl, Alt,
+                            // Meta, arrows, function keys, etc.) — enigo
+                            // already exposes platform-correct presses for
+                            // these via the typed `Key` variants.
                             if let Err(e) = enigo.key(k, dir) {
                                 log::warn!("key {code}: {e}");
                             }
@@ -176,6 +189,129 @@ pub fn spawn() {
 /// physical key position only, so the same code works on QWERTY / DVORAK /
 /// AZERTY etc. Returns None for codes we don't know (caller logs + drops).
 ///
+/// For PRINTABLE keys (letters, digits, punctuation) we map to the platform
+/// raw virtual keycode via `Key::Other`. enigo's `Key::Unicode` types the
+/// literal character but bypasses real WM_KEYDOWN / kCGEventKeyDown events,
+/// which breaks every shortcut (Ctrl+A, Cmd+V, Shift+letter) — the agent
+/// looked unusable for typing. Using the platform VK / kVK_ANSI_* codes
+/// lets the OS keyboard layer see a genuine physical-key press, so modifiers
+/// like Shift/Ctrl/Cmd compose correctly with whatever letter follows.
+///
+/// Letters / digits previously used `Key::Unicode`; that's the original
+/// reason the customer reported "keyboard kaam nahi kar raha" — typing
+/// felt wrong, shortcuts didn't fire, modifier+letter combos failed. The
+/// mapping below replaces it with the OS's physical keycode tables.
+
+#[cfg(target_os = "windows")]
+fn os_keycode(code: &str) -> Option<u32> {
+    // Windows Virtual-Key codes (winuser.h). Letters/digits are their ASCII
+    // values. Special keys come from named constants.
+    if let Some(rest) = code.strip_prefix("Key") {
+        let mut ch = rest.chars();
+        if let (Some(c), None) = (ch.next(), ch.next()) {
+            if c.is_ascii_alphabetic() {
+                return Some(c.to_ascii_uppercase() as u32);
+            }
+        }
+    }
+    if let Some(rest) = code.strip_prefix("Digit") {
+        if rest.len() == 1 {
+            let c = rest.chars().next().unwrap();
+            if c.is_ascii_digit() { return Some(c as u32); }
+        }
+    }
+    Some(match code {
+        // OEM punctuation keys (US layout — the OS still produces locale-
+        // correct characters because we're sending the physical key).
+        "Minus"        => 0xBD, // VK_OEM_MINUS
+        "Equal"        => 0xBB, // VK_OEM_PLUS
+        "BracketLeft"  => 0xDB, // VK_OEM_4
+        "BracketRight" => 0xDD, // VK_OEM_6
+        "Backslash"    => 0xDC, // VK_OEM_5
+        "Semicolon"    => 0xBA, // VK_OEM_1
+        "Quote"        => 0xDE, // VK_OEM_7
+        "Backquote"    => 0xC0, // VK_OEM_3
+        "Comma"        => 0xBC, // VK_OEM_COMMA
+        "Period"       => 0xBE, // VK_OEM_PERIOD
+        "Slash"        => 0xBF, // VK_OEM_2
+        // Numpad digits emit VK_NUMPAD0..9 specifically so shift-state
+        // produces the digit instead of nav-keys.
+        "Numpad0" => 0x60, "Numpad1" => 0x61, "Numpad2" => 0x62, "Numpad3" => 0x63,
+        "Numpad4" => 0x64, "Numpad5" => 0x65, "Numpad6" => 0x66, "Numpad7" => 0x67,
+        "Numpad8" => 0x68, "Numpad9" => 0x69,
+        "NumpadAdd"      => 0x6B, // VK_ADD
+        "NumpadSubtract" => 0x6D, // VK_SUBTRACT
+        "NumpadMultiply" => 0x6A, // VK_MULTIPLY
+        "NumpadDivide"   => 0x6F, // VK_DIVIDE
+        "NumpadDecimal"  => 0x6E, // VK_DECIMAL
+        _ => return None,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn os_keycode(code: &str) -> Option<u32> {
+    // macOS kVK_ANSI_* keycodes from <Carbon/HIToolbox/Events.h>. We use
+    // raw integers so we don't need a Carbon dependency at compile time.
+    Some(match code {
+        // Letters (ANSI A..Z)
+        "KeyA" => 0x00, "KeyS" => 0x01, "KeyD" => 0x02, "KeyF" => 0x03,
+        "KeyH" => 0x04, "KeyG" => 0x05, "KeyZ" => 0x06, "KeyX" => 0x07,
+        "KeyC" => 0x08, "KeyV" => 0x09, "KeyB" => 0x0B, "KeyQ" => 0x0C,
+        "KeyW" => 0x0D, "KeyE" => 0x0E, "KeyR" => 0x0F, "KeyY" => 0x10,
+        "KeyT" => 0x11, "KeyO" => 0x1F, "KeyU" => 0x20, "KeyI" => 0x22,
+        "KeyP" => 0x23, "KeyL" => 0x25, "KeyJ" => 0x26, "KeyK" => 0x28,
+        "KeyN" => 0x2D, "KeyM" => 0x2E,
+        // Digits (top row): kVK_ANSI_0..9
+        "Digit1" => 0x12, "Digit2" => 0x13, "Digit3" => 0x14, "Digit4" => 0x15,
+        "Digit6" => 0x16, "Digit5" => 0x17, "Digit9" => 0x19, "Digit7" => 0x1A,
+        "Digit8" => 0x1C, "Digit0" => 0x1D,
+        // Punctuation
+        "Equal"        => 0x18,
+        "Minus"        => 0x1B,
+        "BracketRight" => 0x1E,
+        "BracketLeft"  => 0x21,
+        "Quote"        => 0x27,
+        "Semicolon"    => 0x29,
+        "Backslash"    => 0x2A,
+        "Comma"        => 0x2B,
+        "Slash"        => 0x2C,
+        "Period"       => 0x2F,
+        "Backquote"    => 0x32,
+        // Numpad
+        "Numpad0" => 0x52, "Numpad1" => 0x53, "Numpad2" => 0x54, "Numpad3" => 0x55,
+        "Numpad4" => 0x56, "Numpad5" => 0x57, "Numpad6" => 0x58, "Numpad7" => 0x59,
+        "Numpad8" => 0x5B, "Numpad9" => 0x5C,
+        "NumpadAdd"      => 0x45,
+        "NumpadSubtract" => 0x4E,
+        "NumpadMultiply" => 0x43,
+        "NumpadDivide"   => 0x4B,
+        "NumpadDecimal"  => 0x41,
+        _ => return None,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn os_keycode(code: &str) -> Option<u32> {
+    // Linux evdev codes from <linux/input-event-codes.h>. enigo's X11 backend
+    // accepts these via Key::Other.
+    if let Some(rest) = code.strip_prefix("Key") {
+        let mut ch = rest.chars();
+        if let (Some(c), None) = (ch.next(), ch.next()) {
+            if c.is_ascii_alphabetic() {
+                return Some(match c.to_ascii_uppercase() {
+                    'A' => 30, 'B' => 48, 'C' => 46, 'D' => 32, 'E' => 18, 'F' => 33,
+                    'G' => 34, 'H' => 35, 'I' => 23, 'J' => 36, 'K' => 37, 'L' => 38,
+                    'M' => 50, 'N' => 49, 'O' => 24, 'P' => 25, 'Q' => 16, 'R' => 19,
+                    'S' => 31, 'T' => 20, 'U' => 22, 'V' => 47, 'W' => 17, 'X' => 45,
+                    'Y' => 21, 'Z' => 44,
+                    _ => return None,
+                });
+            }
+        }
+    }
+    None
+}
+
 /// Letters and digits use `Key::Unicode` so the OS's current layout decides
 /// the character — that gives the customer the same typing behavior they'd
 /// get with a physical keyboard. Special keys use enigo's named variants.
