@@ -83,7 +83,9 @@ export default function RemoteTab() {
     candidatesOut: number;
     iceState: string;
     connState: string;
-  }>({ elapsedMs: 0, answerReceived: false, candidatesIn: 0, candidatesOut: 0, iceState: 'new', connState: 'new' });
+    framesDecoded: number;
+    bytesReceived: number;
+  }>({ elapsedMs: 0, answerReceived: false, candidatesIn: 0, candidatesOut: 0, iceState: 'new', connState: 'new', framesDecoded: 0, bytesReceived: 0 });
   const diagStartRef = useRef<number | null>(null);
   // Tick a wall-clock counter so the operator sees seconds ticking by.
   // 250ms cadence is fine — it's just UI.
@@ -375,11 +377,21 @@ export default function RemoteTab() {
             const s2 = s as unknown as { availableIncomingBitrate?: number };
             if (s2.availableIncomingBitrate) availBps = Math.max(availBps, s2.availableIncomingBitrate);
           }
-          // inbound-rtp for the video track exposes packetsLost
+          // inbound-rtp for the video track exposes packetsLost +
+          // framesDecoded — both critical for diagnosing "Live but black
+          // screen" symptoms (peer connection up, no actual decode).
           if (s.type === 'inbound-rtp' && (s as { kind?: string }).kind === 'video') {
-            const s2 = s as unknown as { packetsLost?: number; packetsReceived?: number };
+            const s2 = s as unknown as {
+              packetsLost?: number; packetsReceived?: number;
+              framesDecoded?: number; bytesReceived?: number;
+            };
             packetsLost = s2.packetsLost ?? 0;
             packetsRecv = s2.packetsReceived ?? 0;
+            setDiag((d) => ({
+              ...d,
+              framesDecoded: s2.framesDecoded ?? d.framesDecoded,
+              bytesReceived: s2.bytesReceived ?? d.bytesReceived,
+            }));
           }
         });
         const recvDelta = packetsRecv - lastPacketsRecv;
@@ -702,6 +714,25 @@ export default function RemoteTab() {
         )}
       </div>
 
+      {/* Live but no frames decoded → ffmpeg on agent isn't producing
+          output. Either the hardware encoder is failing silently, or the
+          OS denied screen-capture permission, or the agent is on a stale
+          build that doesn't have the cursor/encoder fixes. Surface the
+          counters so the operator can act on the actual symptom rather
+          than guessing why the rectangle is black. */}
+      {status === 'live' && diag.framesDecoded === 0 && diag.elapsedMs > 5000 && (
+        <div className="bg-rose-500/10 border border-rose-500/30 rounded-lg px-4 py-3 text-xs text-rose-200">
+          <p className="font-medium mb-1">Connected, but no video frames are arriving.</p>
+          <p className="text-[11px] text-rose-300/80 mb-2">
+            framesDecoded {diag.framesDecoded} · bytesReceived {diag.bytesReceived} · iceState {diag.iceState}/{diag.connState}
+          </p>
+          <p className="text-[11px] text-rose-300/80">
+            Most common cause on macOS: the agent doesn't have Screen Recording permission.
+            On the agent machine: System Settings → Privacy & Security → Screen Recording → enable <strong>Security Assistant</strong>, then restart the agent.
+            Otherwise the agent is on an old build (pre-v0.2.46) without the hardware encoder fallback — reinstall the latest installer.
+          </p>
+        </div>
+      )}
       {status === 'connecting' && diag.elapsedMs > 3000 && (
         <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-3 text-xs text-amber-200">
           <p className="font-medium mb-1">

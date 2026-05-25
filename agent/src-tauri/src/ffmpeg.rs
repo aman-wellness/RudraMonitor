@@ -158,6 +158,20 @@ pub fn pick_h264_encoder(ffmpeg_bin: &PathBuf) -> &'static str {
 /// frequent keyframes, no B-frames. The encoder-specific flags below have
 /// been chosen from each vendor's tuning guide.
 pub fn encoder_args(encoder: &str) -> Vec<&'static str> {
+    // EVERY encoder in this match MUST emit SPS/PPS before every IDR.
+    // Without that, a dashboard joining mid-stream (i.e. every Remote
+    // session — the receiver always joins AFTER the encoder is running)
+    // never sees the codec extradata and the H.264 decoder silently
+    // refuses to draw a frame. The customer sees a perfectly Live
+    // connection with a black rectangle. The libx264 path used to use
+    // `-x264opts repeat-headers=1` for this and `-bsf:v dump_extra`
+    // belt-and-braces; the hardware-encoder paths originally had
+    // neither and that's the actual reason the new v0.2.45+ build looked
+    // broken on the customer's Mac. `-bsf:v dump_extra` is a generic
+    // bitstream filter that injects the encoder's extradata before
+    // every IDR regardless of which encoder produced it, so it's the
+    // safe lowest common denominator across VT / NVENC / QSV / AMF /
+    // VAAPI / libx264.
     match encoder {
         "h264_videotoolbox" => vec![
             "-vcodec", "h264_videotoolbox",
@@ -167,6 +181,7 @@ pub fn encoder_args(encoder: &str) -> Vec<&'static str> {
             "-profile:v", "baseline",
             "-g", "30",
             "-bf", "0",              // no B-frames — keep zero-latency contract
+            "-bsf:v", "dump_extra",  // SPS/PPS before every IDR
         ],
         "h264_nvenc" => vec![
             "-vcodec", "h264_nvenc",
@@ -178,6 +193,7 @@ pub fn encoder_args(encoder: &str) -> Vec<&'static str> {
             "-profile:v", "baseline",
             "-g", "30",
             "-bf", "0",
+            "-bsf:v", "dump_extra",
         ],
         "h264_qsv" => vec![
             "-vcodec", "h264_qsv",
@@ -187,6 +203,7 @@ pub fn encoder_args(encoder: &str) -> Vec<&'static str> {
             "-profile:v", "baseline",
             "-g", "30",
             "-bf", "0",
+            "-bsf:v", "dump_extra",
         ],
         "h264_amf" => vec![
             "-vcodec", "h264_amf",
@@ -197,22 +214,22 @@ pub fn encoder_args(encoder: &str) -> Vec<&'static str> {
             "-profile:v", "baseline",
             "-g", "30",
             "-bf", "0",
+            "-bsf:v", "dump_extra",
         ],
         "h264_mf" => vec![
-            // Microsoft Media Foundation — uses whatever hardware Windows
-            // exposes. Fewer knobs than vendor-specific encoders.
             "-vcodec", "h264_mf",
             "-pix_fmt", "yuv420p",
             "-profile:v", "baseline",
             "-g", "30",
+            "-bsf:v", "dump_extra",
         ],
         "h264_vaapi" => vec![
             "-vcodec", "h264_vaapi",
             "-qp", "23",
             "-bf", "0",
             "-g", "30",
+            "-bsf:v", "dump_extra",
         ],
-        // Software fallback: identical to what we had before this change.
         _ => vec![
             "-vcodec", "libx264",
             "-tune", "zerolatency",

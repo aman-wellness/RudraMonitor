@@ -575,7 +575,7 @@ async fn poll_remote_ice(
 async fn spawn_ffmpeg_with_params(
     ffmpeg_bin: &std::path::Path,
     params: StreamParams,
-) -> Result<(Child, tokio::process::ChildStdout)> {
+) -> Result<(Child, tokio::process::ChildStdout, &'static str)> {
     let mut cmd = Command::new(ffmpeg_bin);
     // tokio::process::Command has its own creation_flags method (mirrors
     // the std one). win_proc::no_window is std-only, so inline the flag.
@@ -697,7 +697,7 @@ async fn spawn_ffmpeg_with_params(
         "webrtc: ffmpeg started encoder={encoder} width={} bitrate={}kbps",
         params.width, params.bitrate_kbps,
     );
-    Ok((child, stdout))
+    Ok((child, stdout, encoder))
 }
 
 /// Spawn the bundled ffmpeg with a screen-capture input + raw H.264 stdout,
@@ -718,7 +718,8 @@ async fn pump_ffmpeg_into_track(
     'outer: loop {
         let current = *params.lock().await;
         reload_flag.store(false, std::sync::atomic::Ordering::SeqCst);
-        let (mut child, mut stdout) = spawn_ffmpeg_with_params(&ffmpeg_bin, current).await?;
+        let (mut child, mut stdout, encoder_in_use) =
+            spawn_ffmpeg_with_params(&ffmpeg_bin, current).await?;
 
         let mut buf = Vec::with_capacity(64 * 1024);
         let mut tmp = vec![0u8; 32 * 1024];
@@ -805,10 +806,13 @@ async fn pump_ffmpeg_into_track(
             }
         }
 
-        // ffmpeg exited on its own (not via stop_flag / reload). Treat that
-        // as an unexpected death and bail out of the session entirely.
+        // ffmpeg exited unexpectedly — log the encoder so the failure is
+        // diagnosable from the log, then bail. No silent fallback: every
+        // configured encoder is expected to JUST WORK end-to-end. If it
+        // doesn't, the encoder_args entry or the bundled ffmpeg build
+        // needs the fix, not a runtime band-aid.
         let _ = child.wait().await;
-        log::warn!("webrtc: ffmpeg pipeline exited unexpectedly");
+        log::warn!("webrtc: ffmpeg pipeline exited unexpectedly (encoder={encoder_in_use})");
         break 'outer;
     }
     Ok(())
