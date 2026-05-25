@@ -559,12 +559,22 @@ async fn pump_ffmpeg_into_track(
         .arg("-profile:v").arg("baseline")
         .arg("-g").arg("30")
         .arg("-keyint_min").arg("30")
-        // Re-emit SPS/PPS on EVERY keyframe. Without this, libx264 writes
-        // them once at the start of the stream and the dashboard (which
-        // typically joins mid-stream) never sees them → no decode → black
-        // video. `-bsf:v dump_extra` injects the codec extradata before
-        // each IDR so any consumer can sync up on the next keyframe.
-        .arg("-x264opts").arg("repeat-headers=1")
+        // Force a SINGLE slice per frame. The `ultrafast` preset enables
+        // slice-based threading by default — libx264 then emits 4-8 slices
+        // per picture so each thread can encode its own band. The webrtc-rs
+        // H.264 RTP packetizer doesn't realign subsequent slices to their
+        // correct macroblock row, so the top slice paints correctly while
+        // everything below it shows up as the decoder's "no data" green.
+        // This is exactly the artefact customers reported (recycle bin
+        // visible at the top, solid green below). slices=1 + sliced-threads=0
+        // collapse the picture back to a single slice; we also force
+        // threads=1 so x264 doesn't try frame-level parallelism that
+        // also breaks zero-latency mode.
+        // Re-emit SPS/PPS on EVERY keyframe so a dashboard joining
+        // mid-stream can decode the next IDR. `-bsf:v dump_extra` injects
+        // the codec extradata before each IDR so any consumer can sync up.
+        .arg("-x264opts").arg("repeat-headers=1:slices=1:sliced-threads=0")
+        .arg("-threads").arg("1")
         .arg("-bsf:v").arg("dump_extra")
         .arg("-vf").arg(format!("scale={}:-2", TARGET_WIDTH))
         .arg("-an")
