@@ -8,6 +8,7 @@ mod browser_url;
 mod config;
 mod dlp;
 mod ffmpeg;
+mod livekit_publisher;
 mod watchdog;
 mod win_proc;
 
@@ -1198,10 +1199,17 @@ pub fn run() {
             // DLP watcher always starts but loops short-circuit when
             // settings.dlp_enabled is false — admin toggles from the dashboard.
             spawn_dlp_loop(state.clone());
-            // WebRTC live-monitoring loop. Idle until the dashboard sends an
-            // offer through /webrtc-signal; from that point the agent owns
-            // an RTCPeerConnection that streams ffmpeg's h264 stdout into a
-            // video track until the dashboard closes the session.
+            // Live/Remote streaming.
+            //
+            // v0.3.0+ ships TWO publishers side-by-side during the cutover
+            // window. The new LiveKit publisher is always-on; the legacy
+            // webrtc-rs path stays up so any in-flight dashboard still on
+            // the old protocol can connect. The dashboard prefers LiveKit
+            // when a livekit-token mint succeeds, falls back to the legacy
+            // signaling otherwise. Once auto-update drains every agent
+            // onto v0.3+, the legacy webrtc_stream::spawn_streaming_loop
+            // call below gets deleted along with the entire module.
+            livekit_publisher::spawn(state.clone());
             webrtc_stream::spawn_streaming_loop(state);
             Ok(())
         })

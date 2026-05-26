@@ -1,6 +1,6 @@
 [package]
 name = "rudrans-agent"
-version = "0.2.47"
+version = "0.3.0-alpha.1"
 description = "Rudrans employee monitoring agent"
 edition = "2021"
 rust-version = "1.77"
@@ -42,11 +42,17 @@ notify = "6"
 notify-debouncer-mini = "0.4"
 sha2 = "0.10"
 hex = "0.4"
-# WebRTC live-monitoring stream. The agent acts as a peer that the
-# dashboard browser connects to via the rudrans.com TURN server.
-# Capture frames come from a bundled-ffmpeg pipe (h264-annexb stdout)
-# which we already have signed + TCC-trusted thanks to v0.2.24.
+# Live/Remote screen streaming.
+#
+# Legacy `webrtc` crate (kept during the v0.3 cutover window so dashboards
+# still on the old protocol can connect to in-flight agents — deleted
+# once auto-update drains every agent).
 webrtc = "0.13"
+# v0.3.0 onward: LiveKit OSS SDK. Replaces our hand-rolled webrtc-rs +
+# ffmpeg + NAL parser + signaling edge fn. Single managed SFU on EC2
+# handles ICE / TURN / jitter buffer / simulcast / adaptive bitrate.
+livekit = "0.7"
+livekit-api = "0.4"
 bytes = "1"
 uuid = { version = "1", features = ["v4"] }
 # Remote Desktop: cross-platform input synthesis (CGEvent on macOS, SendInput
