@@ -232,4 +232,9 @@ export type Agent = {
   ip_address: string | null;
   enroll_token: string;
   created_at: string;
+  // Populated when reading from the `agents_with_seat` view (migration
+  // 0078). seat_locked=true means the agent is beyond the org's licensed
+  // seat_count and the server is refusing its ingest calls.
+  seat_rank?: number;
+  seat_locked?: boolean;
 };

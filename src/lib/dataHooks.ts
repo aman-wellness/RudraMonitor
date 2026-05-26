@@ -20,6 +20,13 @@ export type UiAgent = {
   applications: string[];
   browserUrls: string[];
   enrollToken: string;
+  // True when this agent is beyond the org's licensed seat_count. Locked
+  // agents have their ingest endpoints rejecting data server-side (see
+  // migration 0078 + edge functions). The dashboard hides their stream
+  // and shows a "Locked — over license" badge until the customer
+  // upgrades seats or removes another agent.
+  seatLocked: boolean;
+  seatRank: number;
 };
 
 const DEFAULT_DEPT = 'Unassigned';
@@ -43,12 +50,18 @@ const computeStatus = (a: Agent): UiAgent['status'] => {
   return (a.status as UiAgent['status']) ?? 'online';
 };
 
-const toUi = (a: Agent): UiAgent => ({
+type AgentRow = Agent & { seat_rank?: number | null; seat_locked?: boolean | null };
+
+const toUi = (a: AgentRow): UiAgent => ({
   id: a.id,
   name: a.agent_name,
   machine: a.machine_name ?? a.agent_name,
   os: a.os_type ?? 'Unknown',
-  status: computeStatus(a),
+  // A locked agent stops checking in (server refuses ingest with 402), so
+  // its last_active stales out and computeStatus naturally returns
+  // 'offline'. Force the locked badge to win over the live status pill
+  // so the UI is unambiguous about WHY it's silent.
+  status: a.seat_locked ? 'offline' : computeStatus(a),
   lastActive: a.last_active ?? '-',
   ipAddress: a.ip_address ?? '-',
   department: a.department ?? DEFAULT_DEPT,
@@ -58,6 +71,8 @@ const toUi = (a: Agent): UiAgent => ({
   applications: [],
   browserUrls: [],
   enrollToken: a.enroll_token,
+  seatLocked: !!a.seat_locked,
+  seatRank: a.seat_rank ?? 0,
 });
 
 export function useAgents() {
@@ -73,13 +88,17 @@ export function useAgents() {
       return;
     }
     setLoading(true);
+    // agents_with_seat is the view from migration 0078: same shape as the
+    // agents table + seat_rank + seat_locked. Lets the UI dim/hide agents
+    // that are beyond the org's licensed seat_count without re-computing
+    // the rank window in JS.
     const { data, error } = await supabase
-      .from('agents')
+      .from('agents_with_seat')
       .select('*')
       .eq('org_id', organization.id)
       .order('created_at', { ascending: false });
     if (error) setError(error.message);
-    else setAgents((data as Agent[]).map(toUi));
+    else setAgents((data as AgentRow[]).map(toUi));
     setLoading(false);
   }, [organization]);
 

@@ -78,9 +78,16 @@ function expandFeatures(raw: string[] | null | undefined): Set<FeatureCode> {
   return out;
 }
 
-export function useFeatures(): OrgFeatures {
-  const { organization } = useAuth();
-  const [state, setState] = useState({
+// Per-org feature cache (localStorage). The feature set rarely changes
+// within a session, so we hydrate from cache on mount to avoid the
+// "all items visible → filter → items disappear" flash on every reload.
+// The async RPC then revalidates and updates the state if anything changed.
+// Bump the version suffix any time we change the gating semantics — every
+// browser will then discard its stale cached set and refetch fresh.
+const CACHE_KEY = (orgId: string) => `rudrans:features:v2:${orgId}`;
+type Cached = Omit<ReturnType<typeof emptyState>, 'refresh'>;
+function emptyState() {
+  return {
     monitoring_basic_enabled: false,
     screenshots_enabled: false,
     videos_enabled: false,
@@ -88,16 +95,36 @@ export function useFeatures(): OrgFeatures {
     remote_enabled: false,
     dlp_enabled: false,
     em_enabled: false,
-
     em_active: false,
     em_subscribed: false,
     em_subscribed_since: null as string | null,
-
     subscription_status: 'trial',
     trial_ends_at: '',
     on_trial: true,
-
     loading: true,
+  };
+}
+function readCache(orgId: string | undefined): Cached | null {
+  if (!orgId || typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(CACHE_KEY(orgId));
+    if (!raw) return null;
+    return JSON.parse(raw) as Cached;
+  } catch { return null; }
+}
+function writeCache(orgId: string, value: Cached) {
+  if (typeof window === 'undefined') return;
+  try { window.localStorage.setItem(CACHE_KEY(orgId), JSON.stringify(value)); } catch { /* ignore */ }
+}
+
+export function useFeatures(): OrgFeatures {
+  const { organization } = useAuth();
+  // Synchronously hydrate from localStorage on first render so the sidebar
+  // already reflects the subscribed feature set — no flash of hidden items.
+  const [state, setState] = useState(() => {
+    const cached = readCache(organization?.id);
+    if (cached) return { ...cached, loading: false };
+    return emptyState();
   });
 
   const load = async () => {
@@ -121,17 +148,19 @@ export function useFeatures(): OrgFeatures {
     const onTrial = sub === 'trial';
     const features = expandFeatures(featuresRaw as string[] | null);
 
-    // Trial unlock: until the trial ends, everything is visible. After the
-    // trial ends, only paid features remain. This matches the existing
-    // em_active semantics (computed server-side in organizations_with_features).
-    const has = (code: FeatureCode) => onTrial || features.has(code);
+    // Plan-scoped gating: trust org_effective_features() exclusively. That
+    // RPC already handles trials (it returns the trial_plan_code's features,
+    // or the full set when a super admin has granted trial_full_access).
+    // We used to OR `onTrial` here, which silently unlocked every feature
+    // for every trial customer and broke the entire plan-scoped model.
+    const has = (code: FeatureCode) => features.has(code);
 
     // Legacy EM customers (e.g. `em-unlimited` plan, `growth-25`) don't have
     // the new `employee_management` code in features_included — they were
     // gated through `organizations.em_subscribed` instead. Honour that.
     const legacyEm = !!metaRow?.em_active;
 
-    setState({
+    const next: Cached = {
       monitoring_basic_enabled: has('monitoring_basic'),
       screenshots_enabled: has('screenshots'),
       videos_enabled: has('videos'),
@@ -149,7 +178,9 @@ export function useFeatures(): OrgFeatures {
       on_trial: onTrial,
 
       loading: false,
-    });
+    };
+    setState(next);
+    writeCache(organization.id, next);
   };
 
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [organization?.id]);

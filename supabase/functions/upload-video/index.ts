@@ -57,6 +57,10 @@ Deno.serve(async (req) => {
   if (agentErr) return json({ error: agentErr.message }, 500);
   if (!agent) return json({ error: "invalid token" }, 401);
 
+  // Seat enforcement (migration 0078): refuse uploads from over-cap agents.
+  const { data: seatOk } = await admin.rpc("agent_seat_ok", { p_agent_id: agent.id });
+  if (!seatOk) return json({ error: "seat_limit_exceeded" }, 402);
+
   // Server-side gate — see upload-screenshot for the rationale. Honour the
   // dashboard toggle the moment it flips rather than waiting for the agent
   // to refresh its cached settings.

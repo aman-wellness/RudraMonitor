@@ -65,6 +65,10 @@ Deno.serve(async (req) => {
   if (agentErr) return json({ error: agentErr.message }, 500);
   if (!agent) return json({ error: "invalid token" }, 401);
 
+  // Seat enforcement (migration 0078): refuse uploads from over-cap agents.
+  const { data: seatOk } = await admin.rpc("agent_seat_ok", { p_agent_id: agent.id });
+  if (!seatOk) return json({ error: "seat_limit_exceeded" }, 402);
+
   // Server-side gate. The agent already checks its cached flag, but that cache
   // can lag the dashboard by up to a minute, and older builds / a leaked token
   // could bypass the client-side check entirely. Reject here so the toggle is

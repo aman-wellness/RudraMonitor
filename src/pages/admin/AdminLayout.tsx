@@ -7,6 +7,7 @@ const nav = [
   { to: '/admin/dashboard', label: 'Dashboard',  icon: 'ri-dashboard-line' },
   { to: '/admin/partners',  label: 'Partners',   icon: 'ri-team-line' },
   { to: '/admin/customers', label: 'Customers',  icon: 'ri-building-line' },
+  { to: '/admin/trial-requests', label: 'Trial Requests', icon: 'ri-shield-star-line' },
   { to: '/admin/licenses',  label: 'Licenses',   icon: 'ri-key-2-line' },
   { to: '/admin/invoices',  label: 'Invoices',   icon: 'ri-bill-line' },
   { to: '/admin/plans',     label: 'Plans',      icon: 'ri-price-tag-3-line' },

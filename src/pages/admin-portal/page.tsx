@@ -454,14 +454,25 @@ export default function AdminPortalPage() {
                     const total = organization?.license_count ?? 0;
                     const used = agents.length;
                     const pct = total > 0 ? Math.round((used / total) * 100) : 0;
+                    // Bar fill must cap at 100% even when the customer has
+                    // over-provisioned agents (pct can exceed 100% when used
+                    // > total); otherwise the inner div renders 300%-wide
+                    // and overflows the rounded outer container. Tint it
+                    // amber/rose at >=100% so the over-cap state is obvious.
+                    const fillPct = Math.min(pct, 100);
+                    const overCap = used > total;
+                    const fillColor = overCap ? 'bg-rose-500' : pct >= 80 ? 'bg-amber-400' : 'bg-emerald-500';
+                    const labelColor = overCap ? 'text-rose-400' : pct >= 80 ? 'text-amber-300' : 'text-emerald-400';
                     return (
                       <>
                         <div className="flex items-center justify-between mb-1.5">
                           <span className="text-xs text-gray-400">License Utilization</span>
-                          <span className="text-xs text-emerald-400 font-medium">{pct}%</span>
+                          <span className={`text-xs font-medium ${labelColor}`}>
+                            {pct}%{overCap && <span className="ml-1 text-[10px] uppercase tracking-wider">over capacity</span>}
+                          </span>
                         </div>
-                        <div className="w-full bg-dark-700 rounded-full h-2">
-                          <div className="bg-emerald-500 h-2 rounded-full" style={{ width: `${pct}%` }} />
+                        <div className="w-full bg-dark-700 rounded-full h-2 overflow-hidden">
+                          <div className={`${fillColor} h-2 rounded-full transition-all`} style={{ width: `${fillPct}%` }} />
                         </div>
                       </>
                     );
@@ -1052,9 +1063,42 @@ function SubscriptionTab({
     })();
   }, [organization?.id]);
 
+  // Plan-scoped trial gating: pull trial_plan_code + trial_full_access
+  // from the org row. Until 0075, every trial unlocked every feature; now
+  // the badge + banner reflect the actual scope.
+  const [trialPlanCode, setTrialPlanCode] = useState<string | null>(null);
+  const [trialFullAccess, setTrialFullAccess] = useState(false);
+  useEffect(() => {
+    if (!organization?.id) return;
+    let cancelled = false;
+    void supabase
+      .from('organizations')
+      .select('trial_plan_code, trial_full_access')
+      .eq('id', organization.id)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (cancelled) return;
+        setTrialPlanCode((data?.trial_plan_code as string | null) ?? null);
+        setTrialFullAccess(!!data?.trial_full_access);
+      });
+    return () => { cancelled = true; };
+  }, [organization?.id]);
+
   const isTrial = organization?.subscription_status === 'trial';
-  const current = plans.find((p) => p.id === currentPlanId) ?? null;
+  // On a trial we honour trial_plan_code as the source of truth (set by
+  // start-trial-signup / create_self_signup_trial). The legacy license
+  // row may still point to whatever "cheapest plan" the pre-0075 code
+  // picked, which used to surface "DLP Add-on" as the Current Plan even
+  // though the customer chose Starter. Only paid (post-trial) orgs fall
+  // back to the license-derived plan.
+  const licensePlan = plans.find((p) => p.id === currentPlanId) ?? null;
+  const trialPlan   = plans.find((p) => p.code === trialPlanCode) ?? null;
+  const current = isTrial ? (trialPlan ?? licensePlan) : licensePlan;
   const currentPlanCode = current?.code ?? null;
+  const trialPlanLabel = trialPlanCode?.startsWith('starter') ? 'Starter'
+    : trialPlanCode?.startsWith('em') ? 'Employee Management'
+    : trialPlanCode?.startsWith('pro') ? 'Professional'
+    : null;
 
   // Pick the closest v2 plan SKU for an upgrade request when the user
   // clicks a tier in PlanGrid. The grid hands us back a v2 code (e.g.
@@ -1156,12 +1200,20 @@ function SubscriptionTab({
           <span className="w-5 h-5 flex items-center justify-center"><i className="ri-vip-crown-line text-emerald-400" /></span>
           <p className="text-[11px] uppercase tracking-wider text-emerald-300 font-medium">Your Current Plan</p>
           {isTrial && (
-            <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 text-[10px] font-semibold border border-blue-500/30">
-              14-Day Trial · all features unlocked
+            <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+              trialFullAccess
+                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                : 'bg-blue-500/20 text-blue-300 border-blue-500/30'
+            }`}>
+              {trialFullAccess
+                ? '14-Day Trial · full features (admin approved)'
+                : `14-Day Trial · ${trialPlanLabel ?? 'plan-scoped'} only`}
             </span>
           )}
         </div>
-        <h2 className="text-2xl font-poppins font-bold text-white">{current?.name ?? (isTrial ? 'Free Trial' : '—')}</h2>
+        <h2 className="text-2xl font-poppins font-bold text-white">
+          {isTrial ? (trialPlanLabel ?? current?.name ?? 'Free Trial') : (current?.name ?? '—')}
+        </h2>
         {current && (
           <p className="text-sm text-gray-300 mt-1">
             {current.seat_count} agent{current.seat_count === 1 ? '' : 's'}

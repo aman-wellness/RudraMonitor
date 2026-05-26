@@ -70,6 +70,11 @@ Deno.serve(async (req) => {
   if (agentErr) return json({ error: agentErr.message }, 500);
   if (!agent) return json({ error: "agent not found" }, 404);
 
+  // Seat enforcement (migration 0078): locked agents (beyond seat_count
+  // ordered by created_at) get a 402 so their DLP events never land.
+  const { data: seatOk } = await admin.rpc("agent_seat_ok", { p_agent_id: agent.id });
+  if (!seatOk) return json({ error: "seat_limit_exceeded" }, 402);
+
   // Per-org settings (whitelist domains, enabled per event-type, AI prompt)
   const { data: settings } = await admin
     .from("dlp_settings").select("*").eq("org_id", agent.org_id).maybeSingle();

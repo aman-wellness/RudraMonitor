@@ -24,7 +24,14 @@ type Body = {
   org_name?: string;
   phone?: string;
   country?: string;
+  // Which plan the customer wants to trial. Default 'starter-m' (basic
+  // monitoring). 'em-m' = employee-management-only trial. Anything else
+  // is rejected — full-feature trials require a super-admin approval via
+  // trial_extension_requests (see migration 0075).
+  trial_plan?: string;
 };
+
+const ALLOWED_TRIAL_PLANS = new Set(["starter-m", "em-m"]);
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -37,6 +44,10 @@ Deno.serve(async (req) => {
   const orgName  = (body.org_name ?? "").trim();
   const phone    = body.phone?.trim() || null;
   const country  = (body.country ?? "India").trim();
+  const trialPlanCode = (body.trial_plan ?? "starter-m").trim();
+  if (!ALLOWED_TRIAL_PLANS.has(trialPlanCode)) {
+    return json({ error: `Invalid trial_plan. Allowed: ${[...ALLOWED_TRIAL_PLANS].join(", ")}` }, 400);
+  }
 
   if (!fullName)                       return json({ error: "full_name required" }, 400);
   if (!email || !email.includes("@"))  return json({ error: "valid email required" }, 400);
@@ -77,15 +88,17 @@ Deno.serve(async (req) => {
     user = invited.user;
   }
 
-  // Pick the smallest active plan as the trial plan. If none, we still create
-  // a free trial — admin can assign a real plan later from the Customers page.
+  // Pick the plan by trial_plan_code. Defaults to starter-m. The trial is
+  // plan-scoped: org_effective_features() reads trial_plan_code and only
+  // unlocks the features attached to that plan row. Full-feature trial
+  // requires the customer to file a trial_extension_request that a super
+  // admin approves (see migration 0075).
   const { data: plan } = await admin
-    .from("plans").select("id, seat_count, billing_cycle")
+    .from("plans").select("id, code, seat_count, billing_cycle")
+    .eq("code", trialPlanCode)
     .eq("is_active", true)
-    .order("price_inr", { ascending: true })
-    .limit(1)
     .maybeSingle();
-  if (!plan) return json({ error: "No active plans configured. Contact support." }, 500);
+  if (!plan) return json({ error: `Plan '${trialPlanCode}' is not configured. Contact support.` }, 500);
 
   const trialEnds = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
 
@@ -98,6 +111,8 @@ Deno.serve(async (req) => {
       subscription_status: "trial",
       subscription_type: plan.billing_cycle,
       trial_ends_at: trialEnds,
+      trial_plan_code: plan.code,
+      trial_full_access: false,
       license_count: plan.seat_count,
     })
     .select("id")
@@ -131,7 +146,7 @@ Deno.serve(async (req) => {
   await admin.from("audit_log").insert({
     actor_user: user.id, actor_role: "customer",
     action: "customer.self_signup", target_type: "organization", target_id: org.id,
-    metadata: { plan_id: plan.id, trial_ends_at: trialEnds },
+    metadata: { plan_id: plan.id, plan_code: plan.code, trial_ends_at: trialEnds },
   });
 
   return json({ ok: true, organization_id: org.id, trial_ends_at: trialEnds });

@@ -63,9 +63,13 @@ const DEFAULT_LABELS: Record<FeatureCode, { label: string; icon: string; blurb: 
 export default function RequireFeature({ code, label, icon, blurb, children }: Props) {
   const features = useFeatures();
   if (features.loading) {
+    // Never speculatively render the gated children while the feature set
+    // is still resolving — on reload that would flash the real page for
+    // ~200ms before the upgrade CTA appears, leaking modules the org
+    // doesn't own.
     return (
       <DashboardLayout>
-        <div className="text-sm text-gray-500 p-6">Loading subscription…</div>
+        <div className="p-6" />
       </DashboardLayout>
     );
   }

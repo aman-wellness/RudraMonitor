@@ -86,6 +86,15 @@ Deno.serve(async (req) => {
     return json({ error: "subscription_inactive", hint: "trial_expired_or_unpaid" }, 402);
   }
 
+  // Seat enforcement (migration 0078). When the org's seat_count is lower
+  // than the number of enrolled agents, the newest ones (beyond cap) are
+  // "locked": ingest from them is silently refused so their data stops
+  // populating the dashboard. Upgrading the seat_count re-includes them.
+  const { data: seatOk } = await admin.rpc("agent_seat_ok", { p_agent_id: agent.id });
+  if (!seatOk) {
+    return json({ error: "seat_limit_exceeded", hint: "agent_over_license_cap" }, 402);
+  }
+
   const table = ALLOWED_TABLES[kind];
   const fields = ALLOWED_FIELDS[kind];
   const rows = payload.map((p) => {

@@ -14,7 +14,7 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ valid: false, reason: "method not allowed" }, 405);
 
-  let body: { license_key?: string; org_id?: string };
+  let body: { license_key?: string; org_id?: string; agent_id?: string };
   try { body = await req.json(); } catch { return json({ valid: false, reason: "invalid json" }, 400); }
   const key = (body.license_key ?? "").trim();
   if (!key) return json({ valid: false, reason: "license_key required" }, 400);
@@ -87,23 +87,33 @@ Deno.serve(async (req) => {
     });
   }
 
-  // Seat enforcement: how many agents this org has
+  // Seat enforcement: how many agents this org has + (if the caller
+  // identified its own agent via body.agent_id) whether THAT agent is
+  // within the cap. Previously we marked the whole license invalid when
+  // over-seated, locking every agent — including the legitimate ones.
+  // Now: the org is "valid", but each agent is told its own status via
+  // agent_seat_ok().
+  const orgId = lic.organization_id as string;
   const { count: seatsUsed } = await admin
     .from("agents")
     .select("id", { count: "exact", head: true })
-    .eq("org_id", lic.organization_id);
+    .eq("org_id", orgId);
 
-  const overSeated = (seatsUsed ?? 0) > Number(lic.seat_count ?? 0);
+  let seat_ok = true;
+  if (body.agent_id) {
+    const { data: ok } = await admin.rpc("agent_seat_ok", { p_agent_id: body.agent_id });
+    seat_ok = !!ok;
+  }
 
   return json({
-    valid: !overSeated,
+    valid: seat_ok,
     status: lic.status,
     expires_at: lic.expires_at,
-    organization_id: lic.organization_id,
+    organization_id: orgId,
     seat_count: lic.seat_count,
     seats_used: seatsUsed ?? 0,
     plan_code: (lic.plans as { code?: string } | null)?.code ?? null,
-    reason: overSeated ? "seat limit exceeded" : undefined,
+    reason: seat_ok ? undefined : "seat_limit_exceeded",
   });
 });
 

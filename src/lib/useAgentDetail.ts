@@ -117,7 +117,7 @@ export function useAgentDetail(agentId: string | undefined, range: DateRange = '
     setNotFound(false);
 
     const { data: agentRow, error: agentErr } = await supabase
-      .from('agents')
+      .from('agents_with_seat')
       .select('*')
       .eq('id', agentId)
       .maybeSingle();

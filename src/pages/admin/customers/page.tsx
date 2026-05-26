@@ -97,13 +97,28 @@ export default function AdminCustomers() {
   };
 
   const deleteCustomer = async (o: Row) => {
-    if (!confirm(`Delete customer "${o.name}"? All licenses, agents, and historical data for this organization will be removed. This cannot be undone.`)) return;
-    if (!confirm(`Type-check: this will permanently delete ALL of ${o.name}'s data. Continue?`)) return;
+    if (!confirm(`Delete customer "${o.name}"? All licenses, agents, historical data AND the customer's login accounts will be removed. The owner will need to sign up again to come back. This cannot be undone.`)) return;
+    if (!confirm(`Type-check: this will permanently delete ALL of ${o.name}'s data and revoke their login. Continue?`)) return;
     setBusy(o.id); setError(null);
-    const { error: e1 } = await supabase.from('organizations').delete().eq('id', o.id);
-    if (e1) setError(`Delete failed: ${e1.message}`);
-    else await load();
-    setBusy(null);
+    try {
+      const token = (await supabase.auth.getSession()).data.session?.access_token;
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-delete-customer`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ org_id: o.id }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body?.error ?? 'Delete failed');
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Delete failed');
+    } finally {
+      setBusy(null);
+    }
   };
 
   const resendOwnerInvite = async (o: Row) => {
@@ -261,11 +276,20 @@ function AddonChips({ org }: { org: Row }) {
     trial_ends_at?: string | null;
     subscription_status: string;
     features?: Record<string, boolean> | null;
+    trial_plan_code?: string | null;
+    trial_full_access?: boolean;
   };
+  // Plan-scoped trial: a chip is only ON if the customer actually has that
+  // module — by paid add-on, by selecting that trial path, or by super-admin
+  // full-access grant. Legacy pre-0075 orgs (trial_plan_code IS NULL) keep
+  // the old "all unlocked" semantics so we don't yank features mid-trial.
   const trialActive = o.subscription_status === 'trial' && o.trial_ends_at && new Date(o.trial_ends_at) > new Date();
-  const emOn = !!o.em_subscribed || !!trialActive;
+  const fullTrial = !!trialActive && (o.trial_full_access === true || o.trial_plan_code == null);
+  const emViaTrial = !!trialActive && (fullTrial || o.trial_plan_code === 'em-m' || o.trial_plan_code === 'em-y');
+  const dlpViaTrial = !!trialActive && (fullTrial || o.trial_plan_code === 'dlp-m' || o.trial_plan_code === 'dlp-y');
+  const emOn = !!o.em_subscribed || emViaTrial;
   const dlpOverride = o.features?.dlp;
-  const dlpOn = dlpOverride === true || (dlpOverride === undefined && !!trialActive);
+  const dlpOn = dlpOverride === true || (dlpOverride === undefined && dlpViaTrial);
   const chips: Array<{ label: string; on: boolean }> = [
     { label: 'EM', on: emOn },
     { label: 'DLP', on: dlpOn },

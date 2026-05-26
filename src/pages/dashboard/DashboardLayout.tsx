@@ -62,10 +62,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const features = useFeatures();
   // Filter the sidebar by the org's effective feature set. Items without a
   // `requires` clause stay visible; items requiring features the org hasn't
-  // bought (and isn't trialling) drop out entirely. While features are still
-  // loading, show everything to avoid a sidebar that pops items in late.
+  // bought drop out entirely. While features are still loading we HIDE
+  // gated items (rather than showing them) — otherwise on every page
+  // reload the sidebar flashes the full nav for ~200ms and then collapses,
+  // which leaks the existence of features the org doesn't subscribe to.
   const linkAllowed = (link: SidebarLink) => {
-    if (!link.requires || features.loading) return true;
+    if (!link.requires) return true;
+    if (features.loading) return false;
     return link.requires.every((code) => {
       switch (code) {
         case 'monitoring_basic': return features.monitoring_basic_enabled;

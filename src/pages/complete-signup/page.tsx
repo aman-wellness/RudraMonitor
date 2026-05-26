@@ -16,6 +16,7 @@ export default function CompleteSignup() {
   const [companyName, setCompanyName] = useState('');
   const [phone, setPhone] = useState('');
   const [country, setCountry] = useState('India');
+  const [trialPlan, setTrialPlan] = useState<'starter-m' | 'em-m'>('starter-m');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -24,9 +25,10 @@ export default function CompleteSignup() {
     if (!companyName.trim()) { setError('Company name required'); return; }
     setSubmitting(true); setError(null);
     const { error: rpcErr } = await supabase.rpc('create_self_signup_trial', {
-      p_org_name: companyName.trim(),
-      p_phone:    phone.trim() || null,
-      p_country:  country.trim() || 'India',
+      p_org_name:   companyName.trim(),
+      p_phone:      phone.trim() || null,
+      p_country:    country.trim() || 'India',
+      p_trial_plan: trialPlan,
     });
     setSubmitting(false);
     if (rpcErr) { setError(rpcErr.message); return; }
@@ -56,6 +58,33 @@ export default function CompleteSignup() {
           )}
 
           <form onSubmit={submit} className="space-y-4">
+            <div>
+              <label className="block text-xs text-gray-400 uppercase tracking-wider mb-2">Which trial do you want?</label>
+              <div className="grid grid-cols-1 gap-2">
+                {([
+                  { code: 'starter-m', title: 'Starter', desc: 'Monitoring, screenshots, video, productivity reports' },
+                  { code: 'em-m',      title: 'Employee Management', desc: 'Attendance, leaves, payroll, KPIs' },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.code}
+                    type="button"
+                    onClick={() => setTrialPlan(opt.code)}
+                    className={`text-left rounded-lg border px-3 py-2.5 transition-colors ${
+                      trialPlan === opt.code
+                        ? 'border-emerald-500 bg-emerald-500/10'
+                        : 'border-dark-700 bg-dark-800 hover:border-dark-600'
+                    }`}
+                  >
+                    <p className="text-sm text-white font-medium">{opt.title}</p>
+                    <p className="text-[11px] text-gray-500 mt-0.5">{opt.desc}</p>
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-gray-600 mt-1.5">
+                Need every module during the trial? Request full-features access from your Subscription page after signup — a super admin will review.
+              </p>
+            </div>
+
             <div>
               <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1.5">Company Name *</label>
               <input

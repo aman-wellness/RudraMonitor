@@ -731,24 +731,46 @@ function UpgradeRequests({ orgId, onApproved }: { orgId: string; onApproved: () 
     setBusy(r.id);
 
     if (decision === 'approved') {
-      // Flip the active license to the requested plan + bump seat_count.
+      // We need the target plan's `code` AND current org state to know
+      // whether we're switching a trial or a paid subscription.
       const seats = r.plans?.seat_count ?? 0;
-      const { data: lic } = await supabase
-        .from('licenses')
-        .select('id, status')
-        .eq('organization_id', orgId)
-        .eq('status', 'active')
-        .order('issued_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+      const [{ data: planRow }, { data: orgRow }, { data: lic }] = await Promise.all([
+        supabase.from('plans').select('code').eq('id', r.plan_id).maybeSingle(),
+        supabase.from('organizations')
+          .select('subscription_status, trial_plan_code, em_subscribed')
+          .eq('id', orgId).maybeSingle(),
+        supabase.from('licenses').select('id, status')
+          .eq('organization_id', orgId).eq('status', 'active')
+          .order('issued_at', { ascending: false }).limit(1).maybeSingle(),
+      ]);
+      const newCode = (planRow as { code?: string } | null)?.code ?? null;
+
       if (lic?.id) {
         const { error: licErr } = await supabase
           .from('licenses')
           .update({ plan_id: r.plan_id, seat_count: seats })
           .eq('id', lic.id);
         if (licErr) { alert(`Failed to switch license: ${licErr.message}`); setBusy(null); return; }
-        await supabase.from('organizations').update({ license_count: seats }).eq('id', orgId);
       }
+
+      // Build the org patch:
+      //   • license_count mirrors seats so the agent-side checks stay in sync.
+      //   • If the customer is still on a trial, point trial_plan_code at
+      //     the new plan so org_effective_features() unlocks the right set
+      //     for the remainder of the trial.
+      //   • EM-family plans flip em_subscribed=true so the EM card on the
+      //     admin detail page and org_em_active() show ACTIVE without
+      //     waiting on the legacy "via trial" inference.
+      const orgPatch: Record<string, unknown> = { license_count: seats };
+      if (orgRow?.subscription_status === 'trial' && newCode) {
+        orgPatch.trial_plan_code = newCode;
+      }
+      if (newCode === 'em-m' || newCode === 'em-y' || newCode === 'em-addon-m' || newCode === 'em-addon-y') {
+        orgPatch.em_subscribed = true;
+        if (!orgRow?.em_subscribed) orgPatch.em_subscribed_since = new Date().toISOString();
+      }
+      const { error: orgErr } = await supabase.from('organizations').update(orgPatch).eq('id', orgId);
+      if (orgErr) { alert(`Failed to update org: ${orgErr.message}`); setBusy(null); return; }
     }
 
     const { error } = await supabase
@@ -858,7 +880,42 @@ function SubscriptionControls({
 
   const trialDate = (org as unknown as { trial_ends_at: string | null }).trial_ends_at;
   const emSubscribed = !!(org as unknown as { em_subscribed: boolean }).em_subscribed;
-  const emActiveByTrial = org.subscription_status === 'trial' && trialDate && new Date(trialDate) > new Date();
+  // EM is "via trial" only when the trial actually grants EM — i.e. the
+  // customer signed up for the EM-scoped trial or a super admin granted
+  // full-features access. A Starter (or DLP, or Professional-only) trial
+  // does NOT include EM, so we must NOT mark the EM card as active.
+  const trialPlanCode  = (org as unknown as { trial_plan_code: string | null }).trial_plan_code ?? null;
+  const trialFullAccess = !!(org as unknown as { trial_full_access: boolean }).trial_full_access;
+  const trialActive = org.subscription_status === 'trial' && !!trialDate && new Date(trialDate) > new Date();
+
+  // Resolve a friendly plan label so the status row shows WHICH plan is
+  // active (not just "Trial"). Trials read trial_plan_code; paid orgs
+  // read from the most-recent active license.
+  const [planLabel, setPlanLabel] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (trialActive && trialPlanCode) {
+        const { data } = await supabase.from('plans').select('name').eq('code', trialPlanCode).maybeSingle();
+        if (!cancelled) setPlanLabel((data?.name as string | null) ?? null);
+        return;
+      }
+      const { data: lic } = await supabase
+        .from('licenses').select('plans(name, code)').eq('organization_id', org.id)
+        .eq('status', 'active').order('issued_at', { ascending: false }).limit(1).maybeSingle();
+      const row = (lic as { plans?: { name?: string } | { name?: string }[] | null } | null)?.plans;
+      const name = Array.isArray(row) ? row[0]?.name : row?.name;
+      if (!cancelled) setPlanLabel(name ?? null);
+    })();
+    return () => { cancelled = true; };
+  }, [org.id, trialPlanCode, org.subscription_status, trialFullAccess, trialActive]);
+  const trialGrantsEm = trialActive && (
+    trialFullAccess
+    || trialPlanCode === null              // legacy pre-0075 org — keep old behaviour
+    || trialPlanCode === 'em-m'
+    || trialPlanCode === 'em-y'
+  );
+  const emActiveByTrial = trialGrantsEm;
 
   const toggleEm = async (enable: boolean) => {
     const action = enable ? 'enable' : 'disable';
@@ -882,8 +939,14 @@ function SubscriptionControls({
         <div className="flex items-center justify-between mb-2">
           <div>
             <p className="text-xs text-gray-400 uppercase tracking-wider">Subscription status</p>
-            <div className="flex items-center gap-2 mt-1">
+            <div className="flex items-center gap-2 mt-1 flex-wrap">
               <StatusPill status={org.subscription_status} />
+              {planLabel && (
+                <span className="px-2 py-0.5 text-[10px] rounded-md border bg-cyan-500/10 text-cyan-300 border-cyan-500/30">
+                  {planLabel}
+                  {trialActive && trialFullAccess && <span className="ml-1 text-emerald-300">· full features</span>}
+                </span>
+              )}
               {trialDate && org.subscription_status === 'trial' && (
                 <span className="text-[11px] text-gray-500">
                   Trial ends {new Date(trialDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
@@ -1019,7 +1082,10 @@ function FeatureToggles({ orgId, isTrial }: { orgId: string; isTrial: boolean })
   useEffect(() => {
     (async () => {
       const { data: org } = await supabase
-        .from('organizations').select('features').eq('id', orgId).maybeSingle();
+        .from('organizations')
+        .select('features, trial_plan_code, trial_full_access, subscription_status')
+        .eq('id', orgId)
+        .maybeSingle();
       // null = no override (= use plan default). true/false = explicit override.
       const map: Record<string, boolean | null> = {};
       for (const f of FEATURE_LIST) {
@@ -1028,7 +1094,24 @@ function FeatureToggles({ orgId, isTrial }: { orgId: string; isTrial: boolean })
       }
       setFeatures(map);
 
-      // What does the active plan include? Used to show "Plan default" pill.
+      // Resolve which features the org's CURRENT subscription bundles:
+      //   • trial w/ full access → every feature (super-admin granted)
+      //   • trial with a trial_plan_code → that plan's features
+      //   • otherwise → the active license's plan
+      // Falling back to the license keeps paid orgs (and pre-0075 trials
+      // without a trial_plan_code) working unchanged.
+      const onTrial = org?.subscription_status === 'trial';
+      const fullAccess = !!org?.trial_full_access;
+      if (onTrial && fullAccess) {
+        setPlanFeats(['monitoring_basic','screenshots','videos','live','remote','dlp','employee_management','video_recording','ai_alerts','productivity_reports']);
+        return;
+      }
+      if (onTrial && org?.trial_plan_code) {
+        const { data: tp } = await supabase
+          .from('plans').select('features_included').eq('code', org.trial_plan_code).maybeSingle();
+        setPlanFeats((tp?.features_included as string[] | null) ?? []);
+        return;
+      }
       const { data: lic } = await supabase
         .from('licenses').select('plans(features_included)')
         .eq('organization_id', orgId).eq('status','active')
@@ -1058,13 +1141,25 @@ function FeatureToggles({ orgId, isTrial }: { orgId: string; isTrial: boolean })
         Each feature has 3 states: <strong className="text-emerald-300">On</strong> (force enabled),
         {' '}<strong className="text-rose-300">Off</strong> (force disabled), or
         {' '}<strong className="text-gray-300">Plan default</strong> (use what the plan bundles).
-        {isTrial && <span className="block mt-1 text-blue-300">⓵ This customer is on trial — all features are unlocked unless explicitly set to Off below.</span>}
+        {isTrial && <span className="block mt-1 text-blue-300">⓵ This customer is on trial — only their plan's features are unlocked (super-admin grant or "Approve & switch" upgrades the trial). "Plan default" below uses the active plan; "On" force-enables regardless.</span>}
       </p>
       <div className="space-y-2">
         {FEATURE_LIST.map((f) => {
           const v = features[f.key];
-          const planIncludes = planFeats.includes(f.key);
-          const effective = v === null ? (isTrial || planIncludes) : v;
+          // Legacy plan rows used `productivity_reports`, `video_recording`,
+          // `ai_alerts`, `screenshots` codes; v2 plans expand those into
+          // `monitoring_basic` / `screenshots` / `videos`. Mirror the
+          // mapping public.org_effective_features() applies so the toggle
+          // reflects what the customer's gate actually sees.
+          const inPlan = (k: string) => planFeats.includes(k);
+          const planIncludes = inPlan(f.key) || (
+            f.key === 'productivity_reports' ? inPlan('monitoring_basic') :
+            f.key === 'screenshots'          ? inPlan('monitoring_basic') || inPlan('screenshots') :
+            f.key === 'video_recording'      ? inPlan('videos') :
+            f.key === 'ai_alerts'            ? inPlan('monitoring_basic') :
+            false
+          );
+          const effective = v === null ? planIncludes : v;
           return (
             <div key={f.key} className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-dark-900/50 border border-dark-700">
               <div className="min-w-0">

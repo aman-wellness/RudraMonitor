@@ -124,6 +124,26 @@ Deno.serve(async (req) => {
     return json({ agent_id: existing.id, enroll_token: existing.enroll_token, org_id: org.id });
   }
 
+  // Hard seat enforcement (migration 0078): block fresh enrollments when
+  // the org has already filled its license_count. Existing machines fall
+  // through above (idempotent re-enroll always allowed) so an agent that
+  // legitimately holds a seat can reinstall without losing it. New
+  // machines get a 402 with a clear message so the agent UI can surface
+  // "license limit exceeded" instead of failing silently.
+  const [{ data: cap }, { count: usedSeats }] = await Promise.all([
+    admin.rpc("org_seat_cap", { p_org_id: org.id }),
+    admin.from("agents").select("id", { count: "exact", head: true }).eq("org_id", org.id),
+  ]);
+  const capN = Number(cap ?? 0);
+  if (capN > 0 && (usedSeats ?? 0) >= capN) {
+    return json({
+      error: `license limit exceeded — your plan covers ${capN} agent${capN === 1 ? '' : 's'}, ${usedSeats} already enrolled. Upgrade your subscription or remove an existing agent before installing a new one.`,
+      code: "seat_limit_exceeded",
+      seat_cap: capN,
+      seats_used: usedSeats ?? 0,
+    }, 402);
+  }
+
   const { data: created, error: insertErr } = await admin
     .from("agents")
     .insert({

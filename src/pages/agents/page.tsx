@@ -218,6 +218,27 @@ export default function AgentsPage() {
         </div>
 
         {/* Page Header */}
+        {(() => {
+          const lockedCount = agents.filter((a) => a.seatLocked).length;
+          if (lockedCount === 0) return null;
+          return (
+            <div className="bg-rose-500/10 border border-rose-500/30 rounded-xl px-4 py-3 mb-4 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-rose-200">
+                  <i className="ri-lock-2-line mr-1" />
+                  {lockedCount} agent{lockedCount === 1 ? '' : 's'} locked — over your licensed seat count.
+                </p>
+                <p className="text-xs text-rose-300/80 mt-0.5">
+                  Locked agents stop reporting data. Upgrade your subscription to re-activate them, or remove other agents to free up seats.
+                </p>
+              </div>
+              <a href="/subscription" className="text-xs font-medium bg-rose-500/20 hover:bg-rose-500/30 text-rose-100 border border-rose-500/40 rounded-lg px-3 py-1.5 whitespace-nowrap">
+                Upgrade plan
+              </a>
+            </div>
+          );
+        })()}
+
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div>
             <h1 className="text-xl font-poppins font-bold text-white mb-1">All Agents</h1>
@@ -421,9 +442,16 @@ export default function AgentsPage() {
                         </span>
                       </td>
                       <td className="px-4 py-3">
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide ${statusBadge(agent.status)}`}>
-                          {statusLabel(agent.status)}
-                        </span>
+                        {agent.seatLocked ? (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide bg-rose-500/15 text-rose-300 border border-rose-500/30"
+                                title="This agent is beyond your licensed seat count. Upgrade your subscription or remove another agent to re-activate it.">
+                            🔒 Locked
+                          </span>
+                        ) : (
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide ${statusBadge(agent.status)}`}>
+                            {statusLabel(agent.status)}
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">

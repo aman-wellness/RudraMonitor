@@ -7,6 +7,10 @@ export default function Signup() {
   const navigate = useNavigate();
   const { signUp, signInWithGoogle, signInWithMicrosoft, refreshOrganization } = useAuth();
   const [step, setStep] = useState(1);
+  // Which trial bundle the customer wants. starter-m = basic monitoring
+  // (default), em-m = employee-management-only. Full-features trial
+  // requires a super-admin approval after signup (Subscription page).
+  const [trialPlan, setTrialPlan] = useState<'starter-m' | 'em-m'>('starter-m');
   const [formData, setFormData] = useState({
     fullName: '',
     email: '',
@@ -125,11 +129,12 @@ export default function Signup() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: import.meta.env.VITE_SUPABASE_ANON_KEY },
         body: JSON.stringify({
-          full_name: formData.fullName,
-          email:     formData.email,
-          org_name:  formData.companyName,
-          phone:     formData.phone || null,
-          country:   formData.country,
+          full_name:  formData.fullName,
+          email:      formData.email,
+          org_name:   formData.companyName,
+          phone:      formData.phone || null,
+          country:    formData.country,
+          trial_plan: trialPlan,
         }),
       });
       const body = await res.json();
@@ -313,6 +318,35 @@ export default function Signup() {
               </>
             ) : (
               <>
+                <div>
+                  <label className="block text-sm text-gray-400 mb-2">
+                    Which trial do you want?
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {([
+                      { code: 'starter-m', title: 'Starter', desc: 'Monitoring, screenshots, video, productivity reports' },
+                      { code: 'em-m',      title: 'Employee Management', desc: 'Attendance, leaves, payroll, KPIs' },
+                    ] as const).map((opt) => (
+                      <button
+                        key={opt.code}
+                        type="button"
+                        onClick={() => setTrialPlan(opt.code)}
+                        className={`text-left rounded-lg border px-3 py-2.5 transition-colors ${
+                          trialPlan === opt.code
+                            ? 'border-emerald-500 bg-emerald-500/10'
+                            : 'border-dark-700 bg-dark-900 hover:border-dark-600'
+                        }`}
+                      >
+                        <p className="text-sm text-white font-medium">{opt.title}</p>
+                        <p className="text-[11px] text-gray-500 mt-0.5">{opt.desc}</p>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[11px] text-gray-600 mt-1.5">
+                    Need every module during the trial? You can request full-features access from your Subscription page after signing up — a super admin will review.
+                  </p>
+                </div>
+
                 <div>
                   <label className="block text-sm text-gray-400 mb-1.5">
                     Company Name
