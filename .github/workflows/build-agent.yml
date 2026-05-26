@@ -70,6 +70,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # macos-14 runner ships Xcode 15.4 by default. webrtc-sys (the
+      # libwebrtc bindings LiveKit pulls in transitively) doesn't compile
+      # against the 14.5 SDK's newer libc++ — fails with
+      #   error: implicit instantiation of undefined template
+      #          'std::__pointer_traits_element_type<rust::Slice<…>::iterator>'
+      # Pinning to Xcode 15.2 (macOS 14.0 SDK, older libc++) sidesteps it.
+      # Xcode_15.2.app is preinstalled on every macos-14 image.
+      - name: Pin Xcode for webrtc-sys C++ compat
+        if: matrix.os == 'macos-14'
+        run: sudo xcode-select -s /Applications/Xcode_15.2.app
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
