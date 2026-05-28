@@ -1143,6 +1143,25 @@ pub fn run() {
             // hatch when stale state exists). Tray is the minimum visible UI.
             build_tray(app)?;
 
+            // Re-arm autostart on every launch when the agent is enrolled.
+            // We already call `enable()` once at the end of enroll() (line
+            // ~325) — but customers reported the agent failing to come back
+            // after Windows shutdown/restart. Three reasons that can happen:
+            //   • the customer toggled the switch off and forgot,
+            //   • a Windows feature-update wiped HKCU\...\Run entries,
+            //   • antivirus quarantined the registry value as "startup app".
+            // `enable()` is idempotent — if the entry is already correct,
+            // it's a no-op. If it's missing, this restores it. We also
+            // re-write it on every launch so an auto-update to a new
+            // install path immediately repoints autostart at the new exe.
+            if enrolled {
+                let mgr = app.autolaunch();
+                match mgr.enable() {
+                    Ok(()) => log::info!("autostart: ensured enabled at boot"),
+                    Err(e) => log::warn!("autostart: enable failed: {e}"),
+                }
+            }
+
             // Auto-show the main window ONLY on fresh installs (no enrollment
             // saved yet). If the agent has an enrollment, FORCE hide the window
             // — macOS occasionally restores it visible across reboots when the
