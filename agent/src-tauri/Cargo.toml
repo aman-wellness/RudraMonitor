@@ -1,6 +1,6 @@
 [package]
 name = "rudrans-agent"
-version = "0.2.48"
+version = "0.2.49"
 description = "Rudrans employee monitoring agent"
 edition = "2021"
 rust-version = "1.77"
@@ -42,11 +42,21 @@ notify = "6"
 notify-debouncer-mini = "0.4"
 sha2 = "0.10"
 hex = "0.4"
-# WebRTC live-monitoring stream. The agent acts as a peer that the
-# dashboard browser connects to via the rudrans.com TURN server.
-# Capture frames come from a bundled-ffmpeg pipe (h264-annexb stdout)
-# which we already have signed + TCC-trusted thanks to v0.2.24.
+# Live/Remote screen streaming.
+#
+# webrtc-rs 0.13 — used both by the legacy direct-to-dashboard signaling
+# (kept for compatibility) and the new v0.3.0 LiveKit-native publisher
+# (`livekit_native.rs`). The LiveKit Rust SDK pulls in `webrtc-sys` C++
+# bindings that won't compile against modern Apple libc++; we sidestep
+# that by speaking LiveKit's WebSocket+protobuf signaling ourselves and
+# using webrtc-rs for the actual PeerConnection underneath.
 webrtc = "0.13"
+# Pure-Rust LiveKit protocol bindings (just prost-generated protobufs —
+# no libwebrtc, builds clean on every platform). Used for SignalRequest /
+# SignalResponse / TrackInfo messages over the SFU's WebSocket.
+livekit-protocol = "0.7"
+prost = "0.12"
+tokio-tungstenite = { version = "0.21", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 bytes = "1"
 uuid = { version = "1", features = ["v4"] }
 # Remote Desktop: cross-platform input synthesis (CGEvent on macOS, SendInput
