@@ -398,19 +398,49 @@ async fn run_session(
         }));
     }
 
-    // --- WHIP exchange ---
+    // ============================================================
+    // CRITICAL TIMING NOTE
+    // ============================================================
+    // LiveKit Ingress times out the publisher within ~700-1000ms of
+    // ICE reaching Connected if no RTP frames have arrived. We hit
+    // this on every session in v0.2.52/0.2.53 testing:
+    //
+    //   ingress: ICE Connected
+    //   +700ms : "source encoder not ready" → session torn down
+    //   +1900ms: track has started ← TOO LATE, already gone
+    //
+    // ffmpeg spawn + first-keyframe takes 1-2 s on macOS avfoundation
+    // (slow capture-device init). If we sequence ffmpeg AFTER the
+    // WHIP exchange, we miss the window.
+    //
+    // Fix: spawn the ffmpeg pump BEFORE the WHIP exchange so it's
+    // running in parallel. By the time ICE connects, ffmpeg has had
+    // 1-2 s of head-start and is already pushing frames into the
+    // track buffer. webrtc-rs holds them until the connection is up
+    // and then flushes RTP immediately on Connected. Ingress sees
+    // media within ~50ms of ICE Connected → no timeout.
+    let pump_video_track = Arc::clone(&video_track);
+    let pump_stop_flag = stop_flag.clone();
+    let pump_stream_params = stream_params.clone();
+    let pump_reload_flag = reload_flag.clone();
+    let pump_handle = tauri::async_runtime::spawn(async move {
+        pump_ffmpeg_into_track(
+            pump_video_track,
+            pump_stop_flag,
+            pump_stream_params,
+            pump_reload_flag,
+        )
+        .await
+    });
+
+    // --- WHIP exchange (running in parallel with ffmpeg startup) ---
     //
     // 1. createOffer / setLocalDescription.
-    // 2. POST offer.sdp to /whip/<room>. Body is `application/sdp`,
-    //    Authorization is Bearer <livekit-token>. Response is 201
-    //    Created with body=answer SDP and Location header pointing at
-    //    the per-session ICE resource (for trickle PATCH).
+    // 2. POST offer.sdp to /whip/<stream_key>. Body=application/sdp,
+    //    Authorization=Bearer <stream_key>. Response: 201 with answer
+    //    SDP body + Location header (ICE-trickle resource URL).
     // 3. setRemoteDescription(answer).
-    // 4. on_ice_candidate: PATCH each new candidate to the Location URL.
-    //
-    // No SDP munging needed — LiveKit Ingress accepts whatever H.264
-    // profile webrtc-rs negotiates and re-packages it for subscribers
-    // automatically.
+    // 4. on_ice_candidate: PATCH each candidate to the Location URL.
     let offer = pc
         .create_offer(None)
         .await
@@ -496,17 +526,16 @@ async fn run_session(
         }));
     }
 
-    // Drive the video pipeline. Blocks until ffmpeg exits OR stop_flag
-    // is set by the ICE state callback above.
-    let pump_result = pump_ffmpeg_into_track(
-        video_track,
-        stop_flag.clone(),
-        stream_params.clone(),
-        reload_flag.clone(),
-    )
-    .await;
-    if let Err(e) = pump_result {
-        log::warn!("whip pump failed: {e}");
+    // Wait for the ffmpeg pump task (spawned above, running in
+    // parallel with the WHIP handshake). It exits when stop_flag is
+    // set (ICE Failed/Closed/15s-Disconnected, or livekit_stop) OR
+    // when ffmpeg itself dies unexpectedly. Whichever comes first is
+    // the session's natural end.
+    let pump_result = pump_handle.await;
+    match pump_result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => log::warn!("whip pump failed: {e}"),
+        Err(e) => log::warn!("whip pump task join failed: {e}"),
     }
 
     // Best-effort tell LiveKit we're going away. WHIP defines DELETE
