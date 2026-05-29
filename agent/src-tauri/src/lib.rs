@@ -62,7 +62,22 @@ const WINDOW_POLL_SECS: u64 = 5;
 const WINDOW_MAX_SESSION_SECS: i64 = 30;
 const SCREENSHOT_INTERVAL_SECS: u64 = 300;
 const IDLE_POLL_SECS: u64 = 30;
-const UPDATE_CHECK_INTERVAL_SECS: u64 = 30 * 60; // 30 minutes — balance bandwidth vs propagation speed
+// Aggressive update cadence: customers reported Windows agents stuck
+// on old versions for days because the 30-min interval combined with
+// the 20-s startup delay meant agents that came online for short
+// sessions (laptop opened, employee checked email, closed laptop)
+// often missed every check window. New cadence (v0.3.3+):
+//   • Startup check after 3 s (was 20 s) — fires before the user can
+//     realistically close the lid again.
+//   • 60-second "fast lane" for the first 10 minutes — catches
+//     anything published while the machine was offline.
+//   • 10-minute steady-state interval (was 30 min) — manifest fetch
+//     is ~300 bytes uncompressed; bandwidth cost is negligible vs
+//     propagation speed.
+const UPDATE_CHECK_STARTUP_DELAY_SECS: u64 = 3;
+const UPDATE_CHECK_FAST_INTERVAL_SECS: u64 = 60;
+const UPDATE_CHECK_FAST_DURATION_SECS: u64 = 10 * 60;
+const UPDATE_CHECK_INTERVAL_SECS: u64 = 10 * 60;
 const SETTINGS_REFRESH_SECS: u64 = 60; // 1 min — admin toggles propagate within this window.
 
 // Defaults used when settings can't be fetched yet (first launch, network blip).
@@ -1352,8 +1367,33 @@ async fn post_dlp_event(state: &AppState, ev: dlp::DlpFileEvent) -> Result<()> {
 
 fn spawn_updater_loop(handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
-        // Small initial delay so the rest of setup completes first.
-        sleep(Duration::from_secs(20)).await;
+        // Tight startup window — fires before the user has a chance to
+        // close their laptop again on a quick-session machine. 3 s is
+        // long enough for Tauri setup + system tray to settle.
+        sleep(Duration::from_secs(UPDATE_CHECK_STARTUP_DELAY_SECS)).await;
+
+        // FAST LANE: for the first 10 minutes after boot, check every
+        // 60 s. This is where most missed-update scenarios live —
+        // machine was offline when v0.X.Y was released, comes online
+        // briefly, the old 30-min interval would still miss the
+        // window. With this loop the agent will fetch the latest within
+        // 1 min of being online.
+        let fast_lane_deadline = std::time::Instant::now()
+            + Duration::from_secs(UPDATE_CHECK_FAST_DURATION_SECS);
+        while std::time::Instant::now() < fast_lane_deadline {
+            if let Err(e) = check_for_update(&handle).await {
+                log::warn!("update check (fast) failed: {e}");
+            }
+            sleep(Duration::from_secs(UPDATE_CHECK_FAST_INTERVAL_SECS)).await;
+        }
+
+        // STEADY STATE: every 10 min forever. Combined with the fast
+        // lane above, this gives us:
+        //   • <1 min from publish to install if agent is online at
+        //     publish time.
+        //   • <1 min from agent-online to install if agent comes back
+        //     online after a publish.
+        //   • <10 min in any other steady-state edge case.
         loop {
             if let Err(e) = check_for_update(&handle).await {
                 log::warn!("update check failed: {e}");
