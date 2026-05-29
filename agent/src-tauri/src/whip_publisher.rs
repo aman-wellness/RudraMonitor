@@ -64,15 +64,22 @@ pub fn spawn_whip_loop(state: AppState) {
             sleep(Duration::from_secs(5)).await;
         }
         log::info!("whip: publisher loop starting");
-        // The poll cursor mirrors webrtc_stream's so the two loops don't
-        // race on the same table — they look at DIFFERENT message kinds
-        // (`offer` vs `livekit_start`) so coexisting is safe during the
-        // dual-stack rollout window (v0.2.52 ships both paths; once the
-        // dashboard's livekit-client side has propagated, Block G of the
-        // pivot deletes webrtc_stream.rs entirely).
+        // Singleton session state. Two trips through the poll loop
+        // simultaneously firing run_session() leads to TWO ffmpegs
+        // racing for the same screen-capture device — the OS gives
+        // only ONE of them access (macOS avfoundation, Windows gdigrab,
+        // Linux x11grab all single-grab the display). The losing
+        // ffmpeg starts but produces zero frames, Ingress reports
+        // "source encoder not ready" after ~8 s and drops the session.
+        //
+        // `active` flips true while a WHIP session is running;
+        // `stop_current` is the AtomicBool the ICE-state callback +
+        // livekit_stop handler signal to tear down the in-flight session.
+        let active = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_current = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut since = chrono::Utc::now().to_rfc3339();
         loop {
-            match poll_once(&state, &since).await {
+            match poll_once(&state, &since, &active, &stop_current).await {
                 Ok(Some(new_since)) => since = new_since,
                 Ok(None) => {}
                 Err(e) => {
@@ -89,7 +96,12 @@ pub fn spawn_whip_loop(state: AppState) {
 /// with `direction=to_agent`. Format mirrors the old offer envelope so
 /// the edge function needs no changes (Block A through G keep the table
 /// schema stable; only the kinds it carries shift).
-async fn poll_once(state: &AppState, since: &str) -> Result<Option<String>> {
+async fn poll_once(
+    state: &AppState,
+    since: &str,
+    active: &Arc<std::sync::atomic::AtomicBool>,
+    stop_current: &Arc<std::sync::atomic::AtomicBool>,
+) -> Result<Option<String>> {
     let cfg = state.config.lock().await.clone();
     let enrollment = cfg
         .enrollment
@@ -136,14 +148,33 @@ async fn poll_once(state: &AppState, since: &str) -> Result<Option<String>> {
     let mut newest = None;
     for msg in body.messages {
         newest = Some(msg.created_at.clone());
-        // We only care about LiveKit-flavoured messages here.
-        // Anything else (legacy `offer`/`ice_candidate`) is left for
-        // webrtc_stream's poller to consume.
+        // livekit_stop: tell whatever session is currently running to
+        // tear down. The actual cleanup happens inside run_session
+        // (kills ffmpeg, closes PC) once stop_current flips true.
+        if msg.kind == "livekit_stop" {
+            log::info!("whip: livekit_stop received");
+            stop_current.store(true, std::sync::atomic::Ordering::SeqCst);
+            continue;
+        }
+        // We only care about LiveKit-flavoured messages here. Anything
+        // else (legacy `offer`/`ice_candidate`) is left for webrtc_stream's
+        // poller to consume.
         if msg.kind != "livekit_start" {
             continue;
         }
+        // Singleton: if a session is already running, IGNORE this start
+        // (dashboard hard-refreshes spam livekit_start; second one would
+        // launch a parallel ffmpeg that loses the screen-capture race
+        // with the first, producing zero frames and an "ingress: source
+        // encoder not ready" failure ~8 s later). Letting the existing
+        // session keep running matches what the user actually wants on
+        // hard-refresh: video appears as soon as the new dashboard
+        // subscriber joins the room.
+        if active.load(std::sync::atomic::Ordering::SeqCst) {
+            log::info!("whip: livekit_start ignored — session already active");
+            continue;
+        }
         let session_id = msg.session_id.clone().unwrap_or_default();
-        // optional caller-supplied room override, defaults to per-agent.
         let room = msg
             .payload
             .get("room")
@@ -151,12 +182,24 @@ async fn poll_once(state: &AppState, since: &str) -> Result<Option<String>> {
             .map(|s| s.to_string())
             .unwrap_or_else(|| format!("agent_{}", enrollment.agent_id));
         log::info!("whip: livekit_start for session={session_id} room={room}");
+        active.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Fresh stop flag for THIS session — if a previous stop arrived
+        // during teardown of the last session, ignore it.
+        stop_current.store(false, std::sync::atomic::Ordering::SeqCst);
         let st = state.clone();
         let aid = enrollment.agent_id.clone();
+        let active_for_session = active.clone();
+        let stop_for_session = stop_current.clone();
         tauri::async_runtime::spawn(async move {
-            if let Err(e) = run_session(&st, &aid, &session_id, &room).await {
+            let result = run_session(&st, &aid, &session_id, &room, stop_for_session).await;
+            if let Err(e) = result {
                 log::warn!("whip session {session_id} failed: {e}");
+            } else {
+                log::info!("whip session {session_id} ended cleanly");
             }
+            // Whatever the outcome, release the singleton lock so the
+            // next livekit_start can claim it.
+            active_for_session.store(false, std::sync::atomic::Ordering::SeqCst);
         });
     }
     Ok(newest)
@@ -233,6 +276,7 @@ async fn run_session(
     agent_id: &str,
     _session_id: &str,
     room: &str,
+    stop_signal: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<()> {
     let ingress = fetch_livekit_ingress(state, room).await?;
     // The Ingress's `url` is the exact endpoint to POST WHIP to;
@@ -301,7 +345,28 @@ async fn run_session(
 
     // Stop flag — pulled by ICE state callback below and by the
     // ffmpeg pump so we can tear everything down on a single signal.
+    // Also driven by `stop_signal` (livekit_stop from the dashboard)
+    // via the bridging task below.
     let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        // Bridge: forward livekit_stop signals from the poll-loop side
+        // into this session's stop_flag. Poll the AtomicBool on a 500ms
+        // cadence — cheap and matches the existing ICE-state callback
+        // pattern (no extra channels needed). Task exits when stop_flag
+        // is set (avoiding leaks across short-lived sessions).
+        let stop_flag = stop_flag.clone();
+        let stop_signal = stop_signal.clone();
+        tauri::async_runtime::spawn(async move {
+            while !stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                if stop_signal.load(std::sync::atomic::Ordering::SeqCst) {
+                    log::info!("whip: livekit_stop signal received, tearing down session");
+                    stop_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    break;
+                }
+                sleep(Duration::from_millis(500)).await;
+            }
+        });
+    }
     {
         let stop_flag = stop_flag.clone();
         let is_disconnected = Arc::new(std::sync::atomic::AtomicBool::new(false));
