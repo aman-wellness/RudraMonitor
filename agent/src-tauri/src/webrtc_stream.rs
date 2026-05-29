@@ -723,6 +723,31 @@ pub(crate) async fn pump_ffmpeg_into_track(
     let ffmpeg_bin = crate::ffmpeg::locate_ffmpeg()
         .ok_or_else(|| anyhow!("ffmpeg not bundled"))?;
     let frame_duration = Duration::from_millis(1000 / TARGET_FPS as u64);
+    // Pacing target: send frames at wall-clock TARGET_FPS rate.
+    //
+    // WHY this matters: with the LiveKit pivot we now spawn ffmpeg in
+    // parallel with the WHIP handshake (so the encoder has its first
+    // frame ready by the time ICE connects — see whip_publisher.rs).
+    // That means by the time pump starts reading stdout, ffmpeg has
+    // 1-2 s of buffered output sitting in the kernel pipe. The first
+    // tokio read returns ALL of it in one chunk → we parse 30-60 NAL
+    // access units → call write_sample 60× in rapid succession.
+    //
+    // webrtc-rs's TrackLocalStaticSample does not pace internally; it
+    // packetizes every sample to RTP and queues for send immediately.
+    // The receiver sees a burst of 60 frames in ~100 ms, decodes them
+    // all (Chrome's stat then reports fps=239 = 8× catch-up rate), and
+    // the dashboard ends up showing the start of the burst — i.e.
+    // frames from 2 s ago, lagging real time and "stuck on an old
+    // screen" until the burst drains.
+    //
+    // Fix: hold a `next_frame_at` clock. Before every write_sample of
+    // a slice NAL, sleep until that wall-clock tick. Frames now hit
+    // the wire at strict 30 fps. The 2 s startup backlog gets
+    // CLAMPED — we drop the oldest frames if pacing falls behind
+    // (next_frame_at < now means we shouldn't sleep AND should reset
+    // the clock forward to "now" instead of compounding lag).
+    let mut next_frame_at = tokio::time::Instant::now();
 
     'outer: loop {
         let current = *params.lock().await;
@@ -789,26 +814,14 @@ pub(crate) async fn pump_ffmpeg_into_track(
                 // AUD boundary: flush whatever we have, then start fresh with
                 // this AUD opening the next picture.
                 if nal_type == 9 && !au.is_empty() {
-                    let sample = Sample {
-                        data: std::mem::take(&mut au).into(),
-                        duration: frame_duration,
-                        ..Default::default()
-                    };
-                    if let Err(e) = track.write_sample(&sample).await {
-                        log::warn!("track write_sample failed: {e}");
+                    if !flush_au(&track, &mut au, &mut next_frame_at, frame_duration, nal_type).await {
                         break;
                     }
                 }
                 au.extend_from_slice(&unit);
                 // Slice NAL ends the access unit.
                 if matches!(nal_type, 1 | 5) {
-                    let sample = Sample {
-                        data: std::mem::take(&mut au).into(),
-                        duration: frame_duration,
-                        ..Default::default()
-                    };
-                    if let Err(e) = track.write_sample(&sample).await {
-                        log::warn!("track write_sample failed: {e}");
+                    if !flush_au(&track, &mut au, &mut next_frame_at, frame_duration, nal_type).await {
                         break;
                     }
                 }
@@ -825,6 +838,57 @@ pub(crate) async fn pump_ffmpeg_into_track(
         break 'outer;
     }
     Ok(())
+}
+
+/// Ship one access-unit Sample with proper wall-clock pacing. Returns
+/// false on a write_sample error (caller should break the read loop).
+///
+/// Two pacing modes:
+///   • Ahead of schedule (`now < next_frame_at`) — sleep until the
+///     slot, then advance. Steady-state 30 fps output.
+///   • Behind schedule by more than 3 frame_durations — DROP this
+///     sample IF it's a P-frame (NAL type 1). Keep I-frames (type 5)
+///     no matter what so the decoder always has a valid reference to
+///     restart from. The buffered backlog that builds up during the
+///     parallel ffmpeg startup window (whip_publisher spawns ffmpeg
+///     before WHIP handshake completes) gets discarded this way
+///     instead of producing a permanent 2 s lag on the dashboard.
+async fn flush_au(
+    track: &Arc<TrackLocalStaticSample>,
+    au: &mut Vec<u8>,
+    next_frame_at: &mut tokio::time::Instant,
+    frame_duration: Duration,
+    nal_type: u8,
+) -> bool {
+    let now = tokio::time::Instant::now();
+    let too_far_behind = now > *next_frame_at + (frame_duration * 3);
+    if too_far_behind && nal_type == 1 {
+        // P-frame and we're WAY behind — drop it to catch up. We
+        // intentionally don't reset next_frame_at here so subsequent
+        // P-frames also get dropped until we're close to real-time
+        // again. The next I-frame (~1 s at 30 fps keyframe interval)
+        // will reset the decoder cleanly.
+        au.clear();
+        return true;
+    }
+    if now < *next_frame_at {
+        tokio::time::sleep_until(*next_frame_at).await;
+    } else {
+        // Behind by ≤3 frames OR we just caught up — snap the clock
+        // to `now` so we don't try to "speed up" later.
+        *next_frame_at = now;
+    }
+    *next_frame_at += frame_duration;
+    let sample = Sample {
+        data: std::mem::take(au).into(),
+        duration: frame_duration,
+        ..Default::default()
+    };
+    if let Err(e) = track.write_sample(&sample).await {
+        log::warn!("track write_sample failed: {e}");
+        return false;
+    }
+    true
 }
 
 /// Pull one full NAL unit (including its start code prefix) out of `buf` and
