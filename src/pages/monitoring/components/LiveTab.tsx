@@ -91,9 +91,9 @@ export default function LiveTab() {
         const noTrackTimer = setTimeout(() => {
           if (!cancelled && status !== 'live' && !trackRef.current) {
             setStatus('failed');
-            setErrorMsg('agent did not publish video within 12 s');
+            setErrorMsg('agent did not publish video within 45 s');
           }
-        }, 12_000);
+        }, 45_000);
         // Cleanup also clears this timer.
         const _origLeave = handle.leave;
         handle.leave = async () => { clearTimeout(noTrackTimer); await _origLeave(); };

@@ -77,9 +77,14 @@ pub fn spawn_whip_loop(state: AppState) {
         // livekit_stop handler signal to tear down the in-flight session.
         let active = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop_current = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Wall-clock timestamp of when the singleton lock was last
+        // claimed. Used by the stuck-state recovery in poll_once to
+        // force-reclaim a session lock that's been held more than
+        // 120 s — defends against tauri's silent panic swallow.
+        let last_claim = Arc::new(std::sync::RwLock::new(std::time::Instant::now()));
         let mut since = chrono::Utc::now().to_rfc3339();
         loop {
-            match poll_once(&state, &since, &active, &stop_current).await {
+            match poll_once(&state, &since, &active, &stop_current, &last_claim).await {
                 Ok(Some(new_since)) => since = new_since,
                 Ok(None) => {}
                 Err(e) => {
@@ -101,6 +106,7 @@ async fn poll_once(
     since: &str,
     active: &Arc<std::sync::atomic::AtomicBool>,
     stop_current: &Arc<std::sync::atomic::AtomicBool>,
+    last_claim: &Arc<std::sync::RwLock<std::time::Instant>>,
 ) -> Result<Option<String>> {
     let cfg = state.config.lock().await.clone();
     let enrollment = cfg
@@ -162,17 +168,47 @@ async fn poll_once(
         if msg.kind != "livekit_start" {
             continue;
         }
-        // Singleton: if a session is already running, IGNORE this start
-        // (dashboard hard-refreshes spam livekit_start; second one would
-        // launch a parallel ffmpeg that loses the screen-capture race
-        // with the first, producing zero frames and an "ingress: source
-        // encoder not ready" failure ~8 s later). Letting the existing
-        // session keep running matches what the user actually wants on
-        // hard-refresh: video appears as soon as the new dashboard
-        // subscriber joins the room.
-        if active.load(std::sync::atomic::Ordering::SeqCst) {
-            log::info!("whip: livekit_start ignored — session already active");
+        // Singleton: if a session is already running AND it's recent
+        // enough to plausibly still be alive, IGNORE this start
+        // (dashboard hard-refreshes spam livekit_start; second one
+        // would launch a parallel ffmpeg that loses the screen-capture
+        // race with the first, producing zero frames and an
+        // "ingress: source encoder not ready" failure ~8 s later).
+        //
+        // STUCK-STATE RECOVERY: if the lock was last claimed >120 s
+        // ago, we treat it as stuck and force-claim. Two ways this
+        // can happen even with the drop-guard added below:
+        //   • macOS / Windows OS suspended the agent task mid-session
+        //     and never resumed cleanly (rare but seen on Sleep wakes).
+        //   • A future bug puts run_session into an infinite await.
+        // Customer's pain was "agent unreachable forever after one
+        // bad session". 120 s is generous enough that a legit slow
+        // Windows ffmpeg startup (33 s in the worst case we've
+        // observed) still falls inside.
+        let now = std::time::Instant::now();
+        let lock_age = now.duration_since(*last_claim.read().unwrap_or_else(|e| e.into_inner()));
+        if active.load(std::sync::atomic::Ordering::SeqCst) && lock_age < std::time::Duration::from_secs(120) {
+            log::info!("whip: livekit_start ignored — session already active ({}s ago)", lock_age.as_secs());
             continue;
+        }
+        if active.load(std::sync::atomic::Ordering::SeqCst) {
+            log::warn!("whip: forcing reclaim of stale session lock (held {}s)", lock_age.as_secs());
+            active.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+        *last_claim.write().unwrap_or_else(|e| e.into_inner()) = now;
+        // Drop-guard ensures `active` flips back to false WHEN the
+        // session task exits — including via panic. tauri's spawn
+        // catches panics silently, which means a run_session() panic
+        // would otherwise leave `active=true` forever and lock out
+        // ALL future livekit_start signals until the agent restarts.
+        // The guard runs during panic unwind, so the lock always
+        // gets released no matter how the session ends.
+        struct ActiveGuard(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for ActiveGuard {
+            fn drop(&mut self) {
+                self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+                log::info!("whip: session lock released (drop guard)");
+            }
         }
         let session_id = msg.session_id.clone().unwrap_or_default();
         let room = msg
@@ -191,15 +227,20 @@ async fn poll_once(
         let active_for_session = active.clone();
         let stop_for_session = stop_current.clone();
         tauri::async_runtime::spawn(async move {
+            // Drop-guard pattern: `active` is reset to false when
+            // _guard is dropped, which happens at end-of-scope OR
+            // during panic unwind. Either way, the singleton lock
+            // always gets released. Replaces the explicit store()
+            // at the bottom of the task which was unreachable on
+            // panic (tauri's spawn swallows panics silently).
+            let _guard = ActiveGuard(active_for_session);
             let result = run_session(&st, &aid, &session_id, &room, stop_for_session).await;
             if let Err(e) = result {
                 log::warn!("whip session {session_id} failed: {e}");
             } else {
                 log::info!("whip session {session_id} ended cleanly");
             }
-            // Whatever the outcome, release the singleton lock so the
-            // next livekit_start can claim it.
-            active_for_session.store(false, std::sync::atomic::Ordering::SeqCst);
+            // _guard drops here.
         });
     }
     Ok(newest)
