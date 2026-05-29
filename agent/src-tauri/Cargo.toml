@@ -1,6 +1,6 @@
 [package]
 name = "rudrans-agent"
-version = "0.4.0"
+version = "0.5.0"
 description = "Rudrans employee monitoring agent"
 edition = "2021"
 rust-version = "1.77"
@@ -59,6 +59,12 @@ url = "2"
 livekit-protocol = "0.7"
 prost = "0.12"
 tokio-tungstenite = { version = "0.21", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
+# StreamExt/SinkExt for the realtime WSS split() pattern; transitively
+# present via tokio-tungstenite but we depend on it directly so the
+# linker keeps the symbols.
+futures-util = { version = "0.3", default-features = false }
+# Percent-encoding for the anon key in the realtime WSS URL query.
+urlencoding = "2"
 bytes = "1"
 uuid = { version = "1", features = ["v4"] }
 # Remote Desktop: cross-platform input synthesis (CGEvent on macOS, SendInput

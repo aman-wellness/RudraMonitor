@@ -19,6 +19,10 @@ mod screenshots;
 mod video;
 mod webrtc_stream;
 mod whip_publisher;
+// Phase-2 Remote Desktop subsystem (RustDesk subprocess + Supabase Realtime
+// listener). Completely separate from the LiveKit/WHIP live-monitoring path
+// — no shared state, no shared subprocess.
+mod remote;
 
 // Native capture + encode pipeline (v0.3.0 spec). Replaces the ffmpeg
 // subprocess pipeline on platforms where we have a native path
@@ -1255,7 +1259,13 @@ pub fn run() {
             // back during incident response; the module's spawn is
             // simply not called.
             let _ = webrtc_stream::spawn_streaming_loop; // dead-code anchor
-            whip_publisher::spawn_whip_loop(state);
+            whip_publisher::spawn_whip_loop(state.clone());
+
+            // Phase-2 Remote Desktop. Subscribes to Supabase Realtime
+            // channel `agent:<id>`, dispatches remote.request → consent →
+            // bundled rustdesk subprocess. Inert (logs + denies) until
+            // the rustdesk binary lands in resources/ via Block 3.2.
+            remote::spawn(state, app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

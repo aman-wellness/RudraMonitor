@@ -1,0 +1,43 @@
+# RustDesk self-hosted server — Phase-2 Remote Desktop infrastructure.
+#
+# Two containers from the official rustdesk/rustdesk-server image:
+#   hbbs (ID/rendezvous): TCP 21115 (register) + 21116 (NAT punch) + UDP 21116
+#   hbbr (relay):         TCP 21117
+#
+# Both run with --network host so the public IP advertised in NAT-traversal
+# responses matches the actual reachable address (EC2 elastic IP). They share
+# /root for the auto-generated key pair (id_ed25519 + id_ed25519.pub) so the
+# matching public key is the one we hand to the agent's rustdesk subprocess.
+#
+# Encryption: ENCRYPTED_ONLY=1 refuses unencrypted connections. The KEY env
+# is empty (`_`) so the server auto-generates an Ed25519 key pair on first
+# boot — we read it from /opt/rudrans/rustdesk/data/id_ed25519.pub and bake
+# it into the agent / web client config.
+#
+# Persistence: /opt/rudrans/rustdesk/data holds the key pair + the SQLite
+# database of registered IDs. Lose it = every agent has to re-register.
+
+services:
+  hbbs:
+    image: rustdesk/rustdesk-server:latest
+    container_name: rustdesk-hbbs
+    network_mode: host
+    command: hbbs -r rustdesk.rudrans.com:21117 -k _
+    volumes:
+      - /opt/rudrans/rustdesk/data:/root
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  hbbr:
+    image: rustdesk/rustdesk-server:latest
+    container_name: rustdesk-hbbr
+    network_mode: host
+    command: hbbr -k _
+    volumes:
+      - /opt/rudrans/rustdesk/data:/root
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
