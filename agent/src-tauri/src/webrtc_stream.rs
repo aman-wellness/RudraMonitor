@@ -1013,34 +1013,36 @@ pub(crate) async fn pump_ffmpeg_into_track(
 }
 
 /// Ship one access-unit Sample. Returns false on a write_sample error
-/// (caller should break the read loop). NO wall-clock pacing — ffmpeg's
-/// stdout blocking is the natural 30-fps pacer in steady state.
+/// (caller should break the read loop).
 ///
-/// Catch-up logic: if `buf` STILL contains another NAL start code after
-/// we just consumed one AU, that means ffmpeg has already queued one
-/// or more newer frames waiting for us. The AU we're about to ship is
-/// therefore STALE. Drop it if it's a P-frame (NAL type 1) — losing a
-/// P-frame causes ≤1 s of mild decoder block-artefacts until the next
-/// IDR (-g 30 → keyframe per second) resets cleanly. Keep I-frames
-/// (type 5) and AUD-flushed AUs unconditionally because the decoder
-/// MUST see them to lock back onto the stream.
+/// Pacing strategy: NONE here — ffmpeg's stdout blocks naturally when
+/// the encoder is keeping up with capture. The capture source (SCK on
+/// macOS in v0.3.0+, gdigrab/x11grab on other platforms) delivers
+/// frames at exactly TARGET_FPS, ffmpeg encodes 1-for-1, stdout
+/// produces one NAL per frame, we ship one Sample per frame. End to
+/// end the pacing is the OS's display refresh tick — no software
+/// timer needed.
+///
+/// Earlier versions (v0.2.57 → v0.2.58) had a `find_start_code` look-
+/// ahead drop that fired whenever `buf` still held another start code
+/// after we consumed one. That heuristic misfired in steady state:
+/// ffmpeg occasionally writes multiple NALs to stdout in one syscall
+/// (libavformat output buffering), making `buf` legitimately hold
+/// several frames' worth of bytes EVEN THOUGH no real-time backlog
+/// existed. The drop then killed P-frames continuously, leaving only
+/// I-frames (one per second) for the decoder. Customers saw it as
+/// "screen updates only every few seconds, feels frozen for 1-2 min".
+///
+/// Removed for v0.3.1+. If a real backlog ever re-appears we'd fix it
+/// upstream (cap the SCK→ffmpeg stdin queue depth) rather than at the
+/// drop-frame layer here.
 async fn flush_au(
     track: &Arc<TrackLocalStaticSample>,
     au: &mut Vec<u8>,
-    buf_after_this_nal: &[u8],
+    _buf_after_this_nal: &[u8],
     frame_duration: Duration,
-    nal_type: u8,
+    _nal_type: u8,
 ) -> bool {
-    let more_queued = find_start_code(buf_after_this_nal, 0).is_some();
-    if more_queued && nal_type == 1 {
-        // Stale P-frame — pipe already holds a newer frame. Drop to
-        // catch up; backlog clears within ~1 s for a typical 2 s
-        // startup burst because the keep-rate for I-frames + the
-        // CONSUMING side keeps draining while production stays at
-        // 30 fps.
-        au.clear();
-        return true;
-    }
     let sample = Sample {
         data: std::mem::take(au).into(),
         duration: frame_duration,
