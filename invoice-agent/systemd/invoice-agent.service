@@ -1,0 +1,22 @@
+[Unit]
+Description=Rudrans Invoice Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=invoice-agent
+WorkingDirectory=/opt/track-force/invoice-agent
+EnvironmentFile=/opt/track-force/invoice-agent/.env
+ExecStart=/usr/bin/npm run start
+Restart=on-failure
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+# Resource caps — adjust per host.
+MemoryHigh=2G
+MemoryMax=4G
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target

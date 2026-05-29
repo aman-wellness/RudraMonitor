@@ -6,6 +6,8 @@ import { useAlerts } from '@/lib/dataHooks';
 import { useAppRole } from '@/lib/useAppRole';
 import { useOrgRole } from '@/lib/useOrgRole';
 import { useFeatures, type FeatureCode } from '@/lib/useFeatures';
+import { useAppAccess } from '@/lib/useAppAccess';
+import OtpRequestBanner from '@/components/OtpRequestBanner';
 
 const formatRelative = (iso: string) => {
   const diffMs = Date.now() - new Date(iso).getTime();
@@ -17,36 +19,41 @@ const formatRelative = (iso: string) => {
   return `${Math.floor(h / 24)}d ago`;
 };
 
-// `requires` lists the feature codes that must be enabled for this nav item
-// to render. Omit `requires` for items every customer should see (Dashboard,
-// Subscription, Admin Portal). Items not satisfied are hidden entirely from
-// the sidebar — matches the product decision that customers shouldn't see
-// modules they haven't paid for.
+// Each sidebar item has TWO gates: an org-level subscription gate
+// (`requires`, evaluated against useFeatures) and a per-user app_access
+// gate (`access`, evaluated against useAppAccess from migration 0080).
+// Both must pass for the item to appear. Owners + admins automatically
+// pass the app_access gate; lower roles pass only when the admin has
+// explicitly granted that feature on the user's row.
 type SidebarLink = {
   label: string;
   href: string;
   icon: string;
   requires?: FeatureCode[];
+  /** Per-user app_access code; matches APP_ACCESS_CODES in lib/useAppAccess. */
+  access?: import('@/lib/useAppAccess').AppAccessCode;
 };
 
 const sidebarLinks: SidebarLink[] = [
-  { label: 'Dashboard', href: '/dashboard', icon: 'ri-dashboard-3-line' },
-  { label: 'Agents', href: '/agents', icon: 'ri-team-line', requires: ['monitoring_basic'] },
-  { label: 'Monitoring', href: '/monitoring', icon: 'ri-computer-line', requires: ['monitoring_basic'] },
-  { label: 'Alerts', href: '/alerts', icon: 'ri-notification-3-line', requires: ['monitoring_basic'] },
-  { label: 'DLP', href: '/dlp', icon: 'ri-shield-keyhole-line', requires: ['dlp'] },
-  { label: 'System Health', href: '/system-health', icon: 'ri-heart-pulse-line', requires: ['monitoring_basic'] },
-  { label: 'Performance', href: '/performance-reports', icon: 'ri-bar-chart-grouped-line', requires: ['monitoring_basic'] },
-  { label: 'Reports', href: '/reports', icon: 'ri-file-chart-line', requires: ['monitoring_basic'] },
-  { label: 'Agent Setup', href: '/setup', icon: 'ri-download-cloud-line', requires: ['monitoring_basic'] },
-  { label: 'Employees', href: '/employees', icon: 'ri-user-add-line', requires: ['employee_management'] },
-  { label: 'Groups & Teams', href: '/employees/groups', icon: 'ri-group-line', requires: ['employee_management'] },
-  { label: 'Managers', href: '/employees/managers', icon: 'ri-user-star-line', requires: ['employee_management'] },
-  { label: 'Credentials Vault', href: '/employees/credentials', icon: 'ri-key-2-line', requires: ['employee_management'] },
-  { label: 'IT Hardware', href: '/employees/hardware', icon: 'ri-computer-line', requires: ['employee_management'] },
-  { label: 'Offboarding', href: '/employees/offboarding', icon: 'ri-logout-box-line', requires: ['employee_management'] },
-  { label: 'Integrations', href: '/employees/integrations', icon: 'ri-plug-line', requires: ['employee_management'] },
-  { label: 'Admin Portal', href: '/admin-portal', icon: 'ri-shield-user-line' },
+  { label: 'Dashboard', href: '/dashboard', icon: 'ri-dashboard-3-line', access: 'dashboard' },
+  { label: 'Agents', href: '/agents', icon: 'ri-team-line', requires: ['monitoring_basic'], access: 'agents' },
+  { label: 'Monitoring', href: '/monitoring', icon: 'ri-computer-line', requires: ['monitoring_basic'], access: 'monitoring' },
+  { label: 'Alerts', href: '/alerts', icon: 'ri-notification-3-line', requires: ['monitoring_basic'], access: 'alerts' },
+  { label: 'DLP', href: '/dlp', icon: 'ri-shield-keyhole-line', requires: ['dlp'], access: 'dlp' },
+  { label: 'System Health', href: '/system-health', icon: 'ri-heart-pulse-line', requires: ['monitoring_basic'], access: 'system_health' },
+  { label: 'Performance', href: '/performance-reports', icon: 'ri-bar-chart-grouped-line', requires: ['monitoring_basic'], access: 'performance' },
+  { label: 'Reports', href: '/reports', icon: 'ri-file-chart-line', requires: ['monitoring_basic'], access: 'reports' },
+  { label: 'Agent Setup', href: '/setup', icon: 'ri-download-cloud-line', requires: ['monitoring_basic'], access: 'setup' },
+  { label: 'Employees', href: '/employees', icon: 'ri-user-add-line', requires: ['employee_management'], access: 'employees' },
+  { label: 'Groups & Teams', href: '/employees/groups', icon: 'ri-group-line', requires: ['employee_management'], access: 'groups' },
+  { label: 'Managers', href: '/employees/managers', icon: 'ri-user-star-line', requires: ['employee_management'], access: 'managers' },
+  { label: 'Credentials Vault', href: '/employees/credentials', icon: 'ri-key-2-line', requires: ['employee_management'], access: 'credentials' },
+  { label: 'Auto-Invoice', href: '/employees/auto-invoice', icon: 'ri-file-list-3-line', requires: ['employee_management'], access: 'credentials' },
+  { label: 'OTP Channels', href: '/employees/otp-settings', icon: 'ri-chat-check-line', requires: ['employee_management'], access: 'credentials' },
+  { label: 'IT Hardware', href: '/employees/hardware', icon: 'ri-computer-line', requires: ['employee_management'], access: 'hardware' },
+  { label: 'Offboarding', href: '/employees/offboarding', icon: 'ri-logout-box-line', requires: ['employee_management'], access: 'offboarding' },
+  { label: 'Integrations', href: '/employees/integrations', icon: 'ri-plug-line', requires: ['employee_management'], access: 'integrations' },
+  { label: 'Admin Portal', href: '/admin-portal', icon: 'ri-shield-user-line', access: 'admin_portal' },
 ];
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -60,26 +67,40 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const { rows: alertRows } = useAlerts({ sinceHours: 24, limit: 5 });
   const { role: appRole } = useAppRole();
   const features = useFeatures();
-  // Filter the sidebar by the org's effective feature set. Items without a
-  // `requires` clause stay visible; items requiring features the org hasn't
-  // bought drop out entirely. While features are still loading we HIDE
-  // gated items (rather than showing them) — otherwise on every page
-  // reload the sidebar flashes the full nav for ~200ms and then collapses,
-  // which leaks the existence of features the org doesn't subscribe to.
+  const appAccess = useAppAccess();
+  // Filter the sidebar by TWO gates:
+  //   1. Org subscription includes the feature (`requires` → useFeatures).
+  //   2. THIS user has the feature in their app_access (`access` →
+  //      useAppAccess from migration 0080).
+  // Both must pass. Items without a `requires` (Dashboard, Admin Portal)
+  // still go through the access gate so a per-user scope of just
+  // ['credentials'] actually leaves only Credentials Vault visible.
+  // While EITHER hook is loading we HIDE gated items — otherwise the
+  // sidebar flashes the full nav for ~200 ms then collapses, leaking
+  // module names the user shouldn't be able to discover.
   const linkAllowed = (link: SidebarLink) => {
-    if (!link.requires) return true;
-    if (features.loading) return false;
-    return link.requires.every((code) => {
-      switch (code) {
-        case 'monitoring_basic': return features.monitoring_basic_enabled;
-        case 'screenshots':      return features.screenshots_enabled;
-        case 'videos':           return features.videos_enabled;
-        case 'live':             return features.live_enabled;
-        case 'remote':           return features.remote_enabled;
-        case 'dlp':              return features.dlp_enabled;
-        case 'employee_management': return features.em_enabled;
-      }
-    });
+    // Subscription gate.
+    if (link.requires) {
+      if (features.loading) return false;
+      const subOk = link.requires.every((code) => {
+        switch (code) {
+          case 'monitoring_basic': return features.monitoring_basic_enabled;
+          case 'screenshots':      return features.screenshots_enabled;
+          case 'videos':           return features.videos_enabled;
+          case 'live':             return features.live_enabled;
+          case 'remote':           return features.remote_enabled;
+          case 'dlp':              return features.dlp_enabled;
+          case 'employee_management': return features.em_enabled;
+        }
+      });
+      if (!subOk) return false;
+    }
+    // Per-user access gate.
+    if (link.access) {
+      if (appAccess.loading) return false;
+      if (!appAccess.unrestricted && !appAccess.allowed.has(link.access)) return false;
+    }
+    return true;
   };
   const visibleLinks = sidebarLinks.filter(linkAllowed).concat(
     appRole === 'super_admin'
@@ -358,6 +379,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <main className="flex-1 min-w-0 w-full p-4 md:p-6 lg:p-8 overflow-y-auto overflow-x-hidden">
           <div className="w-full max-w-screen-2xl mx-auto">
             <ViewerBanner />
+            <OtpRequestBanner />
             {children}
           </div>
         </main>

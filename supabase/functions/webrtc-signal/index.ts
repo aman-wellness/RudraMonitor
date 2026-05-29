@@ -29,7 +29,15 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 type Direction = "to_agent" | "to_dashboard";
-type Kind = "offer" | "answer" | "ice_candidate";
+// Legacy DIY signaling kinds + LiveKit-pivot trigger kinds. The LiveKit
+// pair (`livekit_start` / `livekit_stop`) carry no SDP payload — they
+// just tell the agent's whip_publisher to start / stop publishing into
+// the LiveKit room. We accept both during the dual-stack rollout window;
+// Block G of the pivot deletes the offer/answer/ice_candidate handlers
+// once auto-update telemetry shows ≥95% of agents on v0.2.52+.
+type Kind =
+  | "offer" | "answer" | "ice_candidate"
+  | "livekit_start" | "livekit_stop";
 
 const LONG_POLL_TIMEOUT_MS = 25_000;
 // 100 ms tick inside the long-poll loop. The original 500 ms cap meant an
@@ -144,8 +152,8 @@ async function handlePost(
   if (direction !== "to_agent" && direction !== "to_dashboard") {
     return json({ error: "direction must be to_agent or to_dashboard" }, 400);
   }
-  if (!["offer", "answer", "ice_candidate"].includes(kind)) {
-    return json({ error: "kind must be offer | answer | ice_candidate" }, 400);
+  if (!["offer", "answer", "ice_candidate", "livekit_start", "livekit_stop"].includes(kind)) {
+    return json({ error: "kind must be offer | answer | ice_candidate | livekit_start | livekit_stop" }, 400);
   }
 
   // Authorization checks:

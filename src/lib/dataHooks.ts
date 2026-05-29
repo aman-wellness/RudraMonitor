@@ -288,6 +288,13 @@ export type OrgMember = {
   full_name: string | null;
   email: string | null;
   created_at: string;
+  // NULL = inherit org default (= every paid feature). Empty array = no
+  // feature access (login-only). Owners + admins ignore this column.
+  app_access: string[] | null;
+  // Per-feature level. NULL = "full" on every code in app_access.
+  // Otherwise { code: 'view'|'edit'|'full' }. Keys must be a subset of
+  // app_access; Admin Portal UI keeps them in sync.
+  app_access_levels: Record<string, 'view' | 'edit' | 'full'> | null;
 };
 
 export type OrgMemberStatus = 'active' | 'pending';
@@ -306,7 +313,7 @@ export function useOrgMembers() {
     setLoading(true);
     const { data } = await supabase
       .from('org_members')
-      .select('id, user_id, org_id, role, full_name, email, created_at')
+      .select('id, user_id, org_id, role, full_name, email, created_at, app_access, app_access_levels')
       .eq('org_id', organization.id)
       .order('created_at', { ascending: true });
     setMembers(
@@ -325,7 +332,13 @@ export function useOrgMembers() {
   // Sends a magic-link invite via the invite-member Edge Function and creates the pending
   // org_members row. The on-disk row is filled in by an auth.users trigger once the invitee
   // confirms their email.
-  const inviteMember = async (input: { email: string; role: 'admin' | 'viewer'; full_name?: string }) => {
+  const inviteMember = async (input: {
+    email: string;
+    role: 'admin' | 'viewer';
+    full_name?: string;
+    app_access?: string[] | null;
+    app_access_levels?: Record<string, 'view' | 'edit' | 'full'> | null;
+  }) => {
     if (!session) throw new Error('not signed in');
     const url = (import.meta.env.VITE_SUPABASE_URL as string).replace(/\/+$/, '') +
       '/functions/v1/invite-member';

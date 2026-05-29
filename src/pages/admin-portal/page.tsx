@@ -6,6 +6,7 @@ import { useOrgRole } from '@/lib/useOrgRole';
 import { supabase } from '@/lib/supabase';
 import DepartmentsTab from './components/DepartmentsTab';
 import PlanGrid from '@/components/PlanGrid';
+import { APP_ACCESS_CODES, type AppAccessCode, type AccessLevel } from '@/lib/useAppAccess';
 
 interface OrgUser {
   id: string;
@@ -195,11 +196,19 @@ export default function AdminPortalPage() {
   const [addName, setAddName] = useState('');
   const [addEmail, setAddEmail] = useState('');
   const [addRole, setAddRole] = useState('Viewer');
+  // app_access scoping in the Add modal. null = inherit org default
+  // (every paid feature, same as today). A Set instance = explicit
+  // whitelist, can be empty for "login-only". Owners + admins always
+  // see everything regardless of what's saved here.
+  const [addAccessAll, setAddAccessAll] = useState(true);
+  const [addAccess, setAddAccess] = useState<Map<AppAccessCode, AccessLevel>>(new Map());
 
   const [editName, setEditName] = useState('');
   const [editEmail, setEditEmail] = useState('');
   const [editRole, setEditRole] = useState('Viewer');
   const [editStatus, setEditStatus] = useState('active');
+  const [editAccessAll, setEditAccessAll] = useState(true);
+  const [editAccess, setEditAccess] = useState<Map<AppAccessCode, AccessLevel>>(new Map());
 
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -219,6 +228,26 @@ export default function AdminPortalPage() {
     setEditEmail(user.email);
     setEditRole(user.role);
     setEditStatus(user.status);
+    // Seed app_access checkboxes from the underlying row. NULL → "all
+    // features" toggle ON; any array (even empty) → explicit whitelist.
+    const m = members.find((mm) => mm.id === user.id);
+    if (m && Array.isArray(m.app_access)) {
+      setEditAccessAll(false);
+      // Build a Map<code, level>. If app_access_levels is set we trust
+      // its values; for codes only in app_access (no level entry) we
+      // default to 'full' = same as today's all-or-nothing behaviour
+      // before 0081.
+      const next = new Map<AppAccessCode, AccessLevel>();
+      const levels = m.app_access_levels ?? {};
+      for (const code of m.app_access as AppAccessCode[]) {
+        const lv = levels[code];
+        next.set(code, lv === 'view' || lv === 'edit' || lv === 'full' ? lv : 'full');
+      }
+      setEditAccess(next);
+    } else {
+      setEditAccessAll(true);
+      setEditAccess(new Map());
+    }
     setShowEditUser(true);
     setShowResetPassword(false);
     setResetSuccess(false);
@@ -237,10 +266,23 @@ export default function AdminPortalPage() {
     }
     const dbRole: 'admin' | 'viewer' = editRole === 'Viewer' ? 'viewer' : 'admin';
     const newName = editName.trim() || editingUser.name;
+    // editAccessAll → store NULL (inherit). Otherwise store the explicit
+    // whitelist (may be empty, meaning "login-only"). Owners/admins see
+    // everything regardless, but we still persist the choice so demoting
+    // them later doesn't accidentally unlock everything.
+    const newAccess: string[] | null = editAccessAll ? null : Array.from(editAccess.keys());
+    const newLevels: Record<string, AccessLevel> | null = editAccessAll
+      ? null
+      : Object.fromEntries(editAccess.entries());
 
     const { error } = await supabase
       .from('org_members')
-      .update({ role: dbRole, full_name: newName })
+      .update({
+        role: dbRole,
+        full_name: newName,
+        app_access: newAccess,
+        app_access_levels: newLevels,
+      })
       .eq('id', editingUser.id);
     if (error) {
       alert(`Failed to save: ${error.message}`);
@@ -268,10 +310,14 @@ export default function AdminPortalPage() {
         email: addEmail.trim(),
         role: dbRole,
         full_name: addName.trim() || undefined,
+        app_access: addAccessAll ? null : Array.from(addAccess.keys()),
+        app_access_levels: addAccessAll ? null : Object.fromEntries(addAccess.entries()),
       });
       setAddName('');
       setAddEmail('');
       setAddRole('Viewer');
+      setAddAccessAll(true);
+      setAddAccess(new Map());
       setShowAddUser(false);
     } catch (err) {
       setInviteError(err instanceof Error ? err.message : 'Invite failed');
@@ -743,6 +789,13 @@ export default function AdminPortalPage() {
                         {roles.map((r) => <option key={r} value={r}>{r}</option>)}
                       </select>
                     </div>
+                    <AppAccessPicker
+                      disabled={addRole === 'Org Admin'}
+                      all={addAccessAll}
+                      setAll={setAddAccessAll}
+                      selected={addAccess}
+                      setSelected={setAddAccess}
+                    />
                   </div>
                   {inviteError && (
                     <div className="mt-3 px-3 py-2 rounded-lg border border-red-500/30 bg-red-500/10 text-red-300 text-[11px]">
@@ -825,6 +878,14 @@ export default function AdminPortalPage() {
                         </select>
                       </div>
                     </div>
+
+                    <AppAccessPicker
+                      disabled={editingUser.role === 'Owner' || editRole === 'Org Admin'}
+                      all={editAccessAll}
+                      setAll={setEditAccessAll}
+                      selected={editAccess}
+                      setSelected={setEditAccess}
+                    />
 
                     {/* Password Reset Section */}
                     <div className="border-t border-dark-700 pt-3 mt-1">
@@ -1252,6 +1313,97 @@ function SubscriptionTab({
     </div>
   );
 }
+// Per-user feature whitelist editor used in both the Add and Edit User
+// modals. "All features" (= NULL in DB) is the default and matches the
+// pre-0080 behaviour, so existing users see no change. Toggle it off
+// to scope the user down to a specific set of features. Owners/admins
+// always see everything regardless of this list, so we visually disable
+// the grid for them to avoid confusion.
+function AppAccessPicker({
+  disabled, all, setAll, selected, setSelected,
+}: {
+  disabled: boolean;
+  all: boolean;
+  setAll: (v: boolean) => void;
+  selected: Map<AppAccessCode, AccessLevel>;
+  setSelected: (s: Map<AppAccessCode, AccessLevel>) => void;
+}) {
+  const toggle = (code: AppAccessCode) => {
+    const next = new Map(selected);
+    if (next.has(code)) next.delete(code);
+    // Default new picks to 'view' — safer than 'full' as a default
+    // since the customer's whole reason for this feature is "give just
+    // a slice of access". Admin can promote to edit/full per row.
+    else next.set(code, 'view');
+    setSelected(next);
+  };
+  const setLevel = (code: AppAccessCode, lv: AccessLevel) => {
+    const next = new Map(selected);
+    next.set(code, lv);
+    setSelected(next);
+  };
+  return (
+    <div className="border-t border-dark-700 pt-3">
+      <div className="flex items-center justify-between mb-2">
+        <div>
+          <p className="text-xs text-white font-medium">Feature Access</p>
+          <p className="text-[11px] text-gray-500">
+            {disabled
+              ? 'Org Admins always have full access to every feature.'
+              : all
+                ? 'User has full access to every feature the org has subscribed to.'
+                : 'Tick a feature and pick the level: View (read-only), Edit (create/update/upload), or Full (Edit + delete).'}
+          </p>
+        </div>
+        <label className="flex items-center gap-2 text-[11px] text-gray-300 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={all}
+            onChange={(e) => setAll(e.target.checked)}
+            disabled={disabled}
+            className="accent-emerald-500"
+          />
+          All features (Full)
+        </label>
+      </div>
+      {!all && !disabled && (
+        <div className="bg-dark-900 border border-dark-700 rounded-lg p-3 max-h-72 overflow-y-auto space-y-1.5">
+          {APP_ACCESS_CODES.map((c) => {
+            const ticked = selected.has(c.code);
+            const level = selected.get(c.code) ?? 'view';
+            return (
+              <div key={c.code} className="flex items-center gap-2 hover:bg-dark-700/40 rounded px-1.5 py-1">
+                <label className="flex items-start gap-2 text-[11px] text-gray-300 cursor-pointer flex-1 min-w-0">
+                  <input
+                    type="checkbox"
+                    checked={ticked}
+                    onChange={() => toggle(c.code)}
+                    className="mt-0.5 accent-emerald-500"
+                  />
+                  <span className="min-w-0">
+                    <span className="text-white font-medium">{c.label}</span>
+                    <span className="block text-[10px] text-gray-500 leading-tight">{c.hint}</span>
+                  </span>
+                </label>
+                <select
+                  value={level}
+                  onChange={(e) => setLevel(c.code, e.target.value as AccessLevel)}
+                  disabled={!ticked}
+                  className="bg-dark-800 border border-dark-700 rounded px-1.5 py-1 text-[10px] text-white disabled:opacity-30 disabled:cursor-not-allowed focus:outline-none focus:border-emerald-500/50"
+                >
+                  <option value="view">View only</option>
+                  <option value="edit">Edit</option>
+                  <option value="full">Full (delete)</option>
+                </select>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Danger Zone — used to be a static UI block with non-functional Run buttons.
 // Now each action POSTs to /functions/v1/org-purge with the user's JWT; the
 // edge fn re-checks org_members.role and does the cleanup with the service

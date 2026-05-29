@@ -17,7 +17,23 @@ const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 
 const ALLOWED_ROLES = new Set(["admin", "viewer"]);
 
-type Body = { email?: string; role?: string; full_name?: string };
+type Body = {
+  email?: string;
+  role?: string;
+  full_name?: string;
+  app_access?: string[] | null;
+  app_access_levels?: Record<string, string> | null;
+};
+
+const ALLOWED_LEVELS = new Set(["view", "edit", "full"]);
+
+// Mirror of src/lib/useAppAccess.ts APP_ACCESS_CODES — keep in sync. Any
+// unknown code from the dashboard is silently dropped server-side.
+const ALLOWED_ACCESS_CODES = new Set([
+  "dashboard", "agents", "monitoring", "alerts", "dlp", "system_health",
+  "performance", "reports", "setup", "employees", "groups", "managers",
+  "credentials", "hardware", "offboarding", "integrations", "admin_portal",
+]);
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -44,6 +60,30 @@ Deno.serve(async (req) => {
   if (!email || !email.includes("@")) return json({ error: "valid email required" }, 400);
   if (!ALLOWED_ROLES.has(role)) return json({ error: "role must be admin or viewer" }, 400);
 
+  // app_access: undefined / null → leave NULL (inherit org default).
+  // Array → sanitize against the whitelist, store as text[].
+  let appAccess: string[] | null = null;
+  if (Array.isArray(body.app_access)) {
+    appAccess = body.app_access.filter((c) => typeof c === "string" && ALLOWED_ACCESS_CODES.has(c));
+  }
+  // app_access_levels: sanitize against both the access whitelist and
+  // the level enum. Drop keys not in appAccess (the picker keeps them
+  // in sync; defensive on the server side).
+  let appLevels: Record<string, string> | null = null;
+  if (body.app_access_levels && typeof body.app_access_levels === "object") {
+    const allowedSet = new Set(appAccess ?? []);
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(body.app_access_levels)) {
+      if (
+        ALLOWED_ACCESS_CODES.has(k) &&
+        allowedSet.has(k) &&
+        typeof v === "string" &&
+        ALLOWED_LEVELS.has(v)
+      ) out[k] = v;
+    }
+    appLevels = out;
+  }
+
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
@@ -63,7 +103,7 @@ Deno.serve(async (req) => {
   const { error: upsertErr } = await admin
     .from("org_members")
     .upsert(
-      { org_id: orgId, email, role, full_name: fullName, user_id: null },
+      { org_id: orgId, email, role, full_name: fullName, user_id: null, app_access: appAccess, app_access_levels: appLevels },
       { onConflict: "org_id,email" },
     );
   if (upsertErr) return json({ error: `pending row: ${upsertErr.message}` }, 500);

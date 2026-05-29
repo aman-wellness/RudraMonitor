@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import { supabase } from '@/lib/supabase';
+import { useAppAccess } from '@/lib/useAppAccess';
 
 type Credential = {
   id: string;
@@ -19,6 +20,11 @@ type Credential = {
   price_amount: number | null;
   price_currency: string | null;
   seats_total: number | null;
+  // Optional. For usage-based subs (api_usage / hybrid) where the
+  // contracted price_amount is just a unit cost — this captures the
+  // operator's EXPECTED monthly spend so reports show "budgeted vs
+  // billed" instead of one ambiguous number. NULL = no estimate.
+  estimated_amount: number | null;
   subscription_starts_at: string | null;
   subscription_ends_at: string | null;
   subscription_model: 'per_seat' | 'api_usage' | 'flat' | 'hybrid' | null;
@@ -26,6 +32,17 @@ type Credential = {
   billing_api_connected: boolean;
   billing_api_last_synced_at: string | null;
   billing_api_last_sync_error: string | null;
+  // Auto-invoice fetch: when true, the daily cron enqueues a job to
+  // pull this credential's latest invoice via API → email → scrape and
+  // forward it to the org's accounts_recipient_emails. Default true.
+  auto_fetch_enabled: boolean;
+  last_fetch_attempt_at: string | null;
+  // OTP / 2FA metadata. Booleans only — never the raw ciphertext.
+  has_totp: boolean;
+  has_session: boolean;
+  otp_primary_channel: 'totp' | 'magic_link' | 'dashboard' | 'email_relay' | 'teams' | 'slack' | 'google_chat' | 'whatsapp' | 'sms_manual';
+  otp_fallback_channels: string[];
+  otp_admin_user_ids: string[];
   created_at: string;
   last_rotated_at: string | null;
 };
@@ -48,12 +65,24 @@ const empty: Partial<Credential> & { password?: string } = {
   platform_name: '', category: '', login_url: '', username: '', notes: '',
   owner_dept_id: null, tags: [], is_shared_account: true, active: true,
   billing_cycle: null, price_amount: null, price_currency: 'INR',
-  seats_total: null, subscription_starts_at: null, subscription_ends_at: null,
+  seats_total: null, estimated_amount: null,
+  subscription_starts_at: null, subscription_ends_at: null,
   subscription_model: 'per_seat', billing_api_provider: null,
+  auto_fetch_enabled: true,
+  otp_primary_channel: 'magic_link',
+  otp_fallback_channels: ['dashboard', 'magic_link'],
+  otp_admin_user_ids: [],
   password: '',
 };
 
 export default function CredentialsVault() {
+  // Per-feature level for 'credentials'. RequireAccess has already
+  // gated the route by the time we render — so the user has AT LEAST
+  // 'view'. We hide Add/Edit/Upload buttons at < 'edit', and Delete at
+  // < 'full'. Owners + admins always come back as 'full'.
+  const { canEdit, canDelete } = useAppAccess();
+  const canWrite = canEdit('credentials');
+  const canHardDelete = canDelete('credentials');
   const [rows, setRows] = useState<Credential[]>([]);
   const [depts, setDepts] = useState<Department[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -63,7 +92,8 @@ export default function CredentialsVault() {
   const [assignFor, setAssignFor] = useState<Credential[] | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [csvOpen, setCsvOpen] = useState(false);
-  const [tab, setTab] = useState<'vault' | 'dashboard' | 'invoices' | 'access' | 'requests'>('vault');
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [tab, setTab] = useState<'vault' | 'dashboard' | 'invoices' | 'fetch_status' | 'access' | 'requests'>('vault');
   const [page, setPage] = useState(1);
   const pageSize = 25;
 
@@ -114,6 +144,34 @@ export default function CredentialsVault() {
     return next;
   });
 
+  // Delete a vault credential. Goes through cred-delete edge fn so the
+  // org-scope + admin/owner role check happens server-side and an audit
+  // row gets written. Two-step confirm because deletion is permanent
+  // (FK cascades nuke assignments + invoices + open requests too).
+  const deleteCredential = async (r: Credential) => {
+    if (!confirm(`Delete "${r.platform_name}"? This removes the encrypted secret, all assignments, invoices and pending requests. Cannot be undone.`)) return;
+    setDeletingId(r.id);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const resp = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/cred-delete`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session?.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ id: r.id }),
+      });
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(j?.error ?? `${resp.status}`);
+      setRows((rs) => rs.filter((x) => x.id !== r.id));
+      setSelected((s) => { const n = new Set(s); n.delete(r.id); return n; });
+    } catch (e) {
+      alert(`Delete failed: ${(e as Error).message}`);
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   return (
     <DashboardLayout>
       <div className="max-w-7xl mx-auto">
@@ -124,29 +182,42 @@ export default function CredentialsVault() {
           </div>
           <div className="flex gap-2">
             <Link to="/employees" className="px-3 py-2 bg-dark-700 hover:bg-dark-600 rounded-lg text-xs text-white">Back to employees</Link>
+            <Link to="/employees/auto-invoice" className="px-3 py-2 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 rounded-lg text-xs text-emerald-300" title="One page for fetcher health + activity + coverage">
+              <i className="ri-dashboard-3-line mr-1" /> Auto-invoice center
+            </Link>
+            <Link to="/employees/otp-settings" className="px-3 py-2 bg-dark-700 hover:bg-dark-600 rounded-lg text-xs text-white" title="Configure Teams / Slack / Google Chat / WhatsApp for OTP delivery">
+              <i className="ri-settings-3-line mr-1" /> OTP channels
+            </Link>
+            {canWrite && (
+              <button
+                disabled={selected.size === 0}
+                onClick={() => setAssignFor(rows.filter((r) => selected.has(r.id)))}
+                className="px-3 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg text-xs text-white"
+              >Send selected ({selected.size}) to user</button>
+            )}
             <button
-              disabled={selected.size === 0}
-              onClick={() => setAssignFor(rows.filter((r) => selected.has(r.id)))}
-              className="px-3 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg text-xs text-white"
-            >Send selected ({selected.size}) to user</button>
-            <button
-              onClick={() => exportCredentialsCsv(filtered, depts)}
+              onClick={() => void exportCredentialsCsv(filtered, depts)}
               disabled={filtered.length === 0}
               className="px-3 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg text-sm text-white"
+              title="Includes platform + billing + assigned users for each credential"
             >
               <i className="ri-file-download-line mr-1" /> Export CSV
             </button>
-            <button onClick={() => setCsvOpen(true)} className="px-3 py-2 bg-dark-700 hover:bg-dark-600 rounded-lg text-sm text-white">
-              <i className="ri-file-upload-line mr-1" /> Upload CSV
-            </button>
-            <button onClick={() => setEditing({ ...empty })} className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-sm text-white font-medium">
-              <i className="ri-add-line mr-1" /> New credential
-            </button>
+            {canWrite && (
+              <button onClick={() => setCsvOpen(true)} className="px-3 py-2 bg-dark-700 hover:bg-dark-600 rounded-lg text-sm text-white">
+                <i className="ri-file-upload-line mr-1" /> Upload CSV
+              </button>
+            )}
+            {canWrite && (
+              <button onClick={() => setEditing({ ...empty })} className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-sm text-white font-medium">
+                <i className="ri-add-line mr-1" /> New credential
+              </button>
+            )}
           </div>
         </header>
 
         <div className="mb-4 flex gap-1 border-b border-dark-700">
-          {(['vault', 'dashboard', 'invoices', 'access', 'requests'] as const).map((t) => (
+          {(['vault', 'dashboard', 'invoices', 'fetch_status', 'access', 'requests'] as const).map((t) => (
             <button key={t} onClick={() => setTab(t)}
               className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
                 tab === t ? 'border-emerald-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
@@ -154,6 +225,7 @@ export default function CredentialsVault() {
               {t === 'vault' ? 'Vault'
                 : t === 'dashboard' ? 'Dashboard'
                 : t === 'invoices' ? 'Invoices'
+                : t === 'fetch_status' ? 'Fetch status'
                 : t === 'access' ? 'Who has access'
                 : 'Requests'}
             </button>
@@ -166,6 +238,8 @@ export default function CredentialsVault() {
           <AccessMap />
         ) : tab === 'invoices' ? (
           <InvoicesTab credentials={rows} depts={depts} />
+        ) : tab === 'fetch_status' ? (
+          <FetchStatusTab credentials={rows} />
         ) : tab === 'dashboard' ? (
           <div className="space-y-4">
             <CostSummary rows={rows} />
@@ -227,7 +301,28 @@ export default function CredentialsVault() {
                         {r.billing_api_provider && (
                           <ConnectorActions cred={r} onChanged={load} />
                         )}
-                        <button onClick={() => setEditing({ ...r, password: '' })} className="text-xs text-emerald-400 hover:text-emerald-300">Edit →</button>
+                        {canWrite && r.auto_fetch_enabled && r.subscription_starts_at && (
+                          <TestFetchButton credId={r.id} />
+                        )}
+                        {canWrite && (
+                          <button
+                            onClick={() => setEditing({ ...r, password: '' })}
+                            className="text-xs text-emerald-400 hover:text-emerald-300"
+                          >Edit →</button>
+                        )}
+                        {canHardDelete && (
+                          <button
+                            onClick={() => void deleteCredential(r)}
+                            disabled={deletingId === r.id}
+                            title={`Delete ${r.platform_name}`}
+                            className="text-xs text-rose-400 hover:text-rose-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {deletingId === r.id ? 'Deleting…' : 'Delete'}
+                          </button>
+                        )}
+                        {!canWrite && !canHardDelete && (
+                          <span className="text-[11px] text-gray-600">View only</span>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -345,10 +440,15 @@ function CredentialModal({
           price_amount: f.price_amount,
           price_currency: f.price_currency ?? null,
           seats_total: f.seats_total,
+          estimated_amount: f.estimated_amount,
           subscription_starts_at: f.subscription_starts_at ?? null,
           subscription_ends_at: f.subscription_ends_at ?? null,
           subscription_model: f.subscription_model ?? null,
           billing_api_provider: f.billing_api_provider ?? null,
+          auto_fetch_enabled: f.auto_fetch_enabled ?? true,
+          totp_secret: (f as Partial<Credential> & { totp_secret?: string }).totp_secret || undefined,
+          otp_primary_channel: f.otp_primary_channel ?? null,
+          otp_fallback_channels: f.otp_fallback_channels ?? null,
           assigned_employee_ids: f.subscription_model === 'per_seat' ? Array.from(assignedIds) : [],
         }),
       });
@@ -445,9 +545,19 @@ function CredentialModal({
                 </select>
               </Field>
             </div>
-            <div className="grid grid-cols-3 gap-3 mt-2">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-2">
               <Field label="Total seats (optional)">
                 <input type="number" value={f.seats_total ?? ''} onChange={(e) => setF({ ...f, seats_total: e.target.value === '' ? null : Number(e.target.value) })} className={inputCls} placeholder="10" />
+              </Field>
+              <Field label="Estimated amount (optional)">
+                <input
+                  type="number"
+                  step="0.01"
+                  value={f.estimated_amount ?? ''}
+                  onChange={(e) => setF({ ...f, estimated_amount: e.target.value === '' ? null : Number(e.target.value) })}
+                  className={inputCls}
+                  placeholder="0.00"
+                />
               </Field>
               <Field label="Starts on">
                 <input type="date" value={f.subscription_starts_at ?? ''} onChange={(e) => setF({ ...f, subscription_starts_at: e.target.value || null })} className={inputCls} />
@@ -456,6 +566,59 @@ function CredentialModal({
                 <input type="date" value={f.subscription_ends_at ?? ''} onChange={(e) => setF({ ...f, subscription_ends_at: e.target.value || null })} className={inputCls} />
               </Field>
             </div>
+
+            {/* Auto-invoice fetch toggle. When on, the daily cron pulls the
+                latest invoice (via API → email → scrape) and forwards it
+                to the org's accounts_recipient_emails. Requires a billing
+                start date for the cron to know which period to fetch. */}
+            <label className="flex items-start gap-3 mt-3 p-3 rounded-lg bg-dark-900/40 border border-dark-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={f.auto_fetch_enabled ?? true}
+                onChange={(e) => setF({ ...f, auto_fetch_enabled: e.target.checked })}
+                className="mt-0.5"
+              />
+              <div className="flex-1">
+                <p className="text-xs text-white font-medium">Auto-fetch monthly invoice</p>
+                <p className="text-[11px] text-gray-500 mt-0.5">
+                  Every billing cycle, Rudrans pulls the latest invoice from this platform and emails it to your accounts team.
+                  {!f.subscription_starts_at && (
+                    <span className="block text-amber-400/80 mt-1">Set a "Starts on" date above to anchor the billing period.</span>
+                  )}
+                </p>
+              </div>
+            </label>
+
+            {/* MFA / OTP delivery — only when auto-fetch is on. */}
+            {(f.auto_fetch_enabled ?? true) && (
+              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Field label="TOTP secret (Authenticator app)">
+                  <input
+                    type="password"
+                    value={(f as Partial<Credential> & { totp_secret?: string }).totp_secret ?? ''}
+                    onChange={(e) => setF({ ...f, totp_secret: e.target.value } as typeof f)}
+                    className={inputCls}
+                    placeholder={(f as Credential).has_totp ? '••••••••  (leave blank to keep)' : 'JBSWY3DPEHPK3PXP'}
+                  />
+                </Field>
+                <Field label="When OTP needed, send to…">
+                  <select
+                    value={f.otp_primary_channel ?? 'magic_link'}
+                    onChange={(e) => setF({ ...f, otp_primary_channel: e.target.value as Credential['otp_primary_channel'] })}
+                    className={inputCls}
+                  >
+                    <option value="totp">Generate from TOTP secret (instant)</option>
+                    <option value="magic_link">Email magic link to OTP admins</option>
+                    <option value="dashboard">In-dashboard banner (realtime)</option>
+                    <option value="email_relay">Email-relay only</option>
+                    <option value="teams" disabled>Microsoft Teams (Phase 3)</option>
+                    <option value="slack" disabled>Slack (Phase 3)</option>
+                    <option value="google_chat" disabled>Google Chat (Phase 3)</option>
+                    <option value="whatsapp" disabled>WhatsApp (Phase 3)</option>
+                  </select>
+                </Field>
+              </div>
+            )}
           </div>
 
           {/* Per-seat assignment picker — only when subscription_model = per_seat. */}
@@ -1054,44 +1217,89 @@ function CostSummary({ rows }: { rows: Credential[] }) {
     const monthly: Record<string, number> = {};
     const yearly:  Record<string, number> = {};
     const oneTime: Record<string, number> = {};
+    // estimated_amount is interpreted as "expected monthly spend" (see
+    // schema comment on the column). It exists alongside price_amount
+    // for usage-based subs where the contracted unit cost can't predict
+    // real spend on its own. We show it in its OWN card so the operator
+    // can compare contracted vs estimated without one drowning the other.
+    const estMonthly: Record<string, number> = {};
+    const estYearly:  Record<string, number> = {};
     let activeWithBilling = 0;
+    let activeWithEstimate = 0;
     for (const r of rows) {
-      if (!r.active || r.price_amount == null || !r.price_currency) continue;
-      activeWithBilling++;
+      if (!r.active) continue;
       const cur = r.price_currency;
-      const amt = Number(r.price_amount);
-      if (r.billing_cycle === 'monthly') {
-        monthly[cur] = (monthly[cur] ?? 0) + amt;
-        yearly[cur]  = (yearly[cur]  ?? 0) + amt * 12;
-      } else if (r.billing_cycle === 'quarterly') {
-        monthly[cur] = (monthly[cur] ?? 0) + amt / 3;
-        yearly[cur]  = (yearly[cur]  ?? 0) + amt * 4;
-      } else if (r.billing_cycle === 'yearly') {
-        monthly[cur] = (monthly[cur] ?? 0) + amt / 12;
-        yearly[cur]  = (yearly[cur]  ?? 0) + amt;
-      } else if (r.billing_cycle === 'one_time' || r.billing_cycle === 'custom') {
-        oneTime[cur] = (oneTime[cur] ?? 0) + amt;
+      if (r.price_amount != null && cur) {
+        activeWithBilling++;
+        const amt = Number(r.price_amount);
+        if (r.billing_cycle === 'monthly') {
+          monthly[cur] = (monthly[cur] ?? 0) + amt;
+          yearly[cur]  = (yearly[cur]  ?? 0) + amt * 12;
+        } else if (r.billing_cycle === 'quarterly') {
+          monthly[cur] = (monthly[cur] ?? 0) + amt / 3;
+          yearly[cur]  = (yearly[cur]  ?? 0) + amt * 4;
+        } else if (r.billing_cycle === 'yearly') {
+          monthly[cur] = (monthly[cur] ?? 0) + amt / 12;
+          yearly[cur]  = (yearly[cur]  ?? 0) + amt;
+        } else if (r.billing_cycle === 'one_time' || r.billing_cycle === 'custom') {
+          oneTime[cur] = (oneTime[cur] ?? 0) + amt;
+        }
+      }
+      if (r.estimated_amount != null && cur) {
+        activeWithEstimate++;
+        const amt = Number(r.estimated_amount);
+        estMonthly[cur] = (estMonthly[cur] ?? 0) + amt;
+        estYearly[cur]  = (estYearly[cur]  ?? 0) + amt * 12;
       }
     }
-    return { monthly, yearly, oneTime, activeWithBilling };
+    return { monthly, yearly, oneTime, estMonthly, estYearly, activeWithBilling, activeWithEstimate };
   }, [rows]);
 
-  const monthlyCurrencies = Object.keys(totals.monthly).sort();
-  const yearlyCurrencies  = Object.keys(totals.yearly).sort();
-  const oneTimeCurrencies = Object.keys(totals.oneTime).sort();
+  const monthlyCurrencies  = Object.keys(totals.monthly).sort();
+  const yearlyCurrencies   = Object.keys(totals.yearly).sort();
+  const oneTimeCurrencies  = Object.keys(totals.oneTime).sort();
+  const estMonthlyCurrs    = Object.keys(totals.estMonthly).sort();
+  const estYearlyCurrs     = Object.keys(totals.estYearly).sort();
+  const showEstimated = totals.activeWithEstimate > 0;
 
-  if (totals.activeWithBilling === 0) return null;
+  if (totals.activeWithBilling === 0 && !showEstimated) return null;
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
-      <CostCard title="Monthly recurring" icon="ri-calendar-line" currencies={monthlyCurrencies} amounts={totals.monthly} accent="text-emerald-400" />
+    <div className={`grid grid-cols-1 gap-3 mb-4 ${showEstimated ? 'md:grid-cols-4' : 'md:grid-cols-3'}`}>
+      <CostCard title="Monthly recurring" icon="ri-calendar-line"   currencies={monthlyCurrencies} amounts={totals.monthly} accent="text-emerald-400" />
       <CostCard title="Yearly recurring"  icon="ri-calendar-2-line" currencies={yearlyCurrencies}  amounts={totals.yearly}  accent="text-cyan-400" />
-      <CostCard title="One-time / custom" icon="ri-coin-line"        currencies={oneTimeCurrencies} amounts={totals.oneTime} accent="text-amber-400" />
+      <CostCard title="One-time / custom" icon="ri-coin-line"       currencies={oneTimeCurrencies} amounts={totals.oneTime} accent="text-amber-400" />
+      {showEstimated && (
+        <CostCard
+          title="Estimated spend"
+          icon="ri-line-chart-line"
+          currencies={Array.from(new Set([...estMonthlyCurrs, ...estYearlyCurrs])).sort()}
+          amounts={totals.estMonthly}
+          amountsSecondary={totals.estYearly}
+          secondaryLabel="/yr"
+          primaryLabel="/mo"
+          accent="text-violet-400"
+        />
+      )}
     </div>
   );
 }
 
-function CostCard({ title, icon, currencies, amounts, accent }: { title: string; icon: string; currencies: string[]; amounts: Record<string, number>; accent: string }) {
+function CostCard({
+  title, icon, currencies, amounts, accent,
+  amountsSecondary, primaryLabel, secondaryLabel,
+}: {
+  title: string;
+  icon: string;
+  currencies: string[];
+  amounts: Record<string, number>;
+  accent: string;
+  amountsSecondary?: Record<string, number>;
+  primaryLabel?: string;
+  secondaryLabel?: string;
+}) {
+  const fmt = (n?: number) =>
+    n == null ? '—' : n.toLocaleString(undefined, { maximumFractionDigits: 2 });
   return (
     <div className="bg-dark-800 border border-dark-700 rounded-xl p-4">
       <div className="flex items-center gap-2 mb-2">
@@ -1103,11 +1311,19 @@ function CostCard({ title, icon, currencies, amounts, accent }: { title: string;
       ) : (
         <div className="space-y-1">
           {currencies.map((cur) => (
-            <div key={cur} className="flex justify-between items-baseline">
+            <div key={cur} className="flex justify-between items-baseline gap-2">
               <span className="text-xs text-gray-500">{cur}</span>
-              <span className={`text-lg font-semibold ${accent}`}>
-                {amounts[cur].toLocaleString(undefined, { maximumFractionDigits: 2 })}
-              </span>
+              <div className="flex items-baseline gap-2">
+                <span className={`text-lg font-semibold ${accent}`}>{fmt(amounts[cur])}</span>
+                {primaryLabel && <span className="text-[10px] text-gray-500">{primaryLabel}</span>}
+                {amountsSecondary && (
+                  <>
+                    <span className="text-xs text-gray-500">·</span>
+                    <span className="text-sm text-gray-300">{fmt(amountsSecondary[cur])}</span>
+                    {secondaryLabel && <span className="text-[10px] text-gray-500">{secondaryLabel}</span>}
+                  </>
+                )}
+              </div>
             </div>
           ))}
         </div>
@@ -1125,31 +1341,48 @@ function CostCard({ title, icon, currencies, amounts, accent }: { title: string;
 
 function DepartmentBreakdown({ rows, depts }: { rows: Credential[]; depts: Department[] }) {
   const data = useMemo(() => {
-    // key = dept_id (or 'orgwide') → { monthly: { CUR → amt }, yearly, oneTime, count }
-    const byDept = new Map<string, { monthly: Record<string, number>; yearly: Record<string, number>; oneTime: Record<string, number>; count: number }>();
-    const ensure = (k: string) => {
-      if (!byDept.has(k)) byDept.set(k, { monthly: {}, yearly: {}, oneTime: {}, count: 0 });
+    // key = dept_id (or 'orgwide') → bucket of per-currency totals.
+    // `est` mirrors `monthly` but accumulates estimated_amount (the
+    // operator's expected monthly spend on usage-based subs). Kept in a
+    // separate column so contracted vs estimated stay distinguishable.
+    type Bucket = {
+      monthly: Record<string, number>;
+      yearly: Record<string, number>;
+      oneTime: Record<string, number>;
+      est: Record<string, number>;
+      count: number;
+    };
+    const byDept = new Map<string, Bucket>();
+    const ensure = (k: string): Bucket => {
+      if (!byDept.has(k)) byDept.set(k, { monthly: {}, yearly: {}, oneTime: {}, est: {}, count: 0 });
       return byDept.get(k)!;
     };
 
     for (const r of rows) {
-      if (!r.active || r.price_amount == null || !r.price_currency) continue;
+      if (!r.active) continue;
+      const cur = r.price_currency;
+      if (r.price_amount == null && r.estimated_amount == null) continue;
+      if (!cur) continue;
       const key = r.owner_dept_id ?? 'orgwide';
       const bucket = ensure(key);
       bucket.count++;
-      const cur = r.price_currency;
-      const amt = Number(r.price_amount);
-      if (r.billing_cycle === 'monthly') {
-        bucket.monthly[cur] = (bucket.monthly[cur] ?? 0) + amt;
-        bucket.yearly[cur]  = (bucket.yearly[cur]  ?? 0) + amt * 12;
-      } else if (r.billing_cycle === 'quarterly') {
-        bucket.monthly[cur] = (bucket.monthly[cur] ?? 0) + amt / 3;
-        bucket.yearly[cur]  = (bucket.yearly[cur]  ?? 0) + amt * 4;
-      } else if (r.billing_cycle === 'yearly') {
-        bucket.monthly[cur] = (bucket.monthly[cur] ?? 0) + amt / 12;
-        bucket.yearly[cur]  = (bucket.yearly[cur]  ?? 0) + amt;
-      } else if (r.billing_cycle === 'one_time' || r.billing_cycle === 'custom') {
-        bucket.oneTime[cur] = (bucket.oneTime[cur] ?? 0) + amt;
+      if (r.price_amount != null) {
+        const amt = Number(r.price_amount);
+        if (r.billing_cycle === 'monthly') {
+          bucket.monthly[cur] = (bucket.monthly[cur] ?? 0) + amt;
+          bucket.yearly[cur]  = (bucket.yearly[cur]  ?? 0) + amt * 12;
+        } else if (r.billing_cycle === 'quarterly') {
+          bucket.monthly[cur] = (bucket.monthly[cur] ?? 0) + amt / 3;
+          bucket.yearly[cur]  = (bucket.yearly[cur]  ?? 0) + amt * 4;
+        } else if (r.billing_cycle === 'yearly') {
+          bucket.monthly[cur] = (bucket.monthly[cur] ?? 0) + amt / 12;
+          bucket.yearly[cur]  = (bucket.yearly[cur]  ?? 0) + amt;
+        } else if (r.billing_cycle === 'one_time' || r.billing_cycle === 'custom') {
+          bucket.oneTime[cur] = (bucket.oneTime[cur] ?? 0) + amt;
+        }
+      }
+      if (r.estimated_amount != null) {
+        bucket.est[cur] = (bucket.est[cur] ?? 0) + Number(r.estimated_amount);
       }
     }
     return byDept;
@@ -1160,23 +1393,56 @@ function DepartmentBreakdown({ rows, depts }: { rows: Credential[]; depts: Depar
     return (id: string) => (id === 'orgwide' ? 'Org-wide' : (m.get(id) ?? id));
   }, [depts]);
 
-  const orderedKeys = useMemo(
-    () => [...data.keys()].sort((a, b) => deptName(a).localeCompare(deptName(b))),
-    [data, deptName],
-  );
+  // Sort by largest monthly spend first across currencies (rough USD-ish
+  // weighting isn't worth FX complexity — sum all currency-amount pairs
+  // and sort. Department with the biggest active subscriptions surfaces
+  // at the top, which is what an admin scanning this table wants.)
+  const orderedKeys = useMemo(() => {
+    const weight = (k: string) =>
+      Object.values(data.get(k)?.monthly ?? {}).reduce((a, b) => a + b, 0);
+    return [...data.keys()].sort((a, b) => weight(b) - weight(a));
+  }, [data]);
+
+  // Column totals (per-currency) for the footer row.
+  const totals = useMemo(() => {
+    const monthly: Record<string, number> = {};
+    const yearly: Record<string, number> = {};
+    const oneTime: Record<string, number> = {};
+    const est: Record<string, number> = {};
+    let count = 0;
+    for (const b of data.values()) {
+      count += b.count;
+      for (const [c, v] of Object.entries(b.monthly)) monthly[c] = (monthly[c] ?? 0) + v;
+      for (const [c, v] of Object.entries(b.yearly))  yearly[c]  = (yearly[c]  ?? 0) + v;
+      for (const [c, v] of Object.entries(b.oneTime)) oneTime[c] = (oneTime[c] ?? 0) + v;
+      for (const [c, v] of Object.entries(b.est))     est[c]     = (est[c]     ?? 0) + v;
+    }
+    return { monthly, yearly, oneTime, est, count };
+  }, [data]);
+
+  // If every department's one-time / estimated bucket is empty, hide the
+  // column entirely — keeps the table scannable instead of wallpapering
+  // it with em-dashes.
+  const showOneTime  = Object.keys(totals.oneTime).length > 0;
+  const showEstimated = Object.keys(totals.est).length > 0;
 
   if (orderedKeys.length === 0) return null;
 
-  const formatRow = (obj: Record<string, number>) => {
+  // Each cell renders currencies as a vertical stack: "INR  ₹1,599 / CAD  $223.46".
+  // Right-aligned, monospaced, currency code as a small badge so the eye
+  // tracks down the column.
+  const CurrencyCell = ({ obj }: { obj: Record<string, number> }) => {
     const keys = Object.keys(obj).sort();
     if (!keys.length) return <span className="text-gray-600">—</span>;
     return (
-      <div className="flex flex-wrap gap-x-3 gap-y-0.5 justify-end">
+      <div className="flex flex-col items-end gap-0.5">
         {keys.map((cur) => (
-          <span key={cur} className="text-sm text-white">
-            <span className="text-gray-500 text-xs mr-1">{cur}</span>
-            {obj[cur].toLocaleString(undefined, { maximumFractionDigits: 2 })}
-          </span>
+          <div key={cur} className="flex items-baseline gap-2 tabular-nums">
+            <span className="text-[10px] font-semibold text-gray-500 uppercase">{cur}</span>
+            <span className="text-sm text-white font-medium">
+              {obj[cur].toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 })}
+            </span>
+          </div>
         ))}
       </div>
     );
@@ -1184,38 +1450,60 @@ function DepartmentBreakdown({ rows, depts }: { rows: Credential[]; depts: Depar
 
   return (
     <div className="bg-dark-800 border border-dark-700 rounded-xl mb-4 overflow-hidden">
-      <div className="px-4 py-3 border-b border-dark-700 flex items-center gap-2">
-        <i className="ri-pie-chart-line text-blue-400" />
-        <p className="text-xs text-gray-400 uppercase tracking-wider">Spend by department</p>
+      <div className="px-4 py-3 border-b border-dark-700 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <i className="ri-pie-chart-line text-blue-400" />
+          <p className="text-xs text-gray-400 uppercase tracking-wider">Spend by department</p>
+        </div>
+        <p className="text-[11px] text-gray-500">
+          {totals.count} active credential{totals.count === 1 ? '' : 's'} across {orderedKeys.length} bucket{orderedKeys.length === 1 ? '' : 's'}
+        </p>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
-          <thead className="text-xs text-gray-500 uppercase tracking-wider">
+          <thead className="text-[11px] text-gray-500 uppercase tracking-wider bg-dark-900/40">
             <tr className="border-b border-dark-700">
-              <th className="px-4 py-2 text-left font-medium">Department</th>
-              <th className="px-4 py-2 text-right font-medium">Creds</th>
-              <th className="px-4 py-2 text-right font-medium">Monthly</th>
-              <th className="px-4 py-2 text-right font-medium">Yearly</th>
-              <th className="px-4 py-2 text-right font-medium">One-time</th>
+              <th className="px-4 py-2.5 text-left font-medium">Department</th>
+              <th className="px-4 py-2.5 text-right font-medium w-16">Creds</th>
+              <th className="px-4 py-2.5 text-right font-medium">Monthly</th>
+              <th className="px-4 py-2.5 text-right font-medium">Yearly</th>
+              {showOneTime && <th className="px-4 py-2.5 text-right font-medium">One-time</th>}
+              {showEstimated && <th className="px-4 py-2.5 text-right font-medium">Estimated /mo</th>}
             </tr>
           </thead>
           <tbody>
             {orderedKeys.map((k) => {
               const b = data.get(k)!;
               return (
-                <tr key={k} className="border-b border-dark-700/50 hover:bg-dark-700/30">
-                  <td className="px-4 py-2.5 text-white">
-                    {deptName(k)}
-                    {k === 'orgwide' && <span className="ml-2 text-[10px] text-gray-500">(no dept assigned)</span>}
+                <tr key={k} className="border-b border-dark-700/40 hover:bg-dark-700/20 transition-colors">
+                  <td className="px-4 py-3 text-white align-middle">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-1.5 h-1.5 rounded-full ${k === 'orgwide' ? 'bg-amber-400' : 'bg-blue-400'}`} />
+                      <span>{deptName(k)}</span>
+                      {k === 'orgwide' && (
+                        <span className="text-[10px] text-gray-500">(no dept)</span>
+                      )}
+                    </div>
                   </td>
-                  <td className="px-4 py-2.5 text-right text-gray-400 text-xs">{b.count}</td>
-                  <td className="px-4 py-2.5 text-right">{formatRow(b.monthly)}</td>
-                  <td className="px-4 py-2.5 text-right">{formatRow(b.yearly)}</td>
-                  <td className="px-4 py-2.5 text-right">{formatRow(b.oneTime)}</td>
+                  <td className="px-4 py-3 text-right text-gray-400 text-xs tabular-nums align-middle">{b.count}</td>
+                  <td className="px-4 py-3 text-right align-middle"><CurrencyCell obj={b.monthly} /></td>
+                  <td className="px-4 py-3 text-right align-middle"><CurrencyCell obj={b.yearly} /></td>
+                  {showOneTime && <td className="px-4 py-3 text-right align-middle"><CurrencyCell obj={b.oneTime} /></td>}
+                  {showEstimated && <td className="px-4 py-3 text-right align-middle"><CurrencyCell obj={b.est} /></td>}
                 </tr>
               );
             })}
           </tbody>
+          <tfoot className="bg-dark-900/40 border-t-2 border-dark-600">
+            <tr>
+              <td className="px-4 py-3 text-[11px] uppercase tracking-wider text-gray-400 font-semibold">Total</td>
+              <td className="px-4 py-3 text-right text-gray-300 text-xs tabular-nums font-semibold">{totals.count}</td>
+              <td className="px-4 py-3 text-right"><CurrencyCell obj={totals.monthly} /></td>
+              <td className="px-4 py-3 text-right"><CurrencyCell obj={totals.yearly} /></td>
+              {showOneTime && <td className="px-4 py-3 text-right"><CurrencyCell obj={totals.oneTime} /></td>}
+              {showEstimated && <td className="px-4 py-3 text-right"><CurrencyCell obj={totals.est} /></td>}
+            </tr>
+          </tfoot>
         </table>
       </div>
     </div>
@@ -1575,6 +1863,13 @@ type Invoice = {
   source: string;
   pdf_url: string | null;
   notes: string | null;
+  // Attached file metadata (added in migration 0082). `attachment_path`
+  // is an object key under the `credential-invoices` storage bucket;
+  // the dashboard mints a signed URL on demand. NULL when only an
+  // external pdf_url was recorded.
+  attachment_path: string | null;
+  attachment_mime: string | null;
+  attachment_name: string | null;
   platform_name: string;
   subscription_model: string | null;
   category: string | null;
@@ -1589,20 +1884,210 @@ const INVOICE_STATUS_TINT: Record<Invoice['status'], string> = {
   draft:    'bg-blue-500/15 text-blue-400',
 };
 
+// Source-of-truth badge for each invoice row. Surfaces *how* the invoice
+// reached us — API connector, inbound email, browser scrape, or manual
+// upload — so the customer can spot which platforms still need a connector.
+function sourceBadge(s: string): { label: string; cls: string } {
+  if (s?.startsWith('api_')) return { label: s.replace('api_', 'API · '), cls: 'bg-cyan-500/15 text-cyan-300' };
+  if (s === 'email')         return { label: 'Email',   cls: 'bg-violet-500/15 text-violet-300' };
+  if (s === 'scrape')        return { label: 'Scraped', cls: 'bg-fuchsia-500/15 text-fuchsia-300' };
+  if (s === 'csv')           return { label: 'CSV',     cls: 'bg-blue-500/15 text-blue-300' };
+  return { label: s || 'Manual', cls: 'bg-gray-500/15 text-gray-300' };
+}
+
+// One-shot enqueue button used on each credential row + retry path. Shows
+// a brief in-flight spinner; the actual progress is visible in the
+// Fetch-status tab.
+function TestFetchButton({ credId }: { credId: string }) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const click = async () => {
+    setBusy(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const r = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/invoice-test-fetch`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session?.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credential_id: credId }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error ?? `${r.status}`);
+      setDone(true);
+      setTimeout(() => setDone(false), 4000);
+    } catch (e) {
+      alert(`Test fetch failed: ${(e as Error).message}`);
+    } finally { setBusy(false); }
+  };
+  return (
+    <button
+      onClick={click}
+      disabled={busy}
+      className="text-xs text-cyan-400 hover:text-cyan-300 disabled:opacity-40"
+      title="Queue a single invoice-fetch job now"
+    >
+      {busy ? '…' : done ? '✓ Queued' : 'Test fetch'}
+    </button>
+  );
+}
+
+// ============== Fetch-status tab ==============
+// Shows the last ~50 invoice_fetch_jobs rows for the current org with
+// inline retry + "enter OTP" actions. Lets the admin see at a glance
+// which credentials are flowing automatically and which are stuck.
+
+interface FetchJob {
+  id: string;
+  credential_id: string;
+  billing_period_start: string;
+  billing_period_end: string;
+  tier: 'api' | 'email' | 'scrape';
+  status: 'queued' | 'running' | 'success' | 'failed' | 'needs_otp' | 'needs_otp_timeout' | 'needs_human' | 'cancelled';
+  attempts: number;
+  last_error: string | null;
+  result_invoice_id: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+const FETCH_STATUS_TINT: Record<FetchJob['status'], string> = {
+  queued:            'bg-gray-500/15 text-gray-300',
+  running:           'bg-blue-500/15 text-blue-300',
+  success:           'bg-emerald-500/15 text-emerald-300',
+  failed:            'bg-rose-500/15 text-rose-300',
+  needs_otp:         'bg-amber-500/15 text-amber-300',
+  needs_otp_timeout: 'bg-amber-500/10 text-amber-400',
+  needs_human:       'bg-fuchsia-500/15 text-fuchsia-300',
+  cancelled:         'bg-gray-500/10 text-gray-400',
+};
+
+function FetchStatusTab({ credentials }: { credentials: Credential[] }) {
+  const [jobs, setJobs] = useState<FetchJob[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
+
+  const credMap = useMemo(() => {
+    const m = new Map<string, Credential>();
+    for (const c of credentials) m.set(c.id, c);
+    return m;
+  }, [credentials]);
+
+  const load = async () => {
+    setLoading(true);
+    const { data } = await supabase
+      .from('invoice_fetch_jobs')
+      .select('id, credential_id, billing_period_start, billing_period_end, tier, status, attempts, last_error, result_invoice_id, created_at, completed_at')
+      .order('created_at', { ascending: false })
+      .limit(50);
+    setJobs((data ?? []) as FetchJob[]);
+    setLoading(false);
+  };
+
+  useEffect(() => { void load(); }, []);
+
+  const retry = async (credId: string) => {
+    setRetryingId(credId);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const r = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/invoice-test-fetch`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session?.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credential_id: credId }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error ?? `${r.status}`);
+      await load();
+    } catch (e) {
+      alert(`Retry failed: ${(e as Error).message}`);
+    } finally {
+      setRetryingId(null);
+    }
+  };
+
+  return (
+    <div className="bg-dark-800 border border-dark-700 rounded-xl">
+      <div className="p-4 border-b border-dark-700 flex items-center justify-between">
+        <div>
+          <p className="text-sm text-white font-medium">Fetch jobs · last 50</p>
+          <p className="text-[11px] text-gray-500">Daily cron enqueues these. Auto-forwarded to your accounts team on success.</p>
+        </div>
+        <button onClick={load} className="text-xs text-emerald-400 hover:text-emerald-300">Refresh</button>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="text-xs text-gray-500 uppercase tracking-wider">
+            <tr className="border-b border-dark-700">
+              <th className="px-4 py-3 text-left font-medium">Platform</th>
+              <th className="px-4 py-3 text-left font-medium">Period</th>
+              <th className="px-4 py-3 text-left font-medium">Tier</th>
+              <th className="px-4 py-3 text-left font-medium">Status</th>
+              <th className="px-4 py-3 text-left font-medium">Last error</th>
+              <th className="px-4 py-3 text-right font-medium" />
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={6} className="px-4 py-10 text-center text-sm text-gray-500">Loading…</td></tr>
+            ) : jobs.length === 0 ? (
+              <tr><td colSpan={6} className="px-4 py-10 text-center text-sm text-gray-500">No fetch jobs yet. Click "Test fetch" on any credential to queue one.</td></tr>
+            ) : jobs.map((j) => {
+              const cred = credMap.get(j.credential_id);
+              const isOpen = j.status === 'queued' || j.status === 'running' || j.status === 'needs_otp';
+              return (
+                <tr key={j.id} className="border-b border-dark-700/50 hover:bg-dark-700/30">
+                  <td className="px-4 py-3 text-white">{cred?.platform_name ?? '—'}</td>
+                  <td className="px-4 py-3 text-gray-300 text-xs">{j.billing_period_start} → {j.billing_period_end}</td>
+                  <td className="px-4 py-3 text-gray-400 text-xs">{j.tier}</td>
+                  <td className="px-4 py-3">
+                    <span className={`text-xs px-2 py-1 rounded-full ${FETCH_STATUS_TINT[j.status]}`}>{j.status}</span>
+                    {j.attempts > 1 && <span className="ml-2 text-[10px] text-gray-500">×{j.attempts}</span>}
+                  </td>
+                  <td className="px-4 py-3 text-gray-400 text-xs max-w-md truncate" title={j.last_error ?? ''}>{j.last_error ?? '—'}</td>
+                  <td className="px-4 py-3 text-right">
+                    {!isOpen && cred && (
+                      <button
+                        onClick={() => void retry(cred.id)}
+                        disabled={retryingId === cred.id}
+                        className="text-xs text-emerald-400 hover:text-emerald-300 disabled:opacity-40"
+                      >
+                        {retryingId === cred.id ? '…' : 'Retry'}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function InvoicesTab({ credentials, depts }: { credentials: Credential[]; depts: Department[] }) {
+  const { canEdit, canDelete } = useAppAccess();
+  const canWriteInv = canEdit('credentials');
+  const canDeleteInv = canDelete('credentials');
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | Invoice['status']>('all');
   const [platformFilter, setPlatformFilter] = useState<'all' | string>('all');
+  // Date-range filter on issue_date. Either bound is optional.
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo]     = useState('');
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<Invoice | null>(null);
   const [csvOpen, setCsvOpen] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [rangeDeleteOpen, setRangeDeleteOpen] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     const { data } = await supabase.from('v_credential_invoices').select('*').order('issue_date', { ascending: false, nullsFirst: false });
     setInvoices((data ?? []) as Invoice[]);
+    setSelected(new Set());
     setLoading(false);
   }, []);
 
@@ -1613,10 +2098,70 @@ function InvoicesTab({ credentials, depts }: { credentials: Credential[]; depts:
     return invoices.filter((r) => {
       if (statusFilter !== 'all' && r.status !== statusFilter) return false;
       if (platformFilter !== 'all' && r.credential_id !== platformFilter) return false;
+      if (dateFrom && (!r.issue_date || r.issue_date < dateFrom)) return false;
+      if (dateTo   && (!r.issue_date || r.issue_date > dateTo))   return false;
       if (!ql) return true;
-      return [r.platform_name, r.invoice_number, r.notes].filter(Boolean).join(' ').toLowerCase().includes(ql);
+      // Global search — every field worth grepping. Numeric amount is
+      // stringified so a user typing "1599" finds the matching row.
+      const hay = [
+        r.platform_name, r.invoice_number, r.notes, r.currency,
+        r.status, r.source, r.category, r.subscription_model,
+        r.issue_date, r.period_start, r.period_end, r.due_date,
+        r.amount != null ? String(r.amount) : '',
+      ].filter(Boolean).join(' ').toLowerCase();
+      return hay.includes(ql);
     });
-  }, [invoices, q, statusFilter, platformFilter]);
+  }, [invoices, q, statusFilter, platformFilter, dateFrom, dateTo]);
+
+  const allFilteredSelected = filtered.length > 0 && filtered.every((r) => selected.has(r.id));
+  const toggleAll = () => {
+    if (allFilteredSelected) {
+      const next = new Set(selected);
+      for (const r of filtered) next.delete(r.id);
+      setSelected(next);
+    } else {
+      const next = new Set(selected);
+      for (const r of filtered) next.add(r.id);
+      setSelected(next);
+    }
+  };
+  const toggleOne = (id: string) => {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setSelected(next);
+  };
+
+  const callDelete = async (body: Record<string, unknown>): Promise<{ deleted: number; files_deleted: number }> => {
+    const { data: { session } } = await supabase.auth.getSession();
+    const resp = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/invoice-delete`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${session?.access_token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await resp.json();
+    if (!resp.ok) throw new Error(j.error ?? `delete failed (${resp.status})`);
+    return j;
+  };
+
+  const deleteRow = async (r: Invoice) => {
+    if (!confirm(`Delete invoice "${r.invoice_number ?? '(no number)'}" for ${r.platform_name}? This removes the row and any attached file.`)) return;
+    try {
+      await callDelete({ ids: [r.id] });
+      await load();
+    } catch (e) { alert(`Delete failed: ${(e as Error).message}`); }
+  };
+
+  const deleteSelected = async () => {
+    if (selected.size === 0) return;
+    if (!confirm(`Delete ${selected.size} invoice${selected.size === 1 ? '' : 's'} and any attached files? This cannot be undone.`)) return;
+    setBulkBusy(true);
+    try {
+      const j = await callDelete({ ids: Array.from(selected) });
+      alert(`Deleted ${j.deleted} invoice(s) + ${j.files_deleted} file(s).`);
+      await load();
+    } catch (e) { alert(`Bulk delete failed: ${(e as Error).message}`); }
+    setBulkBusy(false);
+  };
 
   const totals = useMemo(() => {
     const byCurStatus: Record<string, Record<string, number>> = {};
@@ -1651,63 +2196,149 @@ function InvoicesTab({ credentials, depts }: { credentials: Credential[]; depts:
             </div>
           )}
         </div>
-        <div className="flex gap-2">
-          <button onClick={() => setCsvOpen(true)} className="px-3 py-2 bg-dark-700 hover:bg-dark-600 rounded-lg text-xs text-white">
-            <i className="ri-file-upload-line mr-1" /> Upload CSV
-          </button>
-          <button onClick={() => setAdding(true)} className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-sm text-white font-medium">
-            <i className="ri-add-line mr-1" /> Add invoice
-          </button>
+        <div className="flex gap-2 flex-wrap">
+          {canDeleteInv && (
+            <button
+              onClick={() => setRangeDeleteOpen(true)}
+              className="px-3 py-2 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 rounded-lg text-xs"
+              title="Delete every invoice within an issue-date range"
+            >
+              <i className="ri-calendar-close-line mr-1" /> Delete by date range
+            </button>
+          )}
+          {canDeleteInv && selected.size > 0 && (
+            <button
+              disabled={bulkBusy}
+              onClick={() => void deleteSelected()}
+              className="px-3 py-2 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 rounded-lg text-xs text-white"
+            >
+              <i className="ri-delete-bin-6-line mr-1" />
+              {bulkBusy ? 'Deleting…' : `Delete selected (${selected.size})`}
+            </button>
+          )}
+          {canWriteInv && (
+            <button onClick={() => setCsvOpen(true)} className="px-3 py-2 bg-dark-700 hover:bg-dark-600 rounded-lg text-xs text-white">
+              <i className="ri-file-upload-line mr-1" /> Upload CSV
+            </button>
+          )}
+          {canWriteInv && (
+            <button onClick={() => setAdding(true)} className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-sm text-white font-medium">
+              <i className="ri-add-line mr-1" /> Add invoice
+            </button>
+          )}
         </div>
       </div>
 
       <div className="bg-dark-800 border border-dark-700 rounded-xl">
-        <div className="p-4 flex flex-col md:flex-row gap-3 md:items-center border-b border-dark-700">
-          <div className="flex-1 flex items-center bg-dark-900 border border-dark-700 rounded-lg px-3 py-1.5">
-            <i className="ri-search-line text-gray-500 text-sm mr-2" />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search platform, invoice #, notes…"
-              className="bg-transparent text-sm text-white placeholder-gray-600 focus:outline-none flex-1" />
+        <div className="p-4 flex flex-col gap-3 border-b border-dark-700">
+          <div className="flex flex-col md:flex-row gap-3 md:items-center">
+            <div className="flex-1 flex items-center bg-dark-900 border border-dark-700 rounded-lg px-3 py-1.5">
+              <i className="ri-search-line text-gray-500 text-sm mr-2" />
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search invoice # / platform / amount / notes / dates…"
+                className="bg-transparent text-sm text-white placeholder-gray-600 focus:outline-none flex-1" />
+            </div>
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
+              className="bg-dark-900 border border-dark-700 rounded-lg px-3 py-1.5 text-sm text-white">
+              <option value="all">All statuses</option>
+              <option value="paid">Paid</option>
+              <option value="pending">Pending</option>
+              <option value="overdue">Overdue</option>
+              <option value="failed">Failed</option>
+              <option value="refunded">Refunded</option>
+              <option value="draft">Draft</option>
+            </select>
+            <select value={platformFilter} onChange={(e) => setPlatformFilter(e.target.value)}
+              className="bg-dark-900 border border-dark-700 rounded-lg px-3 py-1.5 text-sm text-white">
+              <option value="all">All platforms</option>
+              {credentials.map((c) => <option key={c.id} value={c.id}>{c.platform_name}</option>)}
+            </select>
           </div>
-          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
-            className="bg-dark-900 border border-dark-700 rounded-lg px-3 py-1.5 text-sm text-white">
-            <option value="all">All statuses</option>
-            <option value="paid">Paid</option>
-            <option value="pending">Pending</option>
-            <option value="overdue">Overdue</option>
-            <option value="failed">Failed</option>
-            <option value="refunded">Refunded</option>
-            <option value="draft">Draft</option>
-          </select>
-          <select value={platformFilter} onChange={(e) => setPlatformFilter(e.target.value)}
-            className="bg-dark-900 border border-dark-700 rounded-lg px-3 py-1.5 text-sm text-white">
-            <option value="all">All platforms</option>
-            {credentials.map((c) => <option key={c.id} value={c.id}>{c.platform_name}</option>)}
-          </select>
+          <div className="flex flex-wrap gap-2 items-center text-xs text-gray-400">
+            <span className="text-[11px] uppercase tracking-wider">Issue date</span>
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="bg-dark-900 border border-dark-700 rounded-lg px-2 py-1 text-xs text-white"
+            />
+            <span className="text-gray-500">→</span>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="bg-dark-900 border border-dark-700 rounded-lg px-2 py-1 text-xs text-white"
+            />
+            {(dateFrom || dateTo) && (
+              <button
+                onClick={() => { setDateFrom(''); setDateTo(''); }}
+                className="text-[11px] text-gray-400 hover:text-white underline"
+              >Clear</button>
+            )}
+            {/* Quick presets — common SaaS-finance views. */}
+            <span className="text-gray-600 mx-2">|</span>
+            {([
+              { label: 'This month', range: 'thisMonth' },
+              { label: 'Last month', range: 'lastMonth' },
+              { label: 'This year',  range: 'thisYear' },
+            ] as const).map((p) => (
+              <button
+                key={p.range}
+                onClick={() => {
+                  const t = new Date();
+                  if (p.range === 'thisMonth') {
+                    setDateFrom(`${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-01`);
+                    const last = new Date(t.getFullYear(), t.getMonth() + 1, 0);
+                    setDateTo(last.toISOString().slice(0, 10));
+                  } else if (p.range === 'lastMonth') {
+                    const start = new Date(t.getFullYear(), t.getMonth() - 1, 1);
+                    const end   = new Date(t.getFullYear(), t.getMonth(), 0);
+                    setDateFrom(start.toISOString().slice(0, 10));
+                    setDateTo(end.toISOString().slice(0, 10));
+                  } else {
+                    setDateFrom(`${t.getFullYear()}-01-01`);
+                    setDateTo(`${t.getFullYear()}-12-31`);
+                  }
+                }}
+                className="text-[11px] px-2 py-0.5 rounded bg-dark-700 hover:bg-dark-600 text-gray-300"
+              >{p.label}</button>
+            ))}
+          </div>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="text-xs text-gray-500 uppercase tracking-wider">
               <tr className="border-b border-dark-700">
+                {canDeleteInv && (
+                  <th className="px-3 py-3 w-8">
+                    <input type="checkbox" checked={allFilteredSelected} onChange={toggleAll} />
+                  </th>
+                )}
                 <th className="px-4 py-3 text-left font-medium">Platform</th>
                 <th className="px-4 py-3 text-left font-medium">Invoice #</th>
                 <th className="px-4 py-3 text-left font-medium">Issue date</th>
                 <th className="px-4 py-3 text-left font-medium">Period</th>
                 <th className="px-4 py-3 text-right font-medium">Amount</th>
                 <th className="px-4 py-3 text-left font-medium">Status</th>
+                <th className="px-4 py-3 text-left font-medium">File</th>
                 <th className="px-4 py-3 text-left font-medium">Source</th>
                 <th className="px-4 py-3 text-right font-medium" />
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={8} className="px-4 py-10 text-center text-sm text-gray-500">Loading…</td></tr>
+                <tr><td colSpan={10} className="px-4 py-10 text-center text-sm text-gray-500">Loading…</td></tr>
               ) : filtered.length === 0 ? (
-                <tr><td colSpan={8} className="px-4 py-10 text-center text-sm text-gray-500">
+                <tr><td colSpan={10} className="px-4 py-10 text-center text-sm text-gray-500">
                   No invoices yet. Add one manually, upload a CSV, or wait for an API connector to sync.
                 </td></tr>
               ) : filtered.map((r) => (
                 <tr key={r.id} className="border-b border-dark-700/50 hover:bg-dark-700/30">
+                  {canDeleteInv && (
+                    <td className="px-3 py-3 text-center">
+                      <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleOne(r.id)} />
+                    </td>
+                  )}
                   <td className="px-4 py-3 text-white">
                     <p>{r.platform_name}</p>
                     {r.subscription_model && <p className="text-[10px] text-gray-500">{r.subscription_model}</p>}
@@ -1723,13 +2354,23 @@ function InvoicesTab({ credentials, depts }: { credentials: Credential[]; depts:
                   <td className="px-4 py-3">
                     <span className={`text-xs px-2 py-1 rounded-full ${INVOICE_STATUS_TINT[r.status]}`}>{r.status}</span>
                   </td>
-                  <td className="px-4 py-3 text-gray-400 text-xs">{r.source}</td>
+                  <td className="px-4 py-3 text-xs">
+                    <InvoiceAttachmentLink invoice={r} />
+                  </td>
+                  <td className="px-4 py-3 text-xs">
+                    {(() => {
+                      const b = sourceBadge(r.source);
+                      return <span className={`px-2 py-1 rounded-full ${b.cls}`}>{b.label}</span>;
+                    })()}
+                  </td>
                   <td className="px-4 py-3 text-right">
                     <div className="inline-flex items-center gap-3">
-                      {r.pdf_url && (
-                        <a href={r.pdf_url} target="_blank" rel="noreferrer" className="text-xs text-blue-400 hover:text-blue-300">PDF</a>
+                      {canWriteInv && <button onClick={() => setEditing(r)} className="text-xs text-emerald-400 hover:text-emerald-300">Edit</button>}
+                      {canDeleteInv && (
+                        <button onClick={() => void deleteRow(r)} className="text-xs text-rose-400 hover:text-rose-300">
+                          Delete
+                        </button>
                       )}
-                      <button onClick={() => setEditing(r)} className="text-xs text-emerald-400 hover:text-emerald-300">Edit</button>
                     </div>
                   </td>
                 </tr>
@@ -1758,8 +2399,125 @@ function InvoicesTab({ credentials, depts }: { credentials: Credential[]; depts:
           onDone={async () => { setCsvOpen(false); await load(); }}
         />
       )}
+      {rangeDeleteOpen && (
+        <RangeDeleteModal
+          credentials={credentials}
+          onClose={() => setRangeDeleteOpen(false)}
+          onDone={async () => { setRangeDeleteOpen(false); await load(); }}
+        />
+      )}
       {/* Suppress unused-warning on depts — kept for future per-dept invoice grouping. */}
       <span hidden>{depts.length}</span>
+    </div>
+  );
+}
+
+// Signed-URL link for an attached file. The storage bucket is private,
+// so we mint a 5-min signed URL on click instead of putting it in the
+// table render (would generate N URLs per page load for nothing). Falls
+// back to the legacy `pdf_url` external link when there is no attachment.
+function InvoiceAttachmentLink({ invoice }: { invoice: Invoice }) {
+  const [busy, setBusy] = useState(false);
+  if (!invoice.attachment_path) {
+    if (invoice.pdf_url) {
+      return <a href={invoice.pdf_url} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300">External link</a>;
+    }
+    return <span className="text-gray-600">—</span>;
+  }
+  const open = async () => {
+    setBusy(true);
+    try {
+      const { data, error } = await supabase.storage
+        .from('credential-invoices')
+        .createSignedUrl(invoice.attachment_path!, 60 * 5);
+      if (error || !data?.signedUrl) throw new Error(error?.message ?? 'no url');
+      window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
+    } catch (e) {
+      alert(`Could not open file: ${(e as Error).message}`);
+    } finally { setBusy(false); }
+  };
+  const icon = invoice.attachment_mime?.startsWith('image/') ? 'ri-image-line' : 'ri-file-pdf-2-line';
+  const label = invoice.attachment_name ?? (invoice.attachment_mime?.startsWith('image/') ? 'Image' : 'PDF');
+  return (
+    <button onClick={open} disabled={busy} className="inline-flex items-center gap-1 text-blue-400 hover:text-blue-300 disabled:opacity-50">
+      <i className={icon} />
+      <span className="truncate max-w-[160px]" title={label}>{busy ? 'Opening…' : label}</span>
+    </button>
+  );
+}
+
+function RangeDeleteModal({ credentials, onClose, onDone }: {
+  credentials: Credential[];
+  onClose: () => void;
+  onDone: () => Promise<void>;
+}) {
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [credId, setCredId] = useState<string>('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const run = async () => {
+    if (!from && !to) { setErr('Pick at least one date'); return; }
+    const scope = credId ? ` for ${credentials.find((c) => c.id === credId)?.platform_name ?? 'selected credential'}` : '';
+    const range = `${from || 'beginning'} → ${to || 'today'}`;
+    if (!confirm(`Delete EVERY invoice${scope} dated ${range}? This cannot be undone.`)) return;
+    setBusy(true); setErr(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const resp = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/invoice-delete`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session?.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          date_from: from || undefined,
+          date_to:   to   || undefined,
+          credential_id: credId || undefined,
+        }),
+      });
+      const j = await resp.json();
+      if (!resp.ok) throw new Error(j.error ?? `${resp.status}`);
+      alert(`Deleted ${j.deleted} invoice(s) + ${j.files_deleted} file(s).`);
+      await onDone();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={onClose}>
+      <div className="bg-dark-800 border border-dark-700 rounded-xl w-full max-w-md p-5" onClick={(e) => e.stopPropagation()}>
+        <header className="flex items-center justify-between mb-4">
+          <h2 className="text-lg text-white font-semibold">Delete by date range</h2>
+          <button onClick={onClose} className="w-8 h-8 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-400"><i className="ri-close-line" /></button>
+        </header>
+        <p className="text-xs text-gray-400 mb-3">
+          Removes every invoice whose <strong className="text-white">issue date</strong> falls in this range
+          (and its attached file, if any). Leave a date blank for an open-ended bound.
+        </p>
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="From">
+              <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className={inputCls} />
+            </Field>
+            <Field label="To">
+              <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className={inputCls} />
+            </Field>
+          </div>
+          <Field label="Limit to platform (optional)">
+            <select value={credId} onChange={(e) => setCredId(e.target.value)} className={inputCls}>
+              <option value="">— all platforms —</option>
+              {credentials.map((c) => <option key={c.id} value={c.id}>{c.platform_name}</option>)}
+            </select>
+          </Field>
+          {err && <p className="text-xs text-rose-300">{err}</p>}
+        </div>
+        <footer className="flex justify-end gap-2 mt-5">
+          <button disabled={busy} onClick={onClose} className="px-4 py-2 bg-dark-700 hover:bg-dark-600 rounded-lg text-sm text-white">Cancel</button>
+          <button disabled={busy} onClick={run} className="px-4 py-2 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 rounded-lg text-sm text-white font-medium">
+            {busy ? 'Deleting…' : 'Delete range'}
+          </button>
+        </footer>
+      </div>
     </div>
   );
 }
@@ -1783,10 +2541,68 @@ function InvoiceModal({ invoice, credentials, onClose, onSaved }: {
   const [notes, setNotes] = useState(invoice?.notes ?? '');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Attached file state. `file` = a freshly picked File (not yet
+  // uploaded). `attachment` = the saved attachment metadata for the
+  // current row (either from `invoice` or from a successful upload
+  // during this open). `dragOver` toggles the drop-zone tint.
+  const [file, setFile] = useState<File | null>(null);
+  const [attachment, setAttachment] = useState<{
+    path: string | null; mime: string | null; name: string | null;
+  }>({
+    path: invoice?.attachment_path ?? null,
+    mime: invoice?.attachment_mime ?? null,
+    name: invoice?.attachment_name ?? null,
+  });
+  const [dragOver, setDragOver] = useState(false);
+  const [uploading, setUploading] = useState(false);
+
+  // Accept these client-side too — server (storage bucket) re-enforces
+  // via allowed_mime_types in migration 0082, but failing early gives
+  // a nicer message.
+  const ACCEPTED_MIME = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
+  const MAX_BYTES = 25 * 1024 * 1024;
+
+  const pickFile = (f: File | null) => {
+    setErr(null);
+    if (!f) { setFile(null); return; }
+    if (!ACCEPTED_MIME.includes(f.type)) { setErr(`Unsupported file type: ${f.type || 'unknown'}. Use PDF, PNG, JPG or WEBP.`); return; }
+    if (f.size > MAX_BYTES) { setErr(`File too large (${(f.size / 1024 / 1024).toFixed(1)} MB). Max 25 MB.`); return; }
+    setFile(f);
+  };
+
+  const uploadIfNeeded = async (): Promise<{ path: string | null; mime: string | null; name: string | null }> => {
+    if (!file) return attachment;
+    setUploading(true);
+    try {
+      // Find the credential's org so the path matches storage RLS.
+      const cred = credentials.find((c) => c.id === credId);
+      if (!cred) throw new Error('Pick a credential first');
+      const orgId = cred.org_id;
+      // Random object key. We keep original extension so HEAD requests
+      // serve the right Content-Type when downloaded.
+      const ext = (file.name.split('.').pop() ?? 'bin').toLowerCase().slice(0, 6);
+      const objectKey = `${orgId}/${credId}/${crypto.randomUUID()}.${ext}`;
+      const { error } = await supabase.storage
+        .from('credential-invoices')
+        .upload(objectKey, file, {
+          contentType: file.type,
+          upsert: false,
+          cacheControl: '3600',
+        });
+      if (error) throw new Error(error.message);
+      return { path: objectKey, mime: file.type, name: file.name };
+    } finally { setUploading(false); }
+  };
+
+  const clearAttachment = () => {
+    setFile(null);
+    setAttachment({ path: null, mime: null, name: null });
+  };
 
   const save = async () => {
     setBusy(true); setErr(null);
     try {
+      const finalAttachment = await uploadIfNeeded();
       const { data: { session } } = await supabase.auth.getSession();
       const r = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/invoice-save`, {
         method: 'POST',
@@ -1804,6 +2620,9 @@ function InvoiceModal({ invoice, credentials, onClose, onSaved }: {
           status,
           pdf_url: pdfUrl || null,
           notes: notes || null,
+          attachment_path: finalAttachment.path,
+          attachment_mime: finalAttachment.mime,
+          attachment_name: finalAttachment.name,
         }),
       });
       const j = await r.json();
@@ -1869,10 +2688,74 @@ function InvoiceModal({ invoice, credentials, onClose, onSaved }: {
             <Field label="Due date">
               <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className={inputCls} />
             </Field>
-            <Field label="PDF / receipt URL">
-              <input value={pdfUrl} onChange={(e) => setPdfUrl(e.target.value)} className={inputCls} placeholder="https://…" />
+            <Field label="External link (optional)">
+              <input value={pdfUrl} onChange={(e) => setPdfUrl(e.target.value)} className={inputCls} placeholder="https://… (use only if not uploading a file)" />
             </Field>
           </div>
+
+          {/* Attached file (PDF / image) — drag-drop or browse */}
+          <Field label="Invoice file">
+            {attachment.path && !file ? (
+              <div className="flex items-center justify-between bg-dark-900 border border-dark-700 rounded-lg px-3 py-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <i className={attachment.mime?.startsWith('image/') ? 'ri-image-line text-blue-400' : 'ri-file-pdf-2-line text-rose-400'} />
+                  <span className="text-xs text-white truncate" title={attachment.name ?? ''}>{attachment.name ?? 'Attached file'}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-[11px] text-emerald-400 hover:text-emerald-300 cursor-pointer">
+                    Replace
+                    <input
+                      type="file"
+                      accept=".pdf,.png,.jpg,.jpeg,.webp,application/pdf,image/png,image/jpeg,image/webp"
+                      className="hidden"
+                      onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
+                    />
+                  </label>
+                  <button onClick={clearAttachment} className="text-[11px] text-rose-400 hover:text-rose-300">Remove</button>
+                </div>
+              </div>
+            ) : (
+              <div
+                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault(); setDragOver(false);
+                  pickFile(e.dataTransfer.files?.[0] ?? null);
+                }}
+                className={`border-2 border-dashed rounded-lg px-4 py-6 text-center transition-colors ${
+                  dragOver ? 'border-emerald-500/60 bg-emerald-500/5' : 'border-dark-700 bg-dark-900'
+                }`}
+              >
+                {file ? (
+                  <div className="flex items-center justify-center gap-2">
+                    <i className={file.type.startsWith('image/') ? 'ri-image-line text-blue-400' : 'ri-file-pdf-2-line text-rose-400'} />
+                    <span className="text-xs text-white truncate" title={file.name}>{file.name}</span>
+                    <span className="text-[10px] text-gray-500">({(file.size / 1024).toFixed(0)} KB)</span>
+                    <button onClick={() => setFile(null)} className="text-[10px] text-rose-400 hover:text-rose-300 ml-2">remove</button>
+                  </div>
+                ) : (
+                  <>
+                    <i className="ri-upload-cloud-2-line text-2xl text-gray-500 block mb-1" />
+                    <p className="text-xs text-gray-300">Drop PDF / PNG / JPG here</p>
+                    <p className="text-[11px] text-gray-500 mt-0.5">
+                      or{' '}
+                      <label className="text-emerald-400 hover:text-emerald-300 underline cursor-pointer">
+                        browse
+                        <input
+                          type="file"
+                          accept=".pdf,.png,.jpg,.jpeg,.webp,application/pdf,image/png,image/jpeg,image/webp"
+                          className="hidden"
+                          onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
+                        />
+                      </label>
+                      {' '}from your computer · max 25 MB
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
+            {uploading && <p className="text-[11px] text-gray-500 mt-1">Uploading…</p>}
+          </Field>
           <Field label="Notes">
             <textarea value={notes} onChange={(e) => setNotes(e.target.value)} className={`${inputCls} h-16 resize-none`} placeholder="Anything else worth recording" />
           </Field>
@@ -2160,38 +3043,81 @@ function ConnectorModal({ cred, onClose, onSaved }: { cred: Credential; onClose:
 // the safe view doesn't even surface them, and even if it did we'd strip
 // here. Department UUIDs are resolved to names so the sheet is self-contained.
 
-function exportCredentialsCsv(rows: Credential[], depts: Department[]) {
+// Full-fat CSV export: includes every billing/usage field AND the list
+// of employees each credential is currently assigned to. Pulls active
+// (non-revoked) credential_assignments + joins employees so accounting
+// gets ONE sheet showing platform → cost → who has access → next renewal
+// without cross-referencing four tables.
+async function exportCredentialsCsv(rows: Credential[], depts: Department[]) {
   const deptName = new Map(depts.map((d) => [d.id, d.name]));
+
+  // Fetch active assignments for ALL credentials in the export in one
+  // round-trip. employees!inner ensures we drop orphan rows where the
+  // employee was deleted but the assignment wasn't (shouldn't happen due
+  // to FK CASCADE, but defensive). delivery_email is the address the
+  // password was sent to, useful when an employee has multiple addresses.
+  const credIds = rows.map((r) => r.id);
+  const assignByCred = new Map<string, { name: string; email: string; sent_at: string }[]>();
+  if (credIds.length > 0) {
+    const { data: assignments } = await supabase
+      .from('credential_assignments')
+      .select('credential_id, delivery_email, sent_at, employees!inner(full_name, work_email)')
+      .in('credential_id', credIds)
+      .is('revoked_at', null);
+    type Row = {
+      credential_id: string;
+      delivery_email: string | null;
+      sent_at: string;
+      employees: { full_name: string | null; work_email: string | null } | null;
+    };
+    for (const a of (assignments ?? []) as Row[]) {
+      const name = a.employees?.full_name ?? '—';
+      const email = a.delivery_email ?? a.employees?.work_email ?? '';
+      const list = assignByCred.get(a.credential_id) ?? [];
+      list.push({ name, email, sent_at: a.sent_at });
+      assignByCred.set(a.credential_id, list);
+    }
+  }
+
   const headers = [
     'platform_name', 'category', 'login_url', 'username', 'department',
-    'tags', 'subscription_model', 'billing_cycle', 'price_amount', 'price_currency',
-    'seats_total', 'subscription_starts_at', 'subscription_ends_at',
+    'tags', 'subscription_model', 'billing_cycle',
+    'price_amount', 'price_currency', 'estimated_amount',
+    'seats_total', 'assigned_count', 'assigned_users', 'assigned_emails',
+    'subscription_starts_at', 'subscription_ends_at',
     'is_shared_account', 'active', 'billing_api_provider', 'billing_api_connected',
     'billing_api_last_synced_at', 'last_rotated_at', 'notes', 'created_at',
   ];
-  const data = rows.map((r) => ({
-    platform_name: r.platform_name,
-    category: r.category,
-    login_url: r.login_url,
-    username: r.username,
-    department: r.owner_dept_id ? (deptName.get(r.owner_dept_id) ?? '') : 'Org-wide',
-    tags: Array.isArray(r.tags) ? r.tags.join(';') : '',
-    subscription_model: r.subscription_model,
-    billing_cycle: r.billing_cycle,
-    price_amount: r.price_amount,
-    price_currency: r.price_currency,
-    seats_total: r.seats_total,
-    subscription_starts_at: r.subscription_starts_at,
-    subscription_ends_at: r.subscription_ends_at,
-    is_shared_account: r.is_shared_account,
-    active: r.active,
-    billing_api_provider: r.billing_api_provider,
-    billing_api_connected: r.billing_api_connected,
-    billing_api_last_synced_at: r.billing_api_last_synced_at,
-    last_rotated_at: r.last_rotated_at,
-    notes: r.notes,
-    created_at: r.created_at,
-  }));
+  const data = rows.map((r) => {
+    const assigned = assignByCred.get(r.id) ?? [];
+    return {
+      platform_name: r.platform_name,
+      category: r.category,
+      login_url: r.login_url,
+      username: r.username,
+      department: r.owner_dept_id ? (deptName.get(r.owner_dept_id) ?? '') : 'Org-wide',
+      tags: Array.isArray(r.tags) ? r.tags.join(';') : '',
+      subscription_model: r.subscription_model,
+      billing_cycle: r.billing_cycle,
+      price_amount: r.price_amount,
+      price_currency: r.price_currency,
+      estimated_amount: r.estimated_amount,
+      seats_total: r.seats_total,
+      assigned_count: assigned.length,
+      assigned_users: assigned.map((a) => a.name).join('; '),
+      assigned_emails: assigned.map((a) => a.email).filter(Boolean).join('; '),
+      subscription_starts_at: r.subscription_starts_at,
+      subscription_ends_at: r.subscription_ends_at,
+      is_shared_account: r.is_shared_account,
+      active: r.active,
+      billing_api_provider: r.billing_api_provider,
+      billing_api_connected: r.billing_api_connected,
+      billing_api_last_synced_at: r.billing_api_last_synced_at,
+      last_rotated_at: r.last_rotated_at,
+      notes: r.notes,
+      created_at: r.created_at,
+    };
+  });
   const stamp = new Date().toISOString().slice(0, 10);
   downloadCsvCreds(`rudrans-credentials-${stamp}.csv`, headers, data);
 }
@@ -2402,7 +3328,7 @@ function GrantAccessModal({ onClose, onDone }: { onClose: () => void; onDone: ()
                   </label>
                 ))}
                 <p className="px-3 py-2 text-[10px] text-cyan-300 bg-cyan-500/5">
-                  ℹ Selecting a group auto-expands to its members on save. Members must already exist as employees in your org.
+                  ℹ Selecting a group auto-expands to its members on save. Directory-only users (M365 / Google) that don't yet have an employees row get auto-provisioned at grant time — no manual onboarding required first.
                 </p>
               </div>
             )}

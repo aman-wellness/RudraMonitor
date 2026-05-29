@@ -1,19 +1,24 @@
 // POST /functions/v1/invoice-sync
-// Headers: Authorization: Bearer <user JWT>
-// Body: { credential_id: string }
+// Headers: Authorization: Bearer <user JWT>  OR  Bearer <service-role key>
+// Body: { credential_id: string, period_start?: string, period_end?: string }
 //
 // Decrypts the credential's stored billing-API token and pulls every invoice
 // the provider returns, upserting into credential_invoices by external_id.
 // Idempotent — re-running just refreshes statuses on existing rows.
 //
+// When called by the cron dispatcher with service-role and period_*, also
+// returns the credential_invoices row id (if any) whose issue_date or
+// period_start matches the requested billing period, so the job queue can
+// store result_invoice_id.
+//
 // Supported providers:
 //   • stripe   — GET /v1/invoices (Bearer secret key)
 //   • razorpay — GET /v1/invoices (Basic key_id:key_secret)
+//   • openai   — GET /v1/dashboard/billing/invoices (org-scoped)
+//   • zoom     — GET /v2/accounts/me/billing/invoices (Server-to-Server OAuth)
 //
-// OpenAI / Anthropic / AWS: not implemented — those providers don't expose
-// usable invoice APIs (OpenAI has usage-only; AWS Cost Explorer needs SigV4
-// + is per-account, not per-org). Skip with a clear error so the UI can
-// surface "manual upload only" guidance.
+// AWS / Anthropic: still no public per-org invoice API — surface a clear
+// error so the UI shows "manual upload" guidance.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.4";
 import { corsHeaders } from "../_shared/cors.ts";
@@ -42,15 +47,9 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
 
   const jwt = bearer(req);
-  if (!jwt) return json({ error: "missing user token" }, 401);
-  const userClient = createClient(SUPABASE_URL, ANON_KEY, {
-    global: { headers: { Authorization: `Bearer ${jwt}` } },
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-  const { data: u } = await userClient.auth.getUser();
-  if (!u.user) return json({ error: "invalid token" }, 401);
+  if (!jwt) return json({ error: "missing token" }, 401);
 
-  let body: { credential_id?: string };
+  let body: { credential_id?: string; period_start?: string; period_end?: string };
   try { body = await req.json(); } catch { return json({ error: "invalid json" }, 400); }
   const credId = (body.credential_id ?? "").trim();
   if (!credId) return json({ error: "credential_id required" }, 400);
@@ -64,8 +63,20 @@ Deno.serve(async (req) => {
     .select("id, org_id, platform_name, billing_api_provider, billing_api_token_enc")
     .eq("id", credId).maybeSingle();
   if (!cred) return json({ error: "credential not found" }, 404);
-  const { data: mem } = await admin.from("org_members").select("org_id").eq("user_id", u.user.id).eq("org_id", cred.org_id);
-  if (!mem?.length) return json({ error: "not authorised for this org" }, 403);
+
+  // Two auth paths: service-role (internal dispatcher) or user JWT (UI button).
+  const isServiceRole = jwt === SERVICE_ROLE_KEY;
+  if (!isServiceRole) {
+    const userClient = createClient(SUPABASE_URL, ANON_KEY, {
+      global: { headers: { Authorization: `Bearer ${jwt}` } },
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const { data: u } = await userClient.auth.getUser();
+    if (!u.user) return json({ error: "invalid token" }, 401);
+    const { data: mem } = await admin.from("org_members").select("org_id")
+      .eq("user_id", u.user.id).eq("org_id", cred.org_id);
+    if (!mem?.length) return json({ error: "not authorised for this org" }, 403);
+  }
   if (!cred.billing_api_provider) return json({ error: "no billing API provider set for this credential" }, 400);
   if (!cred.billing_api_token_enc) return json({ error: "no API token connected — use 'Connect API token' first" }, 400);
 
@@ -83,6 +94,10 @@ Deno.serve(async (req) => {
       pulled = await pullStripe(secret);
     } else if (cred.billing_api_provider === "razorpay") {
       pulled = await pullRazorpay(secret);
+    } else if (cred.billing_api_provider === "openai") {
+      pulled = await pullOpenAI(secret);
+    } else if (cred.billing_api_provider === "zoom") {
+      pulled = await pullZoom(secret);
     } else {
       return json({
         error: `Provider '${cred.billing_api_provider}' doesn't have a public invoice API. Use CSV upload or manual entry for now.`,
@@ -137,9 +152,25 @@ Deno.serve(async (req) => {
     billing_api_last_synced_at: new Date().toISOString(),
     billing_api_last_sync_error: null,
     billing_api_meta: { last_count: pulled.length },
+    last_fetch_attempt_at: new Date().toISOString(),
   }).eq("id", credId);
 
-  return json({ ok: true, total: pulled.length, imported, updated }, 200);
+  // If called for a specific billing period (cron dispatcher), find the
+  // matching just-synced invoice so the job queue can store its id.
+  let matched_invoice_id: string | null = null;
+  if (body.period_start && body.period_end) {
+    const { data: m } = await admin
+      .from("credential_invoices")
+      .select("id")
+      .eq("credential_id", credId)
+      .or(`period_start.eq.${body.period_start},and(issue_date.gte.${body.period_start},issue_date.lte.${body.period_end})`)
+      .order("issue_date", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    matched_invoice_id = m?.id ?? null;
+  }
+
+  return json({ ok: true, total: pulled.length, imported, updated, matched_invoice_id }, 200);
 });
 
 // ============== Stripe ==============
@@ -263,6 +294,130 @@ function mapRazorpayStatus(s: string): InvoiceUpsert["status"] {
   if (s === "draft") return "draft";
   if (s === "cancelled") return "refunded";
   if (s === "expired") return "failed";
+  return "pending";
+}
+
+// ============== OpenAI (Platform) ==============
+//
+// GET /v1/dashboard/billing/invoices?organization_id=org_xxx  (Bearer sk-…)
+// The token stored in the vault must be a *platform* secret key with billing
+// scope (sk-…) and the credential's billing_api_meta should contain
+// { organization_id: "org_xxx" }. We pass the org id via the query string.
+//
+// The endpoint is undocumented but stable since 2024; if OpenAI removes it,
+// fall back to manual upload via the UI.
+
+async function pullOpenAI(secret: string): Promise<InvoiceUpsert[]> {
+  // The vault may store either a bare key or JSON({api_key, organization_id}).
+  let apiKey = secret;
+  let orgId: string | undefined;
+  try {
+    const j = JSON.parse(secret) as { api_key?: string; organization_id?: string };
+    if (j.api_key) { apiKey = j.api_key; orgId = j.organization_id; }
+  } catch { /* bare key */ }
+
+  const url = new URL("https://api.openai.com/v1/dashboard/billing/invoices");
+  if (orgId) url.searchParams.set("organization_id", orgId);
+
+  const r = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  if (!r.ok) throw new Error(`openai: ${r.status} ${await r.text()}`);
+  const j = await r.json() as {
+    data?: Array<{
+      id: string;
+      number?: string | null;
+      created_at: number;
+      period_start?: number;
+      period_end?: number;
+      amount_due?: number;
+      amount_paid?: number;
+      currency?: string;
+      status?: string;
+      hosted_invoice_url?: string | null;
+      invoice_pdf?: string | null;
+    }>;
+  };
+  return (j.data ?? []).map((inv) => ({
+    external_id: inv.id,
+    invoice_number: inv.number ?? null,
+    issue_date: tsToDate(inv.created_at),
+    period_start: tsToDate(inv.period_start),
+    period_end: tsToDate(inv.period_end),
+    due_date: null,
+    amount: ((inv.amount_paid ?? inv.amount_due ?? 0) / 100) || null,
+    currency: (inv.currency ?? "USD").toUpperCase(),
+    status: mapStripeStatus(inv.status ?? "open"),  // OpenAI uses Stripe statuses
+    pdf_url: inv.invoice_pdf ?? inv.hosted_invoice_url ?? null,
+    raw: inv as unknown as Record<string, unknown>,
+  }));
+}
+
+// ============== Zoom ==============
+//
+// Server-to-Server OAuth: vault stores JSON({account_id, client_id, client_secret}).
+// We exchange for a short-lived access token, then call the billing endpoint.
+// Zoom requires the "Billing" scope on the S2S OAuth app.
+
+async function pullZoom(secretJson: string): Promise<InvoiceUpsert[]> {
+  const { account_id, client_id, client_secret } = JSON.parse(secretJson) as {
+    account_id: string; client_id: string; client_secret: string;
+  };
+  if (!account_id || !client_id || !client_secret) {
+    throw new Error("zoom: account_id / client_id / client_secret missing in stored token");
+  }
+  const basic = btoa(`${client_id}:${client_secret}`);
+  const tokR = await fetch(
+    `https://zoom.us/oauth/token?grant_type=account_credentials&account_id=${encodeURIComponent(account_id)}`,
+    { method: "POST", headers: { Authorization: `Basic ${basic}` } },
+  );
+  if (!tokR.ok) throw new Error(`zoom token: ${tokR.status} ${await tokR.text()}`);
+  const { access_token } = await tokR.json() as { access_token: string };
+
+  const out: InvoiceUpsert[] = [];
+  // Page through up to 12 months.
+  const r = await fetch(
+    `https://api.zoom.us/v2/accounts/me/billing/invoices?page_size=300`,
+    { headers: { Authorization: `Bearer ${access_token}` } },
+  );
+  if (!r.ok) throw new Error(`zoom invoices: ${r.status} ${await r.text()}`);
+  const j = await r.json() as {
+    invoices?: Array<{
+      invoice_number: string;
+      invoice_date: string;        // YYYY-MM-DD
+      due_date?: string;
+      target_date?: string;        // period end
+      amount: number;
+      balance?: number;
+      currency: string;
+      status: string;
+      hostedinvoice_url?: string;
+    }>;
+  };
+  for (const inv of (j.invoices ?? [])) {
+    out.push({
+      external_id: inv.invoice_number,
+      invoice_number: inv.invoice_number,
+      issue_date: inv.invoice_date ?? null,
+      period_start: null,
+      period_end: inv.target_date ?? null,
+      due_date: inv.due_date ?? null,
+      amount: inv.amount,
+      currency: (inv.currency ?? "USD").toUpperCase(),
+      status: mapZoomStatus(inv.status),
+      pdf_url: inv.hostedinvoice_url ?? null,
+      raw: inv as unknown as Record<string, unknown>,
+    });
+  }
+  return out;
+}
+
+function mapZoomStatus(s: string): InvoiceUpsert["status"] {
+  const x = (s ?? "").toLowerCase();
+  if (x === "paid") return "paid";
+  if (x === "pending" || x === "open") return "pending";
+  if (x === "overdue") return "overdue";
+  if (x === "failed") return "failed";
   return "pending";
 }
 

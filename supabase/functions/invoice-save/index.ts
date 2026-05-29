@@ -62,7 +62,33 @@ Deno.serve(async (req) => {
     status: body.status ?? "pending",
     pdf_url: body.pdf_url ?? null,
     notes: body.notes ?? null,
+    // Attachment metadata. The dashboard uploads the file directly to
+    // storage (RLS scoped to org folder), then passes back the object
+    // path + mime + display name so the row points at the file.
+    attachment_path: body.attachment_path ?? null,
+    attachment_mime: body.attachment_mime ?? null,
+    attachment_name: body.attachment_name ?? null,
   };
+
+  // If we're updating an existing row and the caller is replacing the
+  // attachment with a new one (or clearing it), delete the old file
+  // from storage so we don't leak. We don't bother when path is
+  // unchanged.
+  if (id) {
+    const { data: prev } = await admin
+      .from("credential_invoices")
+      .select("attachment_path")
+      .eq("id", id)
+      .maybeSingle();
+    const oldPath = (prev?.attachment_path as string | null) ?? null;
+    const newPath = (row.attachment_path as string | null) ?? null;
+    if (oldPath && oldPath !== newPath) {
+      const { error: rmErr } = await admin.storage
+        .from("credential-invoices")
+        .remove([oldPath]);
+      if (rmErr) console.error("old attachment remove failed:", rmErr.message);
+    }
+  }
 
   if (id) {
     const { error } = await admin.from("credential_invoices").update(row).eq("id", id);

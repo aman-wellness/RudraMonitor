@@ -162,13 +162,36 @@ async fn poll_once(state: &AppState, since: &str) -> Result<Option<String>> {
     Ok(newest)
 }
 
-/// Mint a LiveKit JWT for the given room. The edge function checks the
-/// agent's enroll_token against agents.enroll_token, mints a HS256 JWT
-/// signed with the same key as the LiveKit server, and scopes the JWT
-/// to room=<room> with canPublish=true, canPublishData=true. The
-/// dashboard fetches a DIFFERENT token (Authorization: Bearer <user JWT>
-/// → canSubscribe=true) so the two roles never share credentials.
-async fn fetch_livekit_token(state: &AppState, room: &str) -> Result<String> {
+/// Response from /functions/v1/livekit-token when the caller is the
+/// agent. Contains BOTH the LiveKit room JWT (for completeness; not
+/// used by the WHIP flow) AND the pre-registered Ingress resource that
+/// the agent should POST WHIP traffic into.
+#[derive(serde::Deserialize, Debug)]
+struct LiveKitAgentToken {
+    #[allow(dead_code)]
+    token: String,
+    #[allow(dead_code)]
+    room: String,
+    ingress: Option<IngressInfo>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct IngressInfo {
+    #[allow(dead_code)]
+    #[serde(default)]
+    ingress_id: String,
+    url: String,
+    stream_key: String,
+}
+
+/// Hit /functions/v1/livekit-token which (for agent callers) ALSO
+/// creates a LiveKit Ingress resource and returns its `url` +
+/// `stream_key`. We need both: WHIP target is the url, auth is the
+/// stream_key (which IS the JWT LiveKit pre-stamped with that ingress
+/// id in the subject claim). Without the Ingress resource the WHIP POST
+/// fails with "no response from servers" — Ingress can't look the
+/// session up.
+async fn fetch_livekit_ingress(state: &AppState, room: &str) -> Result<IngressInfo> {
     let cfg = state.config.lock().await.clone();
     let enrollment = cfg
         .enrollment
@@ -196,12 +219,10 @@ async fn fetch_livekit_token(state: &AppState, room: &str) -> Result<String> {
         let body = resp.text().await.unwrap_or_default();
         return Err(anyhow!("livekit-token http {s}: {body}"));
     }
-    #[derive(serde::Deserialize)]
-    struct R {
-        token: String,
-    }
-    let r: R = resp.json().await.context("parse livekit-token")?;
-    Ok(r.token)
+    let r: LiveKitAgentToken = resp.json().await.context("parse livekit-token")?;
+    r.ingress.ok_or_else(|| {
+        anyhow!("livekit-token returned no ingress info — CreateIngress likely failed server-side")
+    })
 }
 
 /// Run one WHIP publishing session. Drives the peer connection from
@@ -213,7 +234,15 @@ async fn run_session(
     _session_id: &str,
     room: &str,
 ) -> Result<()> {
-    let token = fetch_livekit_token(state, room).await?;
+    let ingress = fetch_livekit_ingress(state, room).await?;
+    // The Ingress's `url` is the exact endpoint to POST WHIP to;
+    // `stream_key` is the bearer auth that ties our session to the
+    // pre-created IngressInfo on the LiveKit server. The room JWT
+    // (returned alongside) is ignored — LiveKit owns the participant
+    // identity once Ingress is in front.
+    let whip_url = ingress.url.clone();
+    let token = ingress.stream_key.clone();
+    log::info!("whip: ingress URL={whip_url}");
 
     // Standard WebRTC stack — same shape as webrtc_stream::handle_session.
     // No iceServers passed: LiveKit Ingress advertises its own TURN
@@ -325,7 +354,6 @@ async fn run_session(
         .await
         .map_err(|e| anyhow!("set_local: {e}"))?;
 
-    let whip_url = whip_url_for_room(state, room).await?;
     let http = api::build_client()?;
     let resp = http
         .post(&whip_url)
@@ -429,22 +457,9 @@ async fn run_session(
     Ok(())
 }
 
-/// Resolve the WHIP endpoint URL from agent config. Defaults to the
-/// public api.rudrans.com proxy that fronts livekit-ingress; can be
-/// overridden via config for self-hosted customers later.
-async fn whip_url_for_room(state: &AppState, room: &str) -> Result<String> {
-    let cfg = state.config.lock().await.clone();
-    let base = config::supabase_url(&cfg)
-        .ok_or_else(|| anyhow!("no supabase url"))?
-        .trim_end_matches('/')
-        .to_string();
-    // Same host as supabase, /whip/ path proxied by nginx to ingress 8090.
-    Ok(format!("{base}/whip/{}", urlencode(room)))
-}
-
-/// Minimal percent-encoding for path / query segments. Same shape as
-/// the helper in webrtc_stream.rs (kept inline so the two modules don't
-/// share a private utils file).
+/// Minimal percent-encoding for path / query segments. Used for the
+/// poll-cursor `since` value (RFC3339 timestamps contain `:` and `+`
+/// which must be escaped in URLs).
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);
     for b in s.bytes() {

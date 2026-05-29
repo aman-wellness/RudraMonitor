@@ -170,20 +170,11 @@ export async function connectToAgent(opts: ConnectOptions): Promise<AgentRoomHan
       firstVideoReject(new Error(`disconnected: ${reason ?? 'unknown'}`));
     });
 
-  // 3) Tell the agent to start publishing. We do this BEFORE connect()
-  //    so the agent has time to fire up ffmpeg + the WHIP session in
-  //    parallel with us joining the room. Latency reduction: agents
-  //    typically take ~1 s to publish their first video frame, dashboard
-  //    connect is ~300 ms — running them in parallel keeps total "click
-  //    to first frame" under 2 s on a warm path.
-  try {
-    await signalStart(agentId, sessionId);
-  } catch (e) {
-    // Surface as error and continue — the agent might already be
-    // publishing (concurrent admin watching). Connect anyway; if the
-    // room has no publisher, firstVideoTrack will reject after ~10s.
-    onError?.(e instanceof Error ? e : new Error(String(e)));
-  }
+  // 3) Tell the agent to start publishing. Hard-fail on error: if we
+  //    can't signal the agent, no point connecting to an empty room
+  //    and waiting 12 s for a timeout. The thrown error surfaces in
+  //    the Tab's status pill so debugging is one screenshot away.
+  await signalStart(agentId, sessionId);
 
   // 4) Connect. autoSubscribe defaults to true — we get the agent's
   //    video as soon as it's published.

@@ -46,29 +46,105 @@ Deno.serve(async (req) => {
   const grpIds  = Array.isArray(body.group_ids) ? body.group_ids.filter(Boolean) : [];
   if (credIds.length === 0) return json({ error: "credential_ids required" }, 400);
 
-  // Expand each group into its member employees (matched by UPN / work_email
-  // in the directory mirror). This way the customer can grant a whole team
-  // access to a vault entry in one click.
+  // Expand each group into its member employees. The customer's expectation
+  // when they click "grant CANADA-TEAM access to Claude" is that every
+  // member of CANADA-TEAM gets access — even members who only exist in the
+  // M365 / Google directory and have never been provisioned through the
+  // Rudrans wizard (so they have no `employees` row yet).
+  //
+  // Old logic matched directory UPNs against existing `employees.work_email`
+  // and dropped anyone without a hit — that's the "no employees resolved"
+  // error the customer kept seeing on the Groups tab. cred-send-direct
+  // already auto-provisions a minimal employees row for directory-only
+  // users so the assignment can be recorded; mirror that pattern here.
   if (grpIds.length > 0) {
     const { data: members } = await admin
       .from("directory_group_members")
-      .select("group_id, external_user_id, directory_users!inner(upn, mail)")
-      .in("group_id", grpIds);
+      .select(
+        "group_id, external_user_id, directory_users!inner(id, org_id, provider, external_id, upn, mail, display_name)",
+      )
+      .in("group_id", grpIds)
+      .eq("org_id", orgId);
 
-    type MemberRow = { external_user_id: string; directory_users: { upn: string | null; mail: string | null } | null };
-    const upns = ((members ?? []) as MemberRow[])
-      .map((m) => m.directory_users?.upn ?? m.directory_users?.mail ?? null)
-      .filter((u): u is string => !!u)
-      .map((u) => u.toLowerCase());
-    if (upns.length > 0) {
-      const { data: emps } = await admin
-        .from("employees")
-        .select("id, work_email")
-        .eq("org_id", orgId)
-        .not("work_email", "is", null);
-      for (const e of (emps ?? []) as Array<{ id: string; work_email: string }>) {
-        if (upns.includes(e.work_email.toLowerCase())) empIds.add(e.id);
+    type MemberRow = {
+      external_user_id: string;
+      directory_users: {
+        org_id: string;
+        provider: "m365" | "google";
+        external_id: string;
+        upn: string | null;
+        mail: string | null;
+        display_name: string | null;
+      } | null;
+    };
+    const dirUsers = ((members ?? []) as MemberRow[])
+      .map((m) => m.directory_users)
+      .filter((d): d is NonNullable<MemberRow["directory_users"]> => !!d && d.org_id === orgId);
+
+    // Pre-fetch every employees row that could match (by either provider's
+    // external_user_id column OR by work_email). One query covers all
+    // groups so we're not making N requests in a loop.
+    const m365Ids = dirUsers.filter((d) => d.provider === "m365").map((d) => d.external_id);
+    const googleIds = dirUsers.filter((d) => d.provider === "google").map((d) => d.external_id);
+    const emails = dirUsers
+      .flatMap((d) => [d.upn, d.mail])
+      .filter((e): e is string => !!e)
+      .map((e) => e.toLowerCase());
+
+    const { data: existingEmps } = await admin
+      .from("employees")
+      .select("id, work_email, m365_user_id, google_user_id")
+      .eq("org_id", orgId)
+      .or([
+        m365Ids.length ? `m365_user_id.in.(${m365Ids.map((s) => `"${s}"`).join(",")})` : "",
+        googleIds.length ? `google_user_id.in.(${googleIds.map((s) => `"${s}"`).join(",")})` : "",
+        emails.length ? `work_email.in.(${emails.map((s) => `"${s}"`).join(",")})` : "",
+      ].filter(Boolean).join(","));
+
+    type EmpRow = { id: string; work_email: string | null; m365_user_id: string | null; google_user_id: string | null };
+    const empRows = (existingEmps ?? []) as EmpRow[];
+    const byM365 = new Map(empRows.filter((e) => e.m365_user_id).map((e) => [e.m365_user_id!, e.id]));
+    const byGoogle = new Map(empRows.filter((e) => e.google_user_id).map((e) => [e.google_user_id!, e.id]));
+    const byEmail = new Map(empRows.filter((e) => e.work_email).map((e) => [e.work_email!.toLowerCase(), e.id]));
+
+    // Walk each directory member: resolve to an existing employees.id OR
+    // auto-create a minimal row so the assignment can land.
+    for (const dir of dirUsers) {
+      const linkedId = (dir.provider === "m365" ? byM365.get(dir.external_id) : byGoogle.get(dir.external_id))
+        ?? (dir.upn ? byEmail.get(dir.upn.toLowerCase()) : undefined)
+        ?? (dir.mail ? byEmail.get(dir.mail.toLowerCase()) : undefined);
+      if (linkedId) {
+        empIds.add(linkedId);
+        continue;
       }
+      // No existing row — create one. Status='active' is fine because the
+      // user already exists on the provider side.
+      const empCol = dir.provider === "m365" ? "m365_user_id" : "google_user_id";
+      const { data: created, error: insErr } = await admin
+        .from("employees")
+        .insert({
+          org_id: orgId,
+          full_name: dir.display_name ?? dir.upn ?? dir.mail ?? dir.external_id,
+          work_email: dir.upn ?? dir.mail ?? null,
+          status: "active",
+          source: "imported",
+          [empCol]: dir.external_id,
+          created_by: u.user.id,
+        })
+        .select("id, work_email")
+        .single();
+      if (insErr) {
+        // Don't fail the whole batch — log and continue. Other members
+        // may still resolve cleanly.
+        console.warn(`grant-access: auto-create failed for ${dir.external_id}:`, insErr.message);
+        continue;
+      }
+      empIds.add(created.id);
+      // Keep our local index in sync so a duplicate directory member in
+      // another selected group reuses the same row.
+      if (dir.provider === "m365") byM365.set(dir.external_id, created.id);
+      else byGoogle.set(dir.external_id, created.id);
+      if (created.work_email) byEmail.set(created.work_email.toLowerCase(), created.id);
     }
   }
 

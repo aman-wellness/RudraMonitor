@@ -1,0 +1,24 @@
+{
+  "name": "rudrans-invoice-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Headless browser worker that polls Supabase invoice_fetch_jobs, drives Playwright via Claude to log into SaaS billing pages, downloads the invoice PDF, and reports it back. One row per platform per month.",
+  "scripts": {
+    "dev": "tsx --watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "install:chromium": "playwright install --with-deps chromium",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "dotenv": "^16.4.5",
+    "otplib": "^12.0.1",
+    "playwright": "^1.49.0",
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  }
+}

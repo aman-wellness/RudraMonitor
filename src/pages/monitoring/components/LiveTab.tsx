@@ -163,7 +163,7 @@ export default function LiveTab() {
             </option>
             {onlineAgents.map((a) => (
               <option key={a.id} value={a.id}>
-                {a.agent_name} ({a.machine_name ?? '—'})
+                {a.name} ({a.machine})
               </option>
             ))}
           </select>

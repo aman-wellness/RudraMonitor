@@ -63,11 +63,30 @@ Deno.serve(async (req) => {
     price_currency: body.price_currency ?? null,
     seats_total: typeof body.seats_total === "number" || (typeof body.seats_total === "string" && body.seats_total !== "")
       ? Number(body.seats_total) : null,
+    // Optional spend estimate — distinct from price_amount. Used by
+    // usage-based subscriptions where price_amount is a unit cost and
+    // the actual monthly bill varies. NULL means "no estimate."
+    estimated_amount: typeof body.estimated_amount === "number" || (typeof body.estimated_amount === "string" && body.estimated_amount !== "")
+      ? Number(body.estimated_amount) : null,
     subscription_starts_at: body.subscription_starts_at ?? null,
     subscription_ends_at: body.subscription_ends_at ?? null,
     subscription_model: body.subscription_model ?? null,
     billing_api_provider: body.billing_api_provider ?? null,
+    auto_fetch_enabled: typeof body.auto_fetch_enabled === "boolean" ? body.auto_fetch_enabled : true,
   };
+  if (typeof body.otp_primary_channel === "string" && body.otp_primary_channel) {
+    row.otp_primary_channel = body.otp_primary_channel;
+  }
+  if (Array.isArray(body.otp_fallback_channels)) {
+    row.otp_fallback_channels = body.otp_fallback_channels;
+  }
+  if (typeof body.totp_secret === "string" && body.totp_secret.length > 0) {
+    try {
+      row.totp_secret_enc = await encrypt(body.totp_secret, "CRED_VAULT_ENC_KEY");
+    } catch (e) {
+      return json({ error: `totp encrypt: ${(e as Error).message}` }, 500);
+    }
+  }
   if (typeof body.password === "string" && body.password.length > 0) {
     try {
       row.password_enc = await encrypt(body.password, "CRED_VAULT_ENC_KEY");
