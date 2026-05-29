@@ -1,6 +1,6 @@
 [package]
 name = "rudrans-agent"
-version = "0.2.51"
+version = "0.2.52"
 description = "Rudrans employee monitoring agent"
 edition = "2021"
 rust-version = "1.77"
@@ -51,6 +51,8 @@ hex = "0.4"
 # that by speaking LiveKit's WebSocket+protobuf signaling ourselves and
 # using webrtc-rs for the actual PeerConnection underneath.
 webrtc = "0.13"
+# URL parsing for WHIP Location header resolution.
+url = "2"
 # Pure-Rust LiveKit protocol bindings (just prost-generated protobufs —
 # no libwebrtc, builds clean on every platform). Used for SignalRequest /
 # SignalResponse / TrackInfo messages over the SFU's WebSocket.

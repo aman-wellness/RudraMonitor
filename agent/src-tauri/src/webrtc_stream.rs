@@ -581,7 +581,7 @@ async fn poll_remote_ice(
 /// so `pump_ffmpeg_into_track` can respawn the subprocess when adaptive
 /// bitrate fires a `set_quality` request without duplicating the long
 /// argument list. Returns the spawned Child + its stdout pipe.
-async fn spawn_ffmpeg_with_params(
+pub(crate) async fn spawn_ffmpeg_with_params(
     ffmpeg_bin: &std::path::Path,
     params: StreamParams,
 ) -> Result<(Child, tokio::process::ChildStdout, &'static str)> {
@@ -714,7 +714,7 @@ async fn spawn_ffmpeg_with_params(
 /// `stop_flag` flips (peer disconnected) or ffmpeg exits. On `reload_flag`
 /// the inner ffmpeg child is killed and restarted with the latest
 /// StreamParams — that's how adaptive bitrate gets honoured mid-stream.
-async fn pump_ffmpeg_into_track(
+pub(crate) async fn pump_ffmpeg_into_track(
     track: Arc<TrackLocalStaticSample>,
     stop_flag: Arc<std::sync::atomic::AtomicBool>,
     params: Arc<tokio::sync::Mutex<StreamParams>>,
@@ -938,7 +938,7 @@ fn screen_dims() -> (i32, i32) {
     (1920, 1080)
 }
 
-fn attach_control_channel(
+pub(crate) fn attach_control_channel(
     dc: Arc<RTCDataChannel>,
     params: Arc<tokio::sync::Mutex<StreamParams>>,
     reload_flag: Arc<std::sync::atomic::AtomicBool>,

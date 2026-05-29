@@ -18,6 +18,7 @@ mod metrics;
 mod screenshots;
 mod video;
 mod webrtc_stream;
+mod whip_publisher;
 
 use active_window::{FocusSession, WindowInfo};
 use anyhow::{anyhow, Result};
@@ -1221,7 +1222,12 @@ pub fn run() {
             // offer through /webrtc-signal; from that point the agent owns
             // an RTCPeerConnection that streams ffmpeg's h264 stdout into a
             // video track until the dashboard closes the session.
-            webrtc_stream::spawn_streaming_loop(state);
+            webrtc_stream::spawn_streaming_loop(state.clone());
+            // LiveKit + WHIP publisher — new path. Dual-stack with the
+            // legacy webrtc_stream loop above; they consume DIFFERENT
+            // signal-table kinds (`offer` vs `livekit_start`) so cohabit
+            // safely until Block G of the pivot deletes the legacy one.
+            whip_publisher::spawn_whip_loop(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
