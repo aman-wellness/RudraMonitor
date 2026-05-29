@@ -135,10 +135,35 @@ pub fn pick_h264_encoder(ffmpeg_bin: &PathBuf) -> &'static str {
         // Preference order. First match wins.
         #[cfg(target_os = "macos")]
         let order = ["h264_videotoolbox", "libx264"];
+        // Windows: libx264 FIRST.
+        //
+        // Why not hardware encoders here: `list_encoders` only checks
+        // what ffmpeg.exe was COMPILED with — not what the host
+        // hardware actually supports at runtime. So on a machine
+        // without NVIDIA GPU, our probe still returns `h264_nvenc` as
+        // "available", we configure it, ffmpeg subprocess starts, and
+        // then either:
+        //   • blocks 5-10 s probing for an NVENC-capable GPU before
+        //     giving up (LiveKit Ingress's "source encoder not ready"
+        //     timer fires at 8 s — session torn down before our first
+        //     frame arrives), OR
+        //   • fails fast but takes long enough that we miss the
+        //     timeout window anyway.
+        //
+        // libx264 has zero runtime probing — it works everywhere and
+        // starts producing frames within ~50 ms of spawn. CPU is 15-25%
+        // at our 960p/1.2Mbps/24fps target, which is acceptable; the
+        // alternative is "Live View doesn't work at all on this
+        // customer's machine" which is unacceptable.
+        //
+        // v0.3.2-followup: ship a proper Windows Graphics Capture +
+        // Media Foundation native path (per the Phase-1 spec). That
+        // gets us back to true hardware encoding with reliable
+        // startup. Today's commit is the 80/20 "make it work first".
         #[cfg(target_os = "windows")]
-        let order = ["h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "libx264"];
+        let order = ["libx264"];
         #[cfg(target_os = "linux")]
-        let order = ["h264_nvenc", "h264_vaapi", "h264_qsv", "h264_amf", "libx264"];
+        let order = ["libx264"];
         for name in order {
             if available.contains(name) {
                 log::info!("h264 encoder picked: {name}");
