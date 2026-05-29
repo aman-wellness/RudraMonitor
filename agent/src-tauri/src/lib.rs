@@ -20,6 +20,14 @@ mod video;
 mod webrtc_stream;
 mod whip_publisher;
 
+// Native capture + encode pipeline (v0.3.0 spec). Replaces the ffmpeg
+// subprocess pipeline on platforms where we have a native path
+// implemented. On platforms where we don't yet (Windows + Linux at
+// v0.3.0), capture::for_platform() returns Ok(None) and whip_publisher
+// falls back to the legacy ffmpeg pump.
+mod capture;
+// mod encode;  // landing in v0.3.1 alongside Windows + Linux capture.
+
 use active_window::{FocusSession, WindowInfo};
 use anyhow::{anyhow, Result};
 use chrono::{Duration as ChronoDuration, Utc};

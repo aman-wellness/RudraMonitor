@@ -65,9 +65,39 @@ uuid = { version = "1", features = ["v4"] }
 # on Windows) + text clipboard. Used by the Remote tab's WebRTC data channel.
 enigo = "0.3"
 arboard = { version = "3", default-features = false }
+# Trait-objects in async fns — used by the platform-agnostic
+# Capturer / Encoder traits in capture/ and encode/.
+async-trait = "0.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# ============================================================
+# v0.3.0 native screen-capture + hardware encode (Phase-1 spec).
+# Replaces the ffmpeg subprocess pipeline on macOS for a 4-5×
+# CPU win (~3-5% vs ~15-20% on Apple Silicon at 1080p30).
+# ============================================================
+[target.'cfg(target_os = "macos")'.dependencies]
+# ScreenCaptureKit — native Apple framework for screen capture.
+# Direct delegate callbacks deliver IOSurface-backed CVPixelBuffers
+# at the OS's native refresh rate; we throttle to TARGET_FPS inside
+# our delegate so we never burn CPU rendering frames we'd just drop.
+screencapturekit = "0.3"
+# VideoToolbox — hardware H.264 encoder. Same chip that QuickTime
+# uses; pushes through Apple Silicon's media engine at near-zero
+# CPU cost. Output is Annex-B NAL stream that webrtc-rs's
+# TrackLocalStaticSample accepts directly — same shape as the
+# ffmpeg path emitted, so the downstream WHIP pipeline stays
+# unchanged.
+core-foundation = "0.10"
+core-graphics = "0.24"
+# Match the exact crates `screencapturekit` re-exports types from
+# (core-media-rs / core-video-rs, NOT the older core-media/core-video).
+# If we mix versions, we get duplicate-type errors at the boundary.
+core-media-rs = "0.3"
+core-video-rs = "0.3"
+objc2 = "0.5"
+objc2-foundation = "0.2"
 
 # Pure-Rust UIA bindings used by browser_url::current_for_app on Windows.
 # Replaces the older PowerShell subprocess approach which was both slow (~2s
