@@ -1,233 +1,183 @@
-// Remote Desktop tab — LiveKit-backed.
+// Remote Desktop tab — RustDesk-backed (Phase-2 spec).
 //
-// Same architecture as LiveTab (connect to room, subscribe to agent's
-// video), PLUS:
-//   • Publishes mouse + keyboard events via room.localParticipant
-//     .publishData({ topic: 'control' }). The agent's whip_publisher
-//     creates the "control" DataChannel on its side; LiveKit's SFU
-//     fans data-channel traffic between participants, so the publish
-//     surfaces in the agent's existing attach_control_channel handler.
-//   • Receives `clip_data` replies via RoomEvent.DataReceived for the
-//     clipboard round-trip.
+// Replaces the legacy LiveKit/WebRTC-DataChannel implementation. RustDesk
+// owns the entire mouse/keyboard/clipboard/file-transfer/multi-monitor
+// stack, so this component is just a thin orchestration layer:
 //
-// Old WebRTC-DataChannel plumbing (~800 lines) collapses to ~330 lines
-// because livekit-client owns the reliability + chunking semantics.
+//   1. Admin picks an online agent → click "Start Remote Session".
+//   2. POST /functions/v1/remote-session-start → backend mints a session
+//      row + JWT and broadcasts `remote.request` on `agent:<id>`.
+//   3. Subscribe to `session:<id>` Realtime channel; wait for
+//      `remote.ready` with the rustdesk_id (the agent's 9-digit ID).
+//   4. Render the rustdesk_id + one-time password OR an embedded
+//      RustDesk web-client iframe (if VITE_RUSTDESK_WEB_URL is set).
+//   5. "End Session" → POST /functions/v1/remote-session-end; backend
+//      broadcasts `remote.ended` to both sides.
+//
+// The component never touches WebRTC or DataChannels — all input I/O
+// happens inside the RustDesk client/host pair via its own relay
+// protocol (TCP 21115/21116/21117, optionally tunnelled over WSS).
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  ConnectionState,
-  Room,
-  RoomEvent,
-  type RemoteTrack,
-} from 'livekit-client';
 import { useAgents } from '@/lib/dataHooks';
-import { connectToAgent, sendControl } from '@/lib/livekit-client';
+import { supabase } from '@/lib/supabase';
 
-type Status = 'idle' | 'connecting' | 'live' | 'failed';
+const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL as string) ?? '';
+const ANON_KEY     = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) ?? '';
+// If set, we embed the RustDesk web client in an iframe pointed at this
+// URL. The iframe receives ?id=&pwd=&relay= in the hash. Unset → the
+// admin uses the desktop RustDesk client with the displayed credentials.
+const RUSTDESK_WEB_URL = (import.meta.env.VITE_RUSTDESK_WEB_URL as string) ?? '';
+
+type SessionState =
+  | 'idle'
+  | 'requesting'
+  | 'awaiting_consent'
+  | 'approved'
+  | 'ready'
+  | 'failed'
+  | 'ended';
+
+interface ActiveSession {
+  session_id: string;
+  rustdesk_server: string;
+  session_token: string;
+  rustdesk_id?: string;
+  state: SessionState;
+}
 
 export default function RemoteTab() {
   const { agents } = useAgents();
-  const onlineAgents = useMemo(() => agents.filter((a) => a.status !== 'offline'), [agents]);
+  const onlineAgents = useMemo(
+    () => agents.filter((a) => a.status !== 'offline'),
+    [agents],
+  );
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [status, setStatus] = useState<Status>('idle');
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [controlling, setControlling] = useState(false);
-  const [clipStatus, setClipStatus] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
-  const clipTimer = useRef<number | null>(null);
-  const showClip = (kind: 'ok' | 'err', text: string) => {
-    setClipStatus({ kind, text });
-    if (clipTimer.current) window.clearTimeout(clipTimer.current);
-    clipTimer.current = window.setTimeout(() => setClipStatus(null), 4000);
-  };
+  const [reason, setReason]   = useState('');
+  const [session, setSession] = useState<ActiveSession | null>(null);
+  const [error, setError]     = useState<string | null>(null);
+  const channelRef            = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
-  // Viewing-size controls. Same UX as the legacy tab.
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const [expanded, setExpanded] = useState(false);
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const [reticle, setReticle] = useState<{ x: number; y: number } | null>(null);
-
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const handleRef = useRef<{ leave: () => Promise<void>; room: Room } | null>(null);
-  const trackRef = useRef<RemoteTrack | null>(null);
-  const pendingMove = useRef<{ x: number; y: number } | null>(null);
-  const rafScheduled = useRef(false);
-
-  // Fullscreen API plumbing (unchanged from legacy).
+  // Subscribe to session:<id> Realtime channel for ready / ended / decision
+  // broadcasts. Auto-tears down on unmount.
   useEffect(() => {
-    const onFsChange = () => setIsFullscreen(document.fullscreenElement === containerRef.current);
-    document.addEventListener('fullscreenchange', onFsChange);
-    return () => document.removeEventListener('fullscreenchange', onFsChange);
-  }, []);
-  const toggleFullscreen = async () => {
-    const el = containerRef.current;
-    if (!el) return;
-    try {
-      if (document.fullscreenElement === el) await document.exitFullscreen();
-      else await el.requestFullscreen({ navigationUI: 'hide' });
-    } catch (e) { console.warn('fullscreen toggle failed', e); }
-  };
-
-  // Connect / reconnect when selectedId changes.
-  useEffect(() => {
-    if (!selectedId) {
-      void teardown();
-      setStatus('idle');
-      return;
-    }
-    let cancelled = false;
-    setStatus('connecting');
-    setErrorMsg(null);
-    setControlling(false);
-    (async () => {
-      try {
-        const sessionId = crypto.randomUUID();
-        const handle = await connectToAgent({
-          agentId: selectedId,
-          sessionId,
-          onConnectionState: (cs) => {
-            if (cancelled) return;
-            if (cs === ConnectionState.Reconnecting) setStatus('connecting');
-            else if (cs === ConnectionState.Disconnected) {
-              setStatus('failed');
-              setErrorMsg('disconnected');
-            }
-          },
-          onTrack: (track) => {
-            if (cancelled || track.kind !== 'video') return;
-            trackRef.current = track;
-            if (videoRef.current) {
-              track.attach(videoRef.current);
-              videoRef.current.play().catch(() => { /* autoplay; muted */ });
-            }
-            setStatus('live');
-          },
-          onError: (e) => {
-            if (cancelled) return;
-            setErrorMsg(e.message);
-          },
-        });
-        if (cancelled) { await handle.leave(); return; }
-        handleRef.current = handle;
-        // Listen for control replies (clipboard data from agent).
-        const dec = new TextDecoder();
-        handle.room.on(RoomEvent.DataReceived, (payload) => {
-          try {
-            const msg = JSON.parse(dec.decode(payload)) as { t?: string; text?: string };
-            if (msg.t === 'clip_data' && typeof msg.text === 'string') {
-              void navigator.clipboard.writeText(msg.text)
-                .then(() => showClip('ok', `Copied from remote (${msg.text!.length} chars)`))
-                .catch((err) => showClip('err', `Clipboard write blocked: ${(err as Error).message}`));
-            }
-          } catch { /* not JSON, ignore */ }
-        });
-      } catch (e) {
-        if (cancelled) return;
-        setStatus('failed');
-        setErrorMsg(e instanceof Error ? e.message : String(e));
+    if (!session?.session_id) return;
+    const ch = supabase.channel(`session:${session.session_id}`);
+    ch.on('broadcast', { event: 'remote.consent_decision' }, ({ payload }) => {
+      const p = payload as { decision: string };
+      if (p.decision === 'deny') {
+        setError('Employee declined the session');
+        setSession((s) => (s ? { ...s, state: 'failed' } : s));
+      } else {
+        setSession((s) => (s ? { ...s, state: 'approved' } : s));
       }
-    })();
+    });
+    ch.on('broadcast', { event: 'remote.ready' }, ({ payload }) => {
+      const p = payload as { rustdesk_id: string };
+      setSession((s) => (s ? { ...s, rustdesk_id: p.rustdesk_id, state: 'ready' } : s));
+    });
+    ch.on('broadcast', { event: 'remote.ended' }, () => {
+      setSession((s) => (s ? { ...s, state: 'ended' } : s));
+      setTimeout(() => setSession(null), 1500);
+    });
+    void ch.subscribe();
+    channelRef.current = ch;
     return () => {
-      cancelled = true;
-      void teardown();
+      void supabase.removeChannel(ch);
+      channelRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId]);
+  }, [session?.session_id]);
 
-  const teardown = async () => {
-    setControlling(false);
-    const t = trackRef.current;
-    if (t && videoRef.current) {
-      try { t.detach(videoRef.current); } catch { /* ignore */ }
+  const startSession = async () => {
+    if (!selectedId) return;
+    setError(null);
+    setSession({
+      session_id: '', rustdesk_server: '', session_token: '',
+      state: 'requesting',
+    });
+    try {
+      const { data: { session: authSession } } = await supabase.auth.getSession();
+      if (!authSession?.access_token) throw new Error('not signed in');
+      const resp = await fetch(`${SUPABASE_URL}/functions/v1/remote-session-start`, {
+        method: 'POST',
+        headers: {
+          apikey: ANON_KEY,
+          Authorization: `Bearer ${authSession.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          agent_id: selectedId,
+          reason: reason.trim() || undefined,
+        }),
+      });
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => '');
+        throw new Error(`remote-session-start ${resp.status}: ${body}`);
+      }
+      const r = await resp.json() as {
+        session_id: string;
+        rustdesk_server: string;
+        session_token: string;
+        state: string;
+      };
+      // Initial state from the edge fn: 'requested' (consent_pending) OR
+      // 'approved' (auto-approve). 'ready' arrives later via broadcast.
+      const initial: SessionState =
+        r.state === 'approved' ? 'approved' : 'awaiting_consent';
+      setSession({
+        session_id: r.session_id,
+        rustdesk_server: r.rustdesk_server,
+        session_token: r.session_token,
+        state: initial,
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setSession(null);
     }
-    trackRef.current = null;
-    const h = handleRef.current;
-    handleRef.current = null;
-    if (h) await h.leave();
   };
 
-  // Best-effort `setControlling(false)` on tab/window close so the
-  // agent doesn't get a permanently-controlled session if the user
-  // navigates away mid-session.
+  const endSession = async () => {
+    if (!session?.session_id) return;
+    try {
+      const { data: { session: authSession } } = await supabase.auth.getSession();
+      if (!authSession?.access_token) return;
+      await fetch(`${SUPABASE_URL}/functions/v1/remote-session-end`, {
+        method: 'POST',
+        headers: {
+          apikey: ANON_KEY,
+          Authorization: `Bearer ${authSession.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          session_id: session.session_id,
+          reason: 'admin ended',
+        }),
+      });
+    } catch { /* best-effort */ }
+    setSession(null);
+  };
+
+  // Tear down on tab close so we don't leave a session 'publishing'
+  // forever if the admin navigates away.
   useEffect(() => {
-    const beforeUnload = () => { if (handleRef.current) void handleRef.current.leave(); };
+    const beforeUnload = () => {
+      if (session?.session_id) {
+        navigator.sendBeacon?.(
+          `${SUPABASE_URL}/functions/v1/remote-session-end`,
+          new Blob([JSON.stringify({
+            session_id: session.session_id, reason: 'tab closed',
+          })], { type: 'application/json' }),
+        );
+      }
+    };
     window.addEventListener('beforeunload', beforeUnload);
     return () => window.removeEventListener('beforeunload', beforeUnload);
-  }, []);
+  }, [session?.session_id]);
 
-  // Input → control DataChannel.
-  const send = (obj: Record<string, unknown>) => {
-    const room = handleRef.current?.room;
-    if (!room) return;
-    // No back-pressure check needed — livekit-client manages publish
-    // queueing internally. Reliable channel ensures ordered delivery.
-    void sendControl(room, obj);
-  };
-
-  const onMouseMove = (e: React.MouseEvent<HTMLVideoElement>) => {
-    if (!controlling) return;
-    const v = videoRef.current;
-    if (!v) return;
-    const rect = v.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
-    if (x < 0 || x > 1 || y < 0 || y > 1) return;
-    pendingMove.current = { x, y };
-    setReticle({ x: e.clientX - rect.left, y: e.clientY - rect.top });
-    if (!rafScheduled.current) {
-      rafScheduled.current = true;
-      requestAnimationFrame(() => {
-        rafScheduled.current = false;
-        const p = pendingMove.current;
-        if (!p) return;
-        send({ t: 'mouse_move', x: p.x, y: p.y });
-      });
-    }
-  };
-  const onMouseLeave = () => { if (controlling) setReticle(null); };
-  const onMouseDown = (e: React.MouseEvent<HTMLVideoElement>) => {
-    if (!controlling) return;
-    e.preventDefault();
-    send({ t: 'mouse_button', btn: btnName(e.button), down: true });
-  };
-  const onMouseUp = (e: React.MouseEvent<HTMLVideoElement>) => {
-    if (!controlling) return;
-    e.preventDefault();
-    send({ t: 'mouse_button', btn: btnName(e.button), down: false });
-  };
-  const onWheel = (e: React.WheelEvent<HTMLVideoElement>) => {
-    if (!controlling) return;
-    e.preventDefault();
-    const dy = Math.sign(e.deltaY) * Math.min(5, Math.ceil(Math.abs(e.deltaY) / 40));
-    const dx = Math.sign(e.deltaX) * Math.min(5, Math.ceil(Math.abs(e.deltaX) / 40));
-    if (dx || dy) send({ t: 'mouse_wheel', dx, dy });
-  };
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (!controlling) return;
-    e.preventDefault();
-    if ((e.metaKey || e.ctrlKey) && e.code === 'KeyC') send({ t: 'clip_get' });
-    if ((e.metaKey || e.ctrlKey) && e.code === 'KeyV') {
-      void navigator.clipboard.readText()
-        .then((text) => send({ t: 'clip_set', text }))
-        .catch(() => { /* permission denied */ });
-    }
-    send({ t: 'key', code: e.code, down: true });
-  };
-  const onKeyUp = (e: KeyboardEvent) => {
-    if (!controlling) return;
-    e.preventDefault();
-    send({ t: 'key', code: e.code, down: false });
-  };
-  useEffect(() => {
-    if (!controlling) return;
-    window.addEventListener('keydown', onKeyDown, true);
-    window.addEventListener('keyup', onKeyUp, true);
-    return () => {
-      window.removeEventListener('keydown', onKeyDown, true);
-      window.removeEventListener('keyup', onKeyUp, true);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [controlling]);
+  const iframeUrl = session?.state === 'ready' && session.rustdesk_id && RUSTDESK_WEB_URL
+    ? `${RUSTDESK_WEB_URL}#id=${session.rustdesk_id}&pwd=${encodeURIComponent(session.session_token)}&relay=${encodeURIComponent(session.rustdesk_server)}`
+    : null;
 
   return (
     <div className="space-y-4">
@@ -236,7 +186,7 @@ export default function RemoteTab() {
           <select
             value={selectedId ?? ''}
             onChange={(e) => setSelectedId(e.target.value || null)}
-            disabled={onlineAgents.length === 0}
+            disabled={!!session || onlineAgents.length === 0}
             className="bg-dark-800 border border-dark-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <option value="">
@@ -248,173 +198,189 @@ export default function RemoteTab() {
               </option>
             ))}
           </select>
-          {selectedId && !controlling && status === 'live' && (
+          <input
+            type="text"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Reason (shown to employee)"
+            disabled={!!session}
+            maxLength={200}
+            className="bg-dark-800 border border-dark-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none disabled:opacity-50 w-72"
+          />
+          {!session && (
             <button
-              onClick={() => setControlling(true)}
-              className="px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-medium"
+              onClick={startSession}
+              disabled={!selectedId}
+              className="px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Take Control
+              <i className="ri-remote-control-2-line mr-1" />
+              Start Remote Session
             </button>
           )}
-          {controlling && (
-            <>
-              <button
-                onClick={() => setControlling(false)}
-                className="px-3 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-red-300 text-xs font-medium"
-              >
-                Release (Esc)
-              </button>
-              <button
-                onClick={() => send({ t: 'clip_get' })}
-                title="Copy the remote machine's clipboard into yours"
-                className="px-3 py-1.5 rounded-lg bg-dark-700 hover:bg-dark-600 border border-dark-600 text-gray-200 text-xs font-medium"
-              >
-                <i className="ri-arrow-down-line mr-1" />Copy from remote
-              </button>
-              <button
-                onClick={async () => {
-                  try {
-                    const text = await navigator.clipboard.readText();
-                    if (!text) { showClip('err', 'Your clipboard is empty'); return; }
-                    send({ t: 'clip_set', text });
-                    const preview = text.length > 40 ? text.slice(0, 40) + '…' : text;
-                    showClip('ok', `Pushed to remote: "${preview}"`);
-                  } catch (err) {
-                    showClip('err', `Couldn't read your clipboard: ${(err as Error).message}`);
-                  }
-                }}
-                title="Push your clipboard to the remote machine"
-                className="px-3 py-1.5 rounded-lg bg-dark-700 hover:bg-dark-600 border border-dark-600 text-gray-200 text-xs font-medium"
-              >
-                <i className="ri-arrow-up-line mr-1" />Paste to remote
-              </button>
-              {clipStatus && (
-                <span className={`px-2.5 py-1 text-[11px] rounded border ${
-                  clipStatus.kind === 'ok'
-                    ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
-                    : 'bg-rose-500/10 text-rose-300 border-rose-500/30'
-                }`}>{clipStatus.text}</span>
-              )}
-            </>
-          )}
-          {selectedId && (
-            <>
-              <button
-                onClick={() => setExpanded((v) => !v)}
-                title={expanded ? 'Shrink to default 16:9 frame' : 'Expand to fill the page'}
-                className="px-3 py-1.5 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-300 text-xs font-medium"
-              >
-                <i className={`mr-1 ${expanded ? 'ri-collapse-diagonal-line' : 'ri-expand-diagonal-line'}`} />
-                {expanded ? 'Shrink' : 'Expand'}
-              </button>
-              <button
-                onClick={() => void toggleFullscreen()}
-                title={isFullscreen ? 'Exit fullscreen (Esc)' : 'Open agent screen in fullscreen'}
-                className="px-3 py-1.5 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-300 text-xs font-medium"
-              >
-                <i className={`mr-1 ${isFullscreen ? 'ri-fullscreen-exit-line' : 'ri-fullscreen-line'}`} />
-                {isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-              </button>
-              <button
-                onClick={() => setSelectedId(null)}
-                className="px-3 py-1.5 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-300 text-xs font-medium"
-              >
-                Stop
-              </button>
-            </>
+          {session && (
+            <button
+              onClick={endSession}
+              className="px-3 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-red-300 text-xs font-medium"
+            >
+              End Session
+            </button>
           )}
         </div>
-        <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium ${
-          controlling ? 'bg-red-500/15 text-red-300'
-          : status === 'live' ? 'bg-emerald-500/15 text-emerald-300'
-          : status === 'connecting' ? 'bg-amber-500/15 text-amber-300'
-          : status === 'failed' ? 'bg-red-500/15 text-red-300'
-          : 'bg-dark-800 text-gray-400'
-        }`}>
-          <span className={`w-1.5 h-1.5 rounded-full ${
-            controlling ? 'bg-red-400 animate-pulse'
-            : status === 'live' ? 'bg-emerald-400 animate-pulse'
-            : status === 'connecting' ? 'bg-amber-400 animate-pulse'
-            : status === 'failed' ? 'bg-red-400'
-            : 'bg-gray-500'
-          }`} />
-          {controlling ? 'CONTROLLING'
-            : status === 'live' ? 'Live'
-            : status === 'connecting' ? 'Connecting…'
-            : status === 'failed' ? (errorMsg ?? 'Failed')
-            : 'Idle'}
-        </span>
+        <StatePill state={session?.state ?? 'idle'} />
       </div>
 
-      <div
-        ref={containerRef}
-        className={
-          isFullscreen
-            ? 'fixed inset-0 z-50 bg-black flex items-center justify-center'
-            : expanded
-              ? 'h-[calc(100vh-160px)] bg-dark-900 border border-dark-700 rounded-xl overflow-hidden relative'
-              : 'aspect-video bg-dark-900 border border-dark-700 rounded-xl overflow-hidden relative'
-        }
-      >
-        {selectedId ? (
-          <>
-            <video
-              ref={videoRef}
-              tabIndex={0}
-              onMouseMove={onMouseMove}
-              onMouseDown={onMouseDown}
-              onMouseUp={onMouseUp}
-              onMouseLeave={onMouseLeave}
-              onWheel={onWheel}
-              onContextMenu={(e) => e.preventDefault()}
-              className={`w-full h-full object-contain bg-black ${controlling ? 'cursor-none' : ''}`}
-              autoPlay
-              playsInline
-              muted
-            />
-            {controlling && reticle && (
-              <div
-                className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-1/2"
-                style={{ left: reticle.x, top: reticle.y }}
-              >
-                <div className="w-5 h-5 rounded-full border-2 border-emerald-400 bg-emerald-400/20 shadow-[0_0_8px_rgba(52,211,153,0.7)]" />
-                <div className="absolute inset-0 m-auto w-1 h-1 rounded-full bg-emerald-200" />
-              </div>
-            )}
-          </>
-        ) : (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="text-center">
-              <span className="w-12 h-12 flex items-center justify-center mx-auto mb-3 text-gray-600">
-                <i className="ri-remote-control-2-line text-3xl" />
-              </span>
-              <p className="text-sm text-gray-400">Select an online agent to take remote control.</p>
-              <p className="text-[11px] text-gray-600 mt-1">Requires the agent on v0.2.52+ with Accessibility permission (macOS).</p>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {status === 'failed' && errorMsg && (
-        <div className="bg-rose-500/10 border border-rose-500/30 rounded-lg px-4 py-3 text-xs text-rose-300 flex items-center justify-between gap-3">
-          <span>Error: {errorMsg}</span>
-          <button
-            onClick={() => {
-              const id = selectedId;
-              if (!id) return;
-              setSelectedId(null);
-              setTimeout(() => setSelectedId(id), 200);
-            }}
-            className="px-2.5 py-1 rounded bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-100"
-          >
-            Retry
-          </button>
+      {error && (
+        <div className="bg-rose-500/10 border border-rose-500/30 rounded-lg px-4 py-3 text-xs text-rose-300">
+          {error}
         </div>
       )}
+
+      <div className="aspect-video bg-dark-900 border border-dark-700 rounded-xl overflow-hidden relative">
+        {!session && (
+          <EmptyState />
+        )}
+        {session && session.state !== 'ready' && (
+          <PendingState state={session.state} />
+        )}
+        {session?.state === 'ready' && (
+          iframeUrl ? (
+            <iframe
+              src={iframeUrl}
+              className="absolute inset-0 w-full h-full border-0"
+              allow="clipboard-read; clipboard-write; fullscreen"
+              title="RustDesk remote session"
+            />
+          ) : (
+            <ConnectionDetails session={session} />
+          )
+        )}
+      </div>
     </div>
   );
 }
 
-function btnName(b: number): 'left' | 'right' | 'middle' {
-  return b === 2 ? 'right' : b === 1 ? 'middle' : 'left';
+function StatePill({ state }: { state: SessionState }) {
+  const labels: Record<SessionState, [string, string]> = {
+    idle:             ['Idle',                'bg-dark-800 text-gray-400'],
+    requesting:       ['Requesting…',         'bg-amber-500/15 text-amber-300'],
+    awaiting_consent: ['Awaiting consent…',   'bg-amber-500/15 text-amber-300'],
+    approved:         ['Starting RustDesk…',  'bg-amber-500/15 text-amber-300'],
+    ready:            ['Active',              'bg-emerald-500/15 text-emerald-300'],
+    failed:           ['Failed',              'bg-red-500/15 text-red-300'],
+    ended:            ['Ended',               'bg-gray-500/15 text-gray-300'],
+  };
+  const [label, cls] = labels[state];
+  const pulsing = ['requesting','awaiting_consent','approved','ready'].includes(state);
+  return (
+    <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium ${cls}`}>
+      <span className={`w-1.5 h-1.5 rounded-full bg-current ${pulsing ? 'animate-pulse' : ''}`} />
+      {label}
+    </span>
+  );
+}
+
+function EmptyState() {
+  return (
+    <div className="absolute inset-0 flex items-center justify-center">
+      <div className="text-center max-w-md">
+        <span className="w-12 h-12 flex items-center justify-center mx-auto mb-3 text-gray-600">
+          <i className="ri-remote-control-2-line text-3xl" />
+        </span>
+        <p className="text-sm text-gray-400">
+          Pick an online agent and click <strong>Start Remote Session</strong> to request remote control.
+        </p>
+        <p className="text-[11px] text-gray-600 mt-2">
+          The employee will see a consent prompt on their machine. Approval lasts 8 hours by default
+          (configurable per-agent in Admin → Integrations).
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function PendingState({ state }: { state: SessionState }) {
+  const messages: Partial<Record<SessionState, { title: string; sub: string }>> = {
+    requesting: {
+      title: 'Creating session…',
+      sub: 'Asking the backend to mint a session token.',
+    },
+    awaiting_consent: {
+      title: 'Waiting for employee approval',
+      sub: 'A consent prompt is showing on the agent\'s machine. The employee has 60 seconds to allow or deny.',
+    },
+    approved: {
+      title: 'Starting the RustDesk host…',
+      sub: 'The agent is launching its rustdesk subprocess and registering with the relay.',
+    },
+    failed: {
+      title: 'Session failed',
+      sub: 'See the error message above for details.',
+    },
+    ended: {
+      title: 'Session ended',
+      sub: 'Connection closed.',
+    },
+  };
+  const m = messages[state];
+  if (!m) return null;
+  return (
+    <div className="absolute inset-0 flex items-center justify-center">
+      <div className="text-center max-w-md">
+        <div className="w-10 h-10 rounded-full border-2 border-amber-400/30 border-t-amber-400 animate-spin mx-auto mb-4" />
+        <p className="text-sm text-gray-200 font-medium">{m.title}</p>
+        <p className="text-xs text-gray-500 mt-1.5">{m.sub}</p>
+      </div>
+    </div>
+  );
+}
+
+function ConnectionDetails({ session }: { session: ActiveSession }) {
+  // No iframe URL configured → show the credentials prominently for use
+  // with the desktop RustDesk client.
+  return (
+    <div className="absolute inset-0 flex items-center justify-center p-6">
+      <div className="bg-dark-800/80 border border-dark-700 rounded-xl p-6 max-w-md w-full">
+        <p className="text-xs text-gray-400 mb-4">
+          Open the <strong className="text-white">desktop RustDesk client</strong> on your machine and use
+          these credentials to connect:
+        </p>
+        <Field label="Relay" value={session.rustdesk_server} />
+        <Field label="ID"    value={session.rustdesk_id ?? '—'} mono />
+        <Field label="Password" value={session.session_token} mono secret />
+        <p className="text-[11px] text-gray-600 mt-4">
+          Or set <code className="text-gray-400">VITE_RUSTDESK_WEB_URL</code> at build time to embed the
+          RustDesk web client directly in this iframe.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, value, mono, secret }: { label: string; value: string; mono?: boolean; secret?: boolean }) {
+  const [revealed, setRevealed] = useState(false);
+  const display = secret && !revealed ? '•'.repeat(Math.min(16, value.length)) : value;
+  return (
+    <div className="flex items-center justify-between gap-3 py-2 border-b border-dark-700/50 last:border-b-0">
+      <span className="text-[11px] uppercase tracking-wider text-gray-500">{label}</span>
+      <div className="flex items-center gap-1.5">
+        <code className={`text-xs text-gray-200 ${mono ? 'font-mono' : ''}`}>{display}</code>
+        {secret && (
+          <button
+            onClick={() => setRevealed((v) => !v)}
+            className="p-1 rounded hover:bg-dark-700 text-gray-500 hover:text-gray-300"
+            title={revealed ? 'Hide' : 'Reveal'}
+          >
+            <i className={revealed ? 'ri-eye-off-line' : 'ri-eye-line'} />
+          </button>
+        )}
+        <button
+          onClick={() => void navigator.clipboard.writeText(value)}
+          className="p-1 rounded hover:bg-dark-700 text-gray-500 hover:text-gray-300"
+          title="Copy"
+        >
+          <i className="ri-clipboard-line" />
+        </button>
+      </div>
+    </div>
+  );
 }
