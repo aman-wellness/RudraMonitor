@@ -40,9 +40,7 @@ use webrtc::interceptor::registry::Registry;
 use webrtc::media::Sample;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::rtp_transceiver::rtp_codec::{
-    RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
-};
+use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
 
@@ -236,52 +234,20 @@ async fn handle_session(
 ) -> Result<()> {
     let ice_servers = fetch_ice_servers(state).await?;
 
-    // Build the WebRTC API instance with a HAND-CURATED codec list.
-    //
-    // PROBLEM with register_default_codecs(): it advertises every H.264
-    // profile webrtc-rs knows (Constrained-Baseline, Baseline, Main, AND
-    // High). When the browser offer lists multiple H.264 PTs, the answerer
-    // picks the "highest" — typically PT 119 (profile-level-id=64001f =
-    // High Profile, level 3.1).
-    //
-    // But our ffmpeg encoder is hard-pinned to `-profile:v baseline`
-    // (profile_idc=66, level 3.1) for hardware-encoder compatibility.
-    // High-profile decoders are technically supersets, but Chrome's
-    // H.264 hardware path rejects mid-stream when the SPS's profile_idc
-    // (=66, baseline) doesn't match the negotiated High slot. Customer
-    // sees a perfect "Live" pill (ICE+DTLS up, RTP flowing) and a black
-    // rectangle — framesDecoded never increments. Same symptom across
-    // every agent because the bug is in the negotiation, not the encoder.
-    //
-    // Fix: register ONLY Constrained-Baseline profile-level-id=42e01f
-    // packetization-mode=1 — the lowest-common-denominator profile that
-    // every browser AND every hardware encoder (VideoToolbox, NVENC,
-    // QSV, AMF, MF, libx264) speaks. The browser will match it to its
-    // own PT 109 / 115 baseline entries and the negotiated profile now
-    // matches the bitstream byte-for-byte.
+    // Build the WebRTC API instance. Default codecs include H.264; we don't
+    // need to register anything extra. The dashboard-side SDP munger (see
+    // src/pages/monitoring/components/LiveTab.tsx) strips non-baseline H.264
+    // PTs from the offer BEFORE we see it, so the answer that webrtc-rs
+    // generates can only pick from baseline-compatible PTs. Doing the
+    // restriction dashboard-side instead of agent-side is safer because:
+    //   • we can deploy a dashboard build in seconds (no Rust rebuild + CI),
+    //   • register_default_codecs() is the well-trodden path through
+    //     webrtc-rs's negotiation logic — replacing it caused the agent to
+    //     emit malformed answers on v0.2.49/0.2.50 (no signaling rows ever
+    //     hit the DB).
     let mut me = MediaEngine::default();
-    me.register_codec(
-        RTCRtpCodecParameters {
-            capability: RTCRtpCodecCapability {
-                mime_type: webrtc::api::media_engine::MIME_TYPE_H264.to_owned(),
-                clock_rate: 90000,
-                channels: 0,
-                sdp_fmtp_line:
-                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
-                        .to_owned(),
-                rtcp_feedback: vec![],
-            },
-            // 102 is in the dynamic range and aligns with what most
-            // Chrome / Firefox offers list for Constrained-Baseline.
-            // The exact number doesn't matter for negotiation — webrtc-rs
-            // re-maps based on the offer's m-line — but stable IDs help
-            // when grepping pcap dumps.
-            payload_type: 102,
-            ..Default::default()
-        },
-        RTPCodecType::Video,
-    )
-    .map_err(|e| anyhow!("register H264 baseline codec: {e}"))?;
+    me.register_default_codecs()
+        .map_err(|e| anyhow!("register codecs: {e}"))?;
     let registry = Registry::new();
     let api = APIBuilder::new()
         .with_media_engine(me)

@@ -37,6 +37,15 @@ export default function LiveTab() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [status, setStatus] = useState<'idle' | 'connecting' | 'live' | 'failed'>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Live WebRTC stats — surfaces packet/byte/frame counters so we can
+  // tell the difference between "no RTP arriving" (agent encoder dead)
+  // vs "RTP arriving but won't decode" (codec / SPS-PPS / bsf issue).
+  // Without this we just see a black box and have to guess.
+  const [stats, setStats] = useState<{
+    bytes: number; packets: number; framesDecoded: number; framesDropped: number;
+    fps: number; width: number; height: number; nack: number; pli: number;
+    iceState: string; dtlsState: string;
+  } | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -140,16 +149,71 @@ export default function LiveTab() {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      // 4. POST the offer
-      await postSignal(jwt, sessionId, agentId, 'to_agent', 'offer', { sdp: offer.sdp });
+      // 4. POST the offer — first munge it so it only advertises Constrained
+      //    Baseline H.264 PTs. Without this, webrtc-rs on the agent picks
+      //    High Profile (PT 119 in Chrome's offer), but our ffmpeg encoder
+      //    only emits Constrained Baseline — Chrome's H.264 decoder then
+      //    silently refuses every frame (Live pill green, screen black,
+      //    framesDecoded stays at 0). Restricting the offer to baseline
+      //    PTs forces the agent's answer to also be baseline, and the
+      //    bitstream profile now matches the negotiated profile.
+      const baselineSdp = forceBaselineH264(offer.sdp ?? '');
+      await postSignal(jwt, sessionId, agentId, 'to_agent', 'offer', { sdp: baselineSdp });
 
       // 5. Long-poll for answer + remote ICE candidates in the background
       void pollLoop(jwt, sessionId, pc);
+      // 6. Stats poll — 1Hz. Stops automatically once stopFlag flips
+      //    or sessionId is rotated out.
+      void statsLoop(pc, sessionId);
     } catch (e) {
       console.error('live stream start failed', e);
       setErrorMsg(e instanceof Error ? e.message : String(e));
       setStatus('failed');
       teardown();
+    }
+  };
+
+  const statsLoop = async (pc: RTCPeerConnection, sessionId: string) => {
+    let prevBytes = 0;
+    let prevFrames = 0;
+    let prevTs = Date.now();
+    while (!stopFlag.current && sessionIdRef.current === sessionId && pc.connectionState !== 'closed') {
+      try {
+        const report = await pc.getStats();
+        let inb: RTCInboundRtpStreamStats | null = null;
+        report.forEach((s: { type: string; kind?: string }) => {
+          if (s.type === 'inbound-rtp' && s.kind === 'video') inb = s as RTCInboundRtpStreamStats;
+        });
+        if (inb) {
+          const i = inb as RTCInboundRtpStreamStats & {
+            framesDecoded?: number; framesDropped?: number; frameWidth?: number; frameHeight?: number;
+            nackCount?: number; pliCount?: number;
+          };
+          const now = Date.now();
+          const dt = (now - prevTs) / 1000;
+          const bytes = (i.bytesReceived as number) ?? 0;
+          const framesDecoded = i.framesDecoded ?? 0;
+          const fps = dt > 0 ? Math.round((framesDecoded - prevFrames) / dt) : 0;
+          setStats({
+            bytes,
+            packets: (i.packetsReceived as number) ?? 0,
+            framesDecoded,
+            framesDropped: i.framesDropped ?? 0,
+            fps,
+            width: i.frameWidth ?? 0,
+            height: i.frameHeight ?? 0,
+            nack: i.nackCount ?? 0,
+            pli: i.pliCount ?? 0,
+            iceState: pc.iceConnectionState,
+            dtlsState: pc.connectionState,
+          });
+          prevBytes = bytes; prevFrames = framesDecoded; prevTs = now;
+        }
+      } catch (e) {
+        console.warn('[LiveTab] stats poll failed', e);
+      }
+      void prevBytes;
+      await new Promise((r) => setTimeout(r, 1000));
     }
   };
 
@@ -232,13 +296,40 @@ export default function LiveTab() {
 
       <div className="aspect-video bg-dark-900 border border-dark-700 rounded-xl overflow-hidden relative">
         {selectedId ? (
-          <video
-            ref={videoRef}
-            className="w-full h-full object-contain bg-black"
-            autoPlay
-            playsInline
-            muted
-          />
+          <>
+            <video
+              ref={videoRef}
+              className="w-full h-full object-contain bg-black"
+              autoPlay
+              playsInline
+              muted
+            />
+            {stats && (
+              <div className="absolute top-2 right-2 bg-black/70 text-[10px] font-mono text-emerald-300 px-2 py-1.5 rounded leading-tight space-y-0.5 pointer-events-none">
+                <div>ice: <span className="text-white">{stats.iceState}</span> · dtls: <span className="text-white">{stats.dtlsState}</span></div>
+                <div>bytes: <span className="text-white">{stats.bytes.toLocaleString()}</span> · pkts: <span className="text-white">{stats.packets}</span></div>
+                <div>fps: <span className="text-white">{stats.fps}</span> · {stats.width}×{stats.height}</div>
+                <div>decoded: <span className="text-white">{stats.framesDecoded}</span> · dropped: <span className={stats.framesDropped > 0 ? 'text-amber-300' : 'text-white'}>{stats.framesDropped}</span></div>
+                <div>nack: <span className="text-white">{stats.nack}</span> · pli: <span className="text-white">{stats.pli}</span></div>
+              </div>
+            )}
+            {stats && stats.bytes === 0 && status === 'live' && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="text-center bg-black/60 px-4 py-3 rounded-lg">
+                  <p className="text-sm text-amber-300">No video bytes yet</p>
+                  <p className="text-[11px] text-gray-400 mt-1">ICE is up but the agent isn't sending RTP — encoder may not have started.</p>
+                </div>
+              </div>
+            )}
+            {stats && stats.bytes > 0 && stats.framesDecoded === 0 && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="text-center bg-black/60 px-4 py-3 rounded-lg">
+                  <p className="text-sm text-rose-300">RTP arriving but decoder stalled</p>
+                  <p className="text-[11px] text-gray-400 mt-1">{stats.bytes.toLocaleString()} bytes received, 0 frames decoded — likely codec / SPS-PPS mismatch.</p>
+                </div>
+              </div>
+            )}
+          </>
         ) : (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="text-center">
@@ -251,6 +342,11 @@ export default function LiveTab() {
           </div>
         )}
       </div>
+      {selectedId && stats && (
+        <p className="text-[11px] text-gray-500">
+          Diagnostics: bytes={stats.bytes.toLocaleString()} pkts={stats.packets} fps={stats.fps} decoded={stats.framesDecoded} dropped={stats.framesDropped} {stats.width}×{stats.height} · share these numbers if the screen stays black.
+        </p>
+      )}
 
       {status === 'failed' && errorMsg && (
         <p className="text-xs text-red-400">Error: {errorMsg}</p>
@@ -285,4 +381,65 @@ async function postSignal(
   if (!resp.ok) {
     console.warn('postSignal failed', resp.status, await resp.text());
   }
+}
+
+// Strip non-baseline H.264 codecs from the SDP m=video line and remove
+// their associated a=rtpmap / a=fmtp / a=rtcp-fb lines. The agent's
+// ffmpeg encoder is hard-pinned to Constrained Baseline (profile_idc=66)
+// for hw-encoder compatibility, so we cannot let the agent's answer pick
+// PT 119 (High) etc. — Chrome's H.264 decoder rejects mid-stream when
+// negotiated profile-level-id and SPS profile_idc disagree.
+//
+// "Baseline-compatible" = profile-level-id starts with 42 (Constrained
+// Baseline) or 4d (Main, which is a superset that still decodes our
+// baseline bitstream without complaints in every browser we've tested).
+// Everything else — 64 (High), 6e (High 10), f4 (High 4:4:4), etc. —
+// gets stripped from the m-line and all matching attribute lines.
+export function forceBaselineH264(sdp: string): string {
+  if (!sdp) return sdp;
+  // Find each video m-line's H.264 PTs and check their fmtp profile-level-id.
+  // PTs we want to keep are those with no profile-level-id (legacy) OR
+  // with one starting in 42 / 4d.
+  const lines = sdp.split(/\r?\n/);
+  const fmtpById = new Map<string, string>();
+  const rtpmapH264 = new Set<string>();
+  for (const ln of lines) {
+    const rm = ln.match(/^a=rtpmap:(\d+)\s+H264\/90000/i);
+    if (rm) rtpmapH264.add(rm[1]);
+    const fm = ln.match(/^a=fmtp:(\d+)\s+(.+)$/);
+    if (fm) fmtpById.set(fm[1], fm[2]);
+  }
+  // Decide which H.264 PTs to DROP.
+  const drop = new Set<string>();
+  for (const pt of rtpmapH264) {
+    const fmtp = fmtpById.get(pt) ?? '';
+    const m = fmtp.match(/profile-level-id=([0-9a-fA-F]{6})/);
+    if (!m) continue; // no profile = keep
+    const prof = m[1].slice(0, 2).toLowerCase();
+    if (prof !== '42' && prof !== '4d') drop.add(pt);
+  }
+  if (drop.size === 0) return sdp;
+  const out: string[] = [];
+  for (const ln of lines) {
+    // Rewrite m=video by removing dropped PTs from the payload list.
+    if (ln.startsWith('m=video ')) {
+      const parts = ln.split(' ');
+      const head = parts.slice(0, 3);
+      const pts = parts.slice(3).filter((p) => !drop.has(p));
+      out.push([...head, ...pts].join(' '));
+      continue;
+    }
+    // Drop a=rtpmap / a=fmtp / a=rtcp-fb / a=rtpmap apt= lines that
+    // reference a dropped PT. Also drop apt= chained codecs (RED / RTX)
+    // whose `apt=<pt>` points at a dropped PT.
+    const ptMatch = ln.match(/^a=(?:rtpmap|fmtp|rtcp-fb):(\d+)\b/);
+    if (ptMatch && drop.has(ptMatch[1])) continue;
+    const aptMatch = ln.match(/^a=fmtp:(\d+)\s+apt=(\d+)/);
+    if (aptMatch && drop.has(aptMatch[2])) {
+      drop.add(aptMatch[1]); // also drop the RTX/RED that depended on it
+      continue;
+    }
+    out.push(ln);
+  }
+  return out.join('\r\n');
 }

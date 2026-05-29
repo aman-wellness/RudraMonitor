@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAgents } from '@/lib/dataHooks';
 import { supabase } from '@/lib/supabase';
+import { forceBaselineH264 } from './LiveTab';
 
 // Remote Desktop tab. Same WebRTC peer-connection plumbing as LiveTab, but
 // also negotiates a bidirectional data channel (label="control") used for
@@ -261,7 +262,11 @@ export default function RemoteTab() {
       pc.addTransceiver('video', { direction: 'recvonly' });
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      await postSignal(jwt, sessionId, agentId, 'to_agent', 'offer', { sdp: offer.sdp });
+      // Force baseline H.264 — see LiveTab.forceBaselineH264 for the why.
+      // Agent encoder is Constrained Baseline only; if we let the answer
+      // negotiate High (PT 119) the decoder silently drops every frame.
+      const baselineSdp = forceBaselineH264(offer.sdp ?? '');
+      await postSignal(jwt, sessionId, agentId, 'to_agent', 'offer', { sdp: baselineSdp });
       void pollLoop(jwt, sessionId, pc);
     } catch (e) {
       console.error('remote stream start failed', e);
