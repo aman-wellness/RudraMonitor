@@ -5077,7 +5077,7 @@ dependencies = [
 
 [[package]]
 name = "rudrans-agent"
-version = "0.2.56"
+version = "0.2.57"
 dependencies = [
  "active-win-pos-rs",
  "anyhow",

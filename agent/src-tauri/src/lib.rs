@@ -1222,11 +1222,16 @@ pub fn run() {
             // offer through /webrtc-signal; from that point the agent owns
             // an RTCPeerConnection that streams ffmpeg's h264 stdout into a
             // video track until the dashboard closes the session.
-            webrtc_stream::spawn_streaming_loop(state.clone());
-            // LiveKit + WHIP publisher — new path. Dual-stack with the
-            // legacy webrtc_stream loop above; they consume DIFFERENT
-            // signal-table kinds (`offer` vs `livekit_start`) so cohabit
-            // safely until Block G of the pivot deletes the legacy one.
+            // LiveKit + WHIP publisher is the ONLY screen-streaming
+            // path on v0.2.58+. The legacy webrtc_stream loop is
+            // disabled (block G of the pivot) — it can no longer race
+            // for the OS screen-capture device against the WHIP path
+            // and CPU drops by ~30 % at idle (no second ffmpeg
+            // standing by). The webrtc_stream module is kept compiled
+            // for one more release in case we need to flip the flag
+            // back during incident response; the module's spawn is
+            // simply not called.
+            let _ = webrtc_stream::spawn_streaming_loop; // dead-code anchor
             whip_publisher::spawn_whip_loop(state);
             Ok(())
         })

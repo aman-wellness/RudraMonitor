@@ -52,14 +52,25 @@ use crate::{api, config, AppState};
 // because each frame ate 66 ms before the next paint — by the time the
 // dashboard rendered the cursor at position N, the operator had already
 // moved to position N+3 in their head.
-const TARGET_FPS: u32 = 30;
-const TARGET_WIDTH: u32 = 1280;
-// Default bitrate (kbps) at the default 1280 width. Acts as the starting
-// rung in the adaptive ladder. The dashboard's pc.getStats() sampler can
-// dial this up or down via the `set_quality` control message; we restart
-// ffmpeg with the new -b:v + -maxrate when the request differs from the
-// current value by more than 20%.
-const DEFAULT_BITRATE_KBPS: u32 = 2_500;
+// Lightweight defaults (v0.2.58+). The "agent must not hang the
+// customer's machine" goal is the dominant constraint — every encoder
+// CPU cycle saved on the agent is one fewer reason an employee
+// complains. Tuned conservatively for the lowest-spec hardware we
+// ship to (Mac Mini 2018 / Surface Pro 7 baseline):
+//
+//   • 24 fps (was 30) → ~20% encoder CPU saved; mouse motion still
+//                       fluid to the human eye (cinema rate).
+//   • 960 px wide (was 1280) → 44% fewer pixels to encode each frame.
+//                              Still legible enough that an admin can
+//                              read the agent's screen during Live.
+//   • 1.2 Mbps bitrate (was 2.5 Mbps) → halves the bytes-on-wire and
+//                                       lets corporate networks behave.
+//
+// Dashboard's adaptive-bitrate ladder can dial these UP per-session
+// via the `set_quality` control message when network capacity allows.
+const TARGET_FPS: u32 = 24;
+const TARGET_WIDTH: u32 = 960;
+const DEFAULT_BITRATE_KBPS: u32 = 1_200;
 
 /// Shared mutable stream parameters. The control DataChannel writes to
 /// these via `InboundMsg::SetQuality`; the ffmpeg pump reads them when
