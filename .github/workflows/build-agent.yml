@@ -154,6 +154,46 @@ jobs:
           chmod +x "$OUT" || true
           ls -lh "$OUT"
 
+      # Drop the upstream rustdesk binary (extracted from the official
+      # releases by us once, then mirrored to Supabase Storage's `rustdesk`
+      # bucket) into resources/. The agent's remote/rustdesk_host.rs
+      # spawns it over stdio for Phase-2 Remote Desktop sessions — GPL-3.0
+      # "use" boundary, never linked. Soft-fails: if the bucket object
+      # doesn't exist yet (first builds before binaries are uploaded), the
+      # agent ships without remote-desktop capability and the listener
+      # cleanly denies sessions with "no rustdesk binary bundled".
+      - name: Bundle rustdesk for ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p agent/src-tauri/resources
+          case "${{ matrix.target }}" in
+            aarch64-apple-darwin)
+              URL="https://api.rudrans.com/storage/v1/object/public/rustdesk/rustdesk-macos-arm64"
+              OUT="agent/src-tauri/resources/rustdesk"
+              ;;
+            x86_64-apple-darwin)
+              URL="https://api.rudrans.com/storage/v1/object/public/rustdesk/rustdesk-macos-x64"
+              OUT="agent/src-tauri/resources/rustdesk"
+              ;;
+            x86_64-pc-windows-msvc)
+              URL="https://api.rudrans.com/storage/v1/object/public/rustdesk/rustdesk-windows-x64.exe"
+              OUT="agent/src-tauri/resources/rustdesk.exe"
+              ;;
+            x86_64-unknown-linux-gnu)
+              URL="https://api.rudrans.com/storage/v1/object/public/rustdesk/rustdesk-linux-x64"
+              OUT="agent/src-tauri/resources/rustdesk"
+              ;;
+          esac
+          if curl -fL --retry 3 "$URL" -o "$OUT"; then
+            chmod +x "$OUT" || true
+            ls -lh "$OUT"
+            echo "rustdesk bundled for ${{ matrix.target }}"
+          else
+            echo "WARN: rustdesk binary not yet in Storage for ${{ matrix.target }} — agent will ship without remote-desktop"
+            rm -f "$OUT"
+          fi
+
       # Import the self-signed macOS code-signing cert into a temporary
       # keychain. Tauri's bundler will pick up APPLE_SIGNING_IDENTITY and
       # run `codesign --force --sign ... --options runtime --entitlements
