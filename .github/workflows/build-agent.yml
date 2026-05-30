@@ -181,7 +181,8 @@ jobs:
               \( -name 'RustDesk' -o -name 'rustdesk' -o -name 'rustdesk.exe' \) \
               -exec chmod +x {} \;
             echo "rustdesk extracted for ${{ matrix.target }}:"
-            ls -lhR agent/src-tauri/resources/rustdesk | head -30
+            du -sh agent/src-tauri/resources/rustdesk
+            find agent/src-tauri/resources/rustdesk -maxdepth 3 -type f | head -10 || true
           else
             echo "WARN: $ZIP not in Storage — agent will ship without remote-desktop"
           fi
