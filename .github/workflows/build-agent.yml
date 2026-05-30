@@ -154,44 +154,36 @@ jobs:
           chmod +x "$OUT" || true
           ls -lh "$OUT"
 
-      # Drop the upstream rustdesk binary (extracted from the official
-      # releases by us once, then mirrored to Supabase Storage's `rustdesk`
-      # bucket) into resources/. The agent's remote/rustdesk_host.rs
-      # spawns it over stdio for Phase-2 Remote Desktop sessions — GPL-3.0
-      # "use" boundary, never linked. Soft-fails: if the bucket object
-      # doesn't exist yet (first builds before binaries are uploaded), the
-      # agent ships without remote-desktop capability and the listener
-      # cleanly denies sessions with "no rustdesk binary bundled".
+      # Pull the per-platform RustDesk runtime tree from Supabase Storage's
+      # `rustdesk` bucket (packaged by scripts/package-rustdesk.sh from the
+      # upstream releases) and extract it under resources/rustdesk/ so
+      # Tauri bundles the whole tree inside the .app / .msi / .deb.
+      # GPL-3.0 "use" boundary — never linked, spawned as a subprocess.
+      # Soft-fails: if the zip doesn't exist yet, the agent ships without
+      # remote-desktop and the listener cleanly denies sessions with
+      # "no rustdesk binary bundled".
       - name: Bundle rustdesk for ${{ matrix.target }}
         shell: bash
         run: |
           set -uo pipefail
-          mkdir -p agent/src-tauri/resources
+          mkdir -p agent/src-tauri/resources/rustdesk
           case "${{ matrix.target }}" in
-            aarch64-apple-darwin)
-              URL="https://api.rudrans.com/storage/v1/object/public/rustdesk/rustdesk-macos-arm64"
-              OUT="agent/src-tauri/resources/rustdesk"
-              ;;
-            x86_64-apple-darwin)
-              URL="https://api.rudrans.com/storage/v1/object/public/rustdesk/rustdesk-macos-x64"
-              OUT="agent/src-tauri/resources/rustdesk"
-              ;;
-            x86_64-pc-windows-msvc)
-              URL="https://api.rudrans.com/storage/v1/object/public/rustdesk/rustdesk-windows-x64.exe"
-              OUT="agent/src-tauri/resources/rustdesk.exe"
-              ;;
-            x86_64-unknown-linux-gnu)
-              URL="https://api.rudrans.com/storage/v1/object/public/rustdesk/rustdesk-linux-x64"
-              OUT="agent/src-tauri/resources/rustdesk"
-              ;;
+            aarch64-apple-darwin)     ZIP=rustdesk-macos-arm64.zip ;;
+            x86_64-apple-darwin)      ZIP=rustdesk-macos-x64.zip   ;;
+            x86_64-pc-windows-msvc)   ZIP=rustdesk-windows-x64.zip ;;
+            x86_64-unknown-linux-gnu) ZIP=rustdesk-linux-x64.zip   ;;
           esac
-          if curl -fL --retry 3 "$URL" -o "$OUT"; then
-            chmod +x "$OUT" || true
-            ls -lh "$OUT"
-            echo "rustdesk bundled for ${{ matrix.target }}"
+          URL="https://api.rudrans.com/storage/v1/object/public/rustdesk/$ZIP"
+          if curl -fL --retry 3 "$URL" -o /tmp/rustdesk.zip; then
+            unzip -q /tmp/rustdesk.zip -d agent/src-tauri/resources/rustdesk
+            # Ensure execute bit on launchers (zip preserves mode but be safe).
+            find agent/src-tauri/resources/rustdesk -type f \
+              \( -name 'RustDesk' -o -name 'rustdesk' -o -name 'rustdesk.exe' \) \
+              -exec chmod +x {} \;
+            echo "rustdesk extracted for ${{ matrix.target }}:"
+            ls -lhR agent/src-tauri/resources/rustdesk | head -30
           else
-            echo "WARN: rustdesk binary not yet in Storage for ${{ matrix.target }} — agent will ship without remote-desktop"
-            rm -f "$OUT"
+            echo "WARN: $ZIP not in Storage — agent will ship without remote-desktop"
           fi
 
       # Import the self-signed macOS code-signing cert into a temporary

@@ -39,7 +39,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["resources/uninstall.command", "resources/ffmpeg*", "resources/RudransRootCA.cer", "resources/rustdesk*"],
+    "resources": ["resources/uninstall.command", "resources/ffmpeg*", "resources/RudransRootCA.cer", "resources/rustdesk/**/*"],
     "category": "Productivity",
     "shortDescription": "Security Assistant — endpoint compliance & activity background service",
     "longDescription": "Background service that reports system health, active applications, and security telemetry to the corporate IT console.",

@@ -33,11 +33,6 @@ use tokio::process::{Child, Command};
 use std::os::windows::process::CommandExt;
 use tokio::time::timeout;
 
-#[cfg(target_os = "windows")]
-const BIN_NAME: &str = "rustdesk.exe";
-#[cfg(not(target_os = "windows"))]
-const BIN_NAME: &str = "rustdesk";
-
 const READY_TIMEOUT_SECS: u64 = 20;
 
 pub struct HostHandle {
@@ -66,26 +61,46 @@ impl HostHandle {
     }
 }
 
+/// Resolve the path to the bundled rustdesk launcher. The runtime tree is
+/// extracted by CI into resources/rustdesk/<...> and Tauri ships it
+/// inside the parent bundle. Per-platform layout (from
+/// scripts/package-rustdesk.sh):
+///   macOS:    resources/rustdesk/RustDesk.app/Contents/MacOS/RustDesk
+///   Linux:    resources/rustdesk/rustdesk/rustdesk
+///   Windows:  resources/rustdesk/rustdesk/rustdesk.exe (portable PE; self-contained)
 fn bundled_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let exe_dir = exe.parent()?;
+    let resource_roots: Vec<PathBuf> = {
+        #[cfg(target_os = "macos")]
+        {
+            let contents = exe_dir.parent()?;
+            vec![
+                contents.join("Resources").join("resources").join("rustdesk"),
+                contents.join("Resources").join("rustdesk"),
+                contents.join("Resources").join("_up_").join("resources").join("rustdesk"),
+            ]
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            vec![exe_dir.join("resources").join("rustdesk"), exe_dir.join("rustdesk")]
+        }
+    };
+
     #[cfg(target_os = "macos")]
-    {
-        let contents = exe_dir.parent()?;
-        for sub in ["Resources/resources", "Resources", "Resources/_up_/resources"] {
-            let p = contents.join(sub).join(BIN_NAME);
+    let rel = ["RustDesk.app/Contents/MacOS/RustDesk"];
+    #[cfg(target_os = "linux")]
+    let rel = ["rustdesk/rustdesk"];
+    #[cfg(target_os = "windows")]
+    let rel = ["rustdesk/rustdesk.exe", "rustdesk\\rustdesk.exe"];
+
+    for root in &resource_roots {
+        for r in rel.iter() {
+            let p = root.join(r);
             if p.exists() { return Some(p); }
         }
-        None
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        for sub in ["resources", "."] {
-            let p = exe_dir.join(sub).join(BIN_NAME);
-            if p.exists() { return Some(p); }
-        }
-        None
-    }
+    None
 }
 
 pub async fn start(server_host: &str, session_token: &str) -> Result<HostHandle> {
