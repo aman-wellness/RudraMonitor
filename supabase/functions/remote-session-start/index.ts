@@ -123,9 +123,9 @@ Deno.serve(async (req) => {
   }
 
   // Auto-approve if the policy's "Always allow" window is still open.
-  const autoApprove =
+  const autoApprove: boolean =
     !policy.require_consent
-    || (policy.trusted_until && new Date(policy.trusted_until) > new Date());
+    || (policy.trusted_until !== null && new Date(policy.trusted_until) > new Date());
   const initialState = autoApprove ? "approved" : "requested";
 
   // ---- Idempotency: reuse an active session if there is one ----

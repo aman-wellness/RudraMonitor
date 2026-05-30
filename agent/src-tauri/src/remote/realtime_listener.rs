@@ -217,8 +217,14 @@ struct RequestPayload {
     reason: Option<String>,
     rustdesk_server: String,
     session_token: String,
-    #[serde(default)]
+    // Edge fn currently emits `null` (not `false`) when org policy
+    // requires consent. Default-on-null accepts both shapes.
+    #[serde(default, deserialize_with = "de_bool_null_as_false")]
     auto_approved: bool,
+}
+
+fn de_bool_null_as_false<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    Ok(Option::<bool>::deserialize(d)?.unwrap_or(false))
 }
 
 async fn handle_request(
