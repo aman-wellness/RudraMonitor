@@ -56,11 +56,16 @@ pub async fn post_ready(
     state: &AppState,
     session_id: &str,
     rustdesk_id: &str,
+    rustdesk_pass: Option<&str>,
 ) -> Result<()> {
-    post(state, "/remote-session-ready", json!({
+    let mut body = json!({
         "session_id": session_id,
         "rustdesk_id": rustdesk_id,
-    })).await
+    });
+    if let Some(p) = rustdesk_pass {
+        body["rustdesk_pass"] = json!(p);
+    }
+    post(state, "/remote-session-ready", body).await
 }
 
 /// Agent reports the session is over (either rustdesk subprocess died, the

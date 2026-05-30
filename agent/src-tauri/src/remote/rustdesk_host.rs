@@ -1,42 +1,36 @@
-// Wraps the bundled `rustdesk` binary as a subprocess. We never link
-// against the rustdesk crate — GPL-3.0 linkage would force the agent to
-// be GPL too. Instead we ship the upstream rustdesk binary in
-// resources/rustdesk[.exe] and talk to it over stdio. That's "use", not
-// "linking" — GPL respects the boundary.
+// Wraps the bundled `rustdesk` binary as a subprocess. GPL-3.0 "use"
+// boundary — never linked, only spawned.
 //
-// Process lifecycle:
-//   spawn(server, token)
-//     → spawn rustdesk in unattended "host" mode, point it at our hbbs
-//       container, hand it the per-session token as both relay password
-//       and one-time pass so the dashboard's RustDesk web client can
-//       connect with that same token in its URL hash.
-//     → wait for the binary to print its 9-digit ID on stdout (rustdesk
-//       prints "Your ID is <id>" on first registration).
-//     → return a HostHandle the realtime listener can shutdown() later.
+// RustDesk is a Flutter app, not a CLI tool. It doesn't print structured
+// stdout, so the original "parse `Your ID is N` from stdout" approach
+// silently timed out. The correct integration uses RustDesk's config
+// files:
 //
-// On shutdown(), we send SIGTERM (Unix) / TerminateProcess (Windows)
-// and wait up to 5 s for clean exit, then SIGKILL.
+//   1. Pre-write RustDesk2.toml with our rendezvous + relay servers so
+//      the binary uses OUR hbbs/hbbr container instead of the public one.
+//   2. Spawn rustdesk. It registers with hbbs, generates a 9-digit ID
+//      and a random password, and writes them to RustDesk.toml.
+//   3. Poll RustDesk.toml until the `id` and `password` fields appear
+//      (usually within 3-5s on a warm cache, up to 15s cold).
+//   4. Return both to the caller; the dashboard surfaces them so the
+//      admin enters them into their RustDesk client.
 //
-// The binary itself is added to src-tauri/resources/ by the CI workflow
-// in Block 3.2. Until then, this module returns an error from start()
-// and the realtime listener reports it back to the backend as a denied
-// session — the dashboard shows "agent not capable of remote control"
-// instead of hanging.
+// Per-session password rotation (security improvement) lands in v0.6 —
+// for now the agent's binary uses RustDesk's permanent password.
 
 use anyhow::{anyhow, Context, Result};
-use std::path::PathBuf;
-use std::process::Stdio;
-use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 use tokio::process::{Child, Command};
+use tokio::time::timeout;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-use tokio::time::timeout;
 
 const READY_TIMEOUT_SECS: u64 = 20;
 
 pub struct HostHandle {
     pub rustdesk_id: String,
+    pub rustdesk_password: Option<String>,
     child: Option<Child>,
 }
 
@@ -46,7 +40,6 @@ impl HostHandle {
             #[cfg(unix)]
             {
                 if let Some(pid) = child.id() {
-                    // SIGTERM first; rustdesk handles it cleanly.
                     unsafe { libc::kill(pid as i32, libc::SIGTERM); }
                 }
             }
@@ -61,13 +54,6 @@ impl HostHandle {
     }
 }
 
-/// Resolve the path to the bundled rustdesk launcher. The runtime tree is
-/// extracted by CI into resources/rustdesk/<...> and Tauri ships it
-/// inside the parent bundle. Per-platform layout (from
-/// scripts/package-rustdesk.sh):
-///   macOS:    resources/rustdesk/RustDesk.app/Contents/MacOS/RustDesk
-///   Linux:    resources/rustdesk/rustdesk/rustdesk
-///   Windows:  resources/rustdesk/rustdesk/rustdesk.exe (portable PE; self-contained)
 fn bundled_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let exe_dir = exe.parent()?;
@@ -103,74 +89,144 @@ fn bundled_path() -> Option<PathBuf> {
     None
 }
 
-pub async fn start(server_host: &str, session_token: &str) -> Result<HostHandle> {
+/// RustDesk's per-user config dir. RustDesk2.toml (server config) and
+/// RustDesk.toml (identity / password) both live here.
+fn rustdesk_config_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        dirs::home_dir().map(|h| h.join("Library/Preferences/com.carriez.RustDesk"))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // %APPDATA%\RustDesk\config
+        dirs::config_dir().map(|d| d.join("RustDesk").join("config"))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        dirs::config_dir().map(|d| d.join("rustdesk").join("config"))
+    }
+}
+
+fn write_server_config(server_host: &str) -> Result<()> {
+    let dir = rustdesk_config_dir()
+        .ok_or_else(|| anyhow!("could not resolve rustdesk config dir"))?;
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("creating {:?}", dir))?;
+    // The TOML schema matches what upstream RustDesk writes. `options.key`
+    // pins the hbbs public key so this rustdesk instance won't talk to a
+    // rogue relay. Empty string = trust on first contact (acceptable for
+    // a self-hosted single-server deployment).
+    let toml = format!(
+        r#"rendezvous_server = '{host}:21116'
+nat_type = 0
+serial = 0
+
+[options]
+custom-rendezvous-server = '{host}'
+relay-server = '{host}'
+key = ''
+enable-keyboard = 'Y'
+enable-clipboard = 'Y'
+enable-file-transfer = 'Y'
+enable-audio = 'N'
+"#,
+        host = server_host,
+    );
+    let target = dir.join("RustDesk2.toml");
+    std::fs::write(&target, toml).with_context(|| format!("writing {:?}", target))?;
+    log::info!("rustdesk_host: wrote server config to {:?}", target);
+    Ok(())
+}
+
+pub async fn start(server_host: &str, _session_token: &str) -> Result<HostHandle> {
     let bin = bundled_path()
-        .ok_or_else(|| anyhow!("no rustdesk binary bundled — CI hasn't shipped Block 3.2 yet"))?;
+        .ok_or_else(|| anyhow!("no rustdesk binary bundled in resources/rustdesk/"))?;
 
     log::info!("rustdesk_host: spawning {:?} against server {}", bin, server_host);
 
-    // RustDesk reads its hbbs/hbbr coordinates from env or RustDesk2.toml.
-    // Env vars are simplest for our case — one-shot per session, no
-    // persistent config to leak across sessions.
+    write_server_config(server_host)?;
+
     let mut cmd = Command::new(&bin);
-    cmd.env("RENDEZVOUS_SERVER", format!("{server_host}:21116"))
-       .env("RELAY_SERVER",      format!("{server_host}:21117"))
-       .env("KEY",               "") // pubkey embedded server-side; agent doesn't need it for outbound
-       .env("PASSWORD",          session_token)
-       .arg("--service")
-       .stdout(Stdio::piped())
-       .stderr(Stdio::piped());
-    // tokio::process::Command has its own creation_flags (mirrors std).
-    // win_proc::no_window is std-only, so inline the flag.
+    // Avoid stdout/stderr capture — rustdesk isn't a CLI tool and
+    // capturing them risks pipe-buffer deadlock on a long-running GUI
+    // process.
+    cmd.stdout(std::process::Stdio::null())
+       .stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let mut child = cmd.spawn().context("rustdesk spawn")?;
-    let stdout = child.stdout.take().ok_or_else(|| anyhow!("rustdesk stdout missing"))?;
-    let mut reader = BufReader::new(stdout).lines();
+    let child = cmd.spawn().context("rustdesk spawn")?;
 
-    // Wait for rustdesk to print its 9-digit ID. Format observed:
-    //   "Your ID is 123456789"
-    // We also accept a plain 9-digit token on its own line as a fallback.
-    let id_future = async {
-        while let Ok(Some(line)) = reader.next_line().await {
-            log::debug!("rustdesk[stdout] {line}");
-            if let Some(id) = extract_id(&line) {
-                return Ok::<String, anyhow::Error>(id);
-            }
-        }
-        Err(anyhow!("rustdesk stdout closed before reporting ID"))
-    };
-
-    let rustdesk_id = match timeout(Duration::from_secs(READY_TIMEOUT_SECS), id_future).await {
-        Ok(Ok(id)) => id,
-        Ok(Err(e)) => {
-            let _ = child.kill().await;
-            return Err(e);
-        }
+    // Poll RustDesk.toml (created by the child) for the id + password.
+    // Cold start can take a few seconds while it contacts hbbs.
+    let cfg_path = rustdesk_config_dir()
+        .ok_or_else(|| anyhow!("config dir gone"))?
+        .join("RustDesk.toml");
+    let (rustdesk_id, rustdesk_password) = match timeout(
+        Duration::from_secs(READY_TIMEOUT_SECS),
+        wait_for_identity(&cfg_path),
+    ).await {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return Err(e),
         Err(_) => {
-            let _ = child.kill().await;
-            return Err(anyhow!("rustdesk did not report ID within {READY_TIMEOUT_SECS}s"));
+            return Err(anyhow!(
+                "rustdesk did not write id/password to {:?} within {}s",
+                cfg_path, READY_TIMEOUT_SECS
+            ));
         }
     };
 
     log::info!("rustdesk_host: ready, ID={rustdesk_id}");
-    Ok(HostHandle { rustdesk_id, child: Some(child) })
+    Ok(HostHandle {
+        rustdesk_id,
+        rustdesk_password: Some(rustdesk_password),
+        child: Some(child),
+    })
 }
 
-fn extract_id(line: &str) -> Option<String> {
-    if let Some(rest) = line.split("Your ID is").nth(1) {
-        let digits: String = rest.chars().filter(|c| c.is_ascii_digit()).collect();
-        if digits.len() >= 9 {
-            return Some(digits.chars().take(9).collect());
+async fn wait_for_identity(path: &Path) -> Result<(String, String)> {
+    let start = Instant::now();
+    loop {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            let id  = extract_field(&content, "id");
+            let pwd = extract_field(&content, "password");
+            if let (Some(id), Some(pwd)) = (id.as_ref(), pwd.as_ref()) {
+                if id.len() >= 6 && !pwd.is_empty() {
+                    return Ok((id.clone(), pwd.clone()));
+                }
+            }
+            // Some rustdesk versions store id but defer password until the
+            // first incoming connect request. If we have an id but no
+            // password after 8s, return with an empty password — the user
+            // can still see the ID and rustdesk will prompt for password
+            // interactively.
+            if start.elapsed() > Duration::from_secs(8) {
+                if let Some(id) = id {
+                    if id.len() >= 6 {
+                        return Ok((id, pwd.unwrap_or_default()));
+                    }
+                }
+            }
         }
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    let trimmed = line.trim();
-    if trimmed.len() == 9 && trimmed.chars().all(|c| c.is_ascii_digit()) {
-        return Some(trimmed.to_string());
+}
+
+/// Extract a top-level scalar `key = 'value'` (or `key = "value"`) from a
+/// minimal TOML file. We don't need a full TOML parser — RustDesk's
+/// identity file is a flat key=value list and we only read two fields.
+fn extract_field(content: &str, key: &str) -> Option<String> {
+    for line in content.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix(&format!("{key} =")) {
+            let v = rest.trim()
+                .trim_matches('"').trim_matches('\'')
+                .trim().to_string();
+            if !v.is_empty() { return Some(v); }
+        }
     }
     None
 }

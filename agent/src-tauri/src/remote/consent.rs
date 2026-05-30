@@ -20,8 +20,31 @@
 
 use std::time::Duration;
 use tauri::AppHandle;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use tokio::process::Command;
 use tokio::time::timeout;
+
+#[cfg(target_os = "windows")]
+fn show_win32_dialog(title: &str, body: &str) -> Option<bool> {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, IDYES, MB_ICONQUESTION, MB_SYSTEMMODAL, MB_TOPMOST, MB_YESNO,
+    };
+    fn to_wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+    let title_w = to_wide(title);
+    let body_w = to_wide(body);
+    unsafe {
+        let r = MessageBoxW(
+            None,
+            PCWSTR(body_w.as_ptr()),
+            PCWSTR(title_w.as_ptr()),
+            MB_YESNO | MB_ICONQUESTION | MB_TOPMOST | MB_SYSTEMMODAL,
+        );
+        Some(r == IDYES)
+    }
+}
 
 const PROMPT_TIMEOUT_SECS: u64 = 60;
 
@@ -58,20 +81,16 @@ async fn run_dialog(title: String, body: String) -> Option<bool> {
     }
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let escaped = body.replace('\'', "''");
-        let title_esc = title.replace('\'', "''");
-        let ps = format!(
-            "Add-Type -AssemblyName PresentationFramework; \
-             $r = [System.Windows.MessageBox]::Show('{escaped}','{title_esc}','YesNo','Question'); \
-             if ($r -eq 'Yes') {{ exit 0 }} else {{ exit 1 }}"
-        );
-        let mut cmd = Command::new("powershell");
-        cmd.args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps]);
-        cmd.creation_flags(CREATE_NO_WINDOW);
-        let status = cmd.status().await.ok()?;
-        return Some(status.success());
+        // PowerShell-MessageBox path was unreliable from the tray-app
+        // context — the child PS sometimes ran without UI session access
+        // and the dialog never reached the desktop. Use Win32 MessageBoxW
+        // directly: it inherits the parent process's UI session and
+        // shows a system-modal prompt the same way Tauri's own dialogs do.
+        let result = tokio::task::spawn_blocking(move || show_win32_dialog(&title, &body))
+            .await
+            .ok()
+            .flatten();
+        return result;
     }
     #[cfg(target_os = "linux")]
     {

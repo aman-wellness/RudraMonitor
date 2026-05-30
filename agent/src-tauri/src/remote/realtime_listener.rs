@@ -276,6 +276,7 @@ async fn handle_request(
     };
 
     let rustdesk_id = host.rustdesk_id.clone();
+    let rustdesk_pass = host.rustdesk_password.clone();
 
     // Store handle so /remote.ended can tear it down later.
     {
@@ -285,6 +286,8 @@ async fn handle_request(
 
     // Tell backend we're ready — flips state to 'publishing', dashboard
     // iframe can now connect.
-    super::audit::post_ready(&state, &req.session_id, &rustdesk_id).await?;
+    super::audit::post_ready(
+        &state, &req.session_id, &rustdesk_id, rustdesk_pass.as_deref(),
+    ).await?;
     Ok(())
 }
