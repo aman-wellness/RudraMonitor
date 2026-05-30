@@ -1,6 +1,6 @@
 [package]
 name = "rudrans-agent"
-version = "0.5.4"
+version = "0.5.5"
 description = "Rudrans employee monitoring agent"
 edition = "2021"
 rust-version = "1.77"
@@ -110,7 +110,7 @@ objc2-foundation = "0.2"
 # per poll) and unreliable when PowerShell startup latency spiked.
 [target.'cfg(target_os = "windows")'.dependencies]
 uiautomation = "0.18"
-windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem"] }
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem", "Win32_UI_Shell"] }
 
 [features]
 default = ["custom-protocol"]
