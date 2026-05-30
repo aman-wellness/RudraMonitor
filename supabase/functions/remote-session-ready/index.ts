@@ -70,10 +70,20 @@ Deno.serve(async (req) => {
   });
 
   // Broadcast — dashboard iframe now has the rustdesk_id it needs.
+  // We forward the actual rustdesk_pass too: the dashboard otherwise
+  // falls back to showing the session_token (a multi-hundred-char JWT)
+  // in the Password field, which is unusable in a desktop RustDesk
+  // client's password box. The rustdesk_pass is short (8 hex chars)
+  // and is the actual permanent password set on the agent's RustDesk
+  // via `rustdesk --password <pw>`.
   await admin.channel(`session:${sessionId}`)
     .send({
       type: "broadcast", event: "remote.ready",
-      payload: { session_id: sessionId, rustdesk_id: rustdeskId, has_pass: !!body.rustdesk_pass },
+      payload: {
+        session_id: sessionId,
+        rustdesk_id: rustdeskId,
+        rustdesk_pass: body.rustdesk_pass ?? null,
+      },
     });
 
   return json({ ok: true, state: "publishing" });

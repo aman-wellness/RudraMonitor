@@ -43,6 +43,7 @@ interface ActiveSession {
   rustdesk_server: string;
   session_token: string;
   rustdesk_id?: string;
+  rustdesk_pass?: string;
   state: SessionState;
 }
 
@@ -74,8 +75,13 @@ export default function RemoteTab() {
       }
     });
     ch.on('broadcast', { event: 'remote.ready' }, ({ payload }) => {
-      const p = payload as { rustdesk_id: string };
-      setSession((s) => (s ? { ...s, rustdesk_id: p.rustdesk_id, state: 'ready' } : s));
+      const p = payload as { rustdesk_id: string; rustdesk_pass?: string | null };
+      setSession((s) => (s ? {
+        ...s,
+        rustdesk_id: p.rustdesk_id,
+        rustdesk_pass: p.rustdesk_pass ?? undefined,
+        state: 'ready',
+      } : s));
     });
     ch.on('broadcast', { event: 'remote.ended' }, () => {
       setSession((s) => (s ? { ...s, state: 'ended' } : s));
@@ -176,7 +182,7 @@ export default function RemoteTab() {
   }, [session?.session_id]);
 
   const iframeUrl = session?.state === 'ready' && session.rustdesk_id && RUSTDESK_WEB_URL
-    ? `${RUSTDESK_WEB_URL}#id=${session.rustdesk_id}&pwd=${encodeURIComponent(session.session_token)}&relay=${encodeURIComponent(session.rustdesk_server)}`
+    ? `${RUSTDESK_WEB_URL}#id=${session.rustdesk_id}&pwd=${encodeURIComponent(session.rustdesk_pass ?? '')}&relay=${encodeURIComponent(session.rustdesk_server)}`
     : null;
 
   return (
@@ -346,7 +352,12 @@ function ConnectionDetails({ session }: { session: ActiveSession }) {
         </p>
         <Field label="Relay" value={session.rustdesk_server} />
         <Field label="ID"    value={session.rustdesk_id ?? '—'} mono />
-        <Field label="Password" value={session.session_token} mono secret />
+        <Field
+          label="Password"
+          value={session.rustdesk_pass ?? '(set by RustDesk on first run — see the ID window on agent machine)'}
+          mono
+          secret={!!session.rustdesk_pass}
+        />
         <p className="text-[11px] text-gray-600 mt-4">
           Or set <code className="text-gray-400">VITE_RUSTDESK_WEB_URL</code> at build time to embed the
           RustDesk web client directly in this iframe.
