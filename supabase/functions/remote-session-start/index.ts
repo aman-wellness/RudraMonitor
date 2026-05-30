@@ -37,7 +37,16 @@ const RUSTDESK_SERVER   = Deno.env.get("RUSTDESK_SERVER") ?? "api.rudrans.com";
 // HS256 secret used to sign the per-session JWT we hand back to both
 // the dashboard and the agent. Different from LIVEKIT_API_SECRET so a
 // LiveKit token can't be replayed as a RustDesk token.
-const RD_SESSION_SECRET = Deno.env.get("RD_SESSION_SECRET") ?? Deno.env.get("SUPABASE_JWT_SECRET")!;
+// Self-hosted Supabase exposes the JWT signing secret as `JWT_SECRET`
+// (cloud Supabase uses SUPABASE_JWT_SECRET). Fall back through both so
+// the fn works in either runtime without extra env wiring.
+const RD_SESSION_SECRET = Deno.env.get("RD_SESSION_SECRET")
+  ?? Deno.env.get("SUPABASE_JWT_SECRET")
+  ?? Deno.env.get("JWT_SECRET")
+  ?? "";
+if (!RD_SESSION_SECRET) {
+  console.error("remote-session-start: no JWT secret configured (RD_SESSION_SECRET / SUPABASE_JWT_SECRET / JWT_SECRET all unset)");
+}
 const SESSION_TTL_SECS  = 30 * 60; // 30 minutes is plenty for a single session
 
 Deno.serve(async (req) => {
