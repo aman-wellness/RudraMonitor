@@ -141,14 +141,37 @@ enable-audio = 'N'
 pub async fn start(server_host: &str, session_token: &str) -> Result<HostHandle> {
     let bin = bundled_path()
         .ok_or_else(|| anyhow!("no rustdesk binary bundled in resources/rustdesk/"))?;
+    if !is_executable(&bin) {
+        return Err(anyhow!(
+            "bundled rustdesk at {:?} is not executable (antivirus quarantine?)",
+            bin
+        ));
+    }
 
     log::info!("rustdesk_host: spawning {:?} against server {}", bin, server_host);
 
+    // Order matters — we do CLI work (write configs, set password) FIRST,
+    // BEFORE spawning the long-running rustdesk process. RustDesk does
+    // its own config-file rewrites at startup, so a `--password` call
+    // AFTER spawn races against rustdesk's own writes and loses ~30% of
+    // the time on real Windows boxes.
+
+    // 1. Pin our hbbs/hbbr relay in RustDesk2.toml.
     write_server_config(server_host)?;
 
-    // 1. Spawn the long-running rustdesk host process. Detach stdout/err
-    //    — RustDesk is a Flutter GUI, not a CLI; capturing pipes risks
-    //    buffer-deadlock on a multi-hour session.
+    // 2. Derive a stable 8-char per-session password from the JWT.
+    let session_pass = derive_pass(session_token);
+
+    // 3. Persist that password via the CLI one-shot. RustDesk writes it
+    //    bcrypted into RustDesk.toml so the running host accepts it.
+    //    Best-effort — if rustdesk isn't bundled correctly we'll fail
+    //    later anyway; this is just for the password persistence.
+    if let Err(e) = run_cli(&bin, &["--password", &session_pass]).await {
+        log::warn!("rustdesk_host: --password failed: {e} (continuing — admin will need to read RustDesk's UI password)");
+    }
+
+    // 4. Spawn the long-running host. Detached pipes — RustDesk is a
+    //    Flutter GUI, not a CLI; piped output risks buffer deadlock.
     let mut cmd = Command::new(&bin);
     cmd.stdout(std::process::Stdio::null())
        .stderr(std::process::Stdio::null());
@@ -159,42 +182,63 @@ pub async fn start(server_host: &str, session_token: &str) -> Result<HostHandle>
     }
     let child = cmd.spawn().context("rustdesk spawn")?;
 
-    // 2. Give it a moment to register with hbbs and write its keypair to
-    //    %APPDATA%\RustDesk\config\RustDesk.toml.
-    tokio::time::sleep(Duration::from_secs(3)).await;
-
-    // 3. Derive a short, RustDesk-friendly per-session password from the
-    //    JWT. Full JWTs are too long for RustDesk's password field; first
-    //    8 alnum chars of a sha256 give a stable 8-char token. This also
-    //    means subsequent admin reconnects to the same session can use
-    //    the same password without a DB lookup.
-    let session_pass = derive_pass(session_token);
-
-    // 4. Set the permanent password via the CLI one-shot. This rewrites
-    //    `password` in RustDesk.toml. RustDesk persists it bcrypted so
-    //    subsequent admin connects must use this exact password.
-    if let Err(e) = run_cli(&bin, &["--password", &session_pass]).await {
-        log::warn!("rustdesk_host: --password CLI failed: {e} (continuing)");
-    }
-
-    // 5. Query the decrypted 9-digit ID. `--get-id` exits after printing.
-    let rustdesk_id = match get_id(&bin).await {
+    // 5. Poll --get-id until a 9-digit ID prints OR we hit the deadline.
+    //    Cold registration against hbbs can take 1-10s depending on
+    //    network; on managed Windows machines with TLS-inspecting
+    //    proxies, sometimes 15s+. If we still have no ID after the
+    //    deadline, kill the child so we don't leak a half-started host.
+    let rustdesk_id = match poll_get_id(&bin, Duration::from_secs(READY_TIMEOUT_SECS)).await {
         Ok(id) => id,
         Err(e) => {
-            log::warn!("rustdesk_host: --get-id failed: {e}");
-            // Fall back to reading enc_id from RustDesk.toml — better
-            // than nothing, but the dashboard won't be able to use the
-            // encrypted form. Caller will fail downstream.
-            return Err(anyhow!("could not obtain rustdesk ID: {e}"));
+            let mut child = child;
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            return Err(anyhow!("rustdesk ID not available after {READY_TIMEOUT_SECS}s: {e}"));
         }
     };
 
-    log::info!("rustdesk_host: ready, ID={rustdesk_id}");
+    log::info!("rustdesk_host: ready, ID={rustdesk_id}, pass len={}", session_pass.len());
     Ok(HostHandle {
         rustdesk_id,
         rustdesk_password: Some(session_pass),
         child: Some(child),
     })
+}
+
+fn is_executable(p: &PathBuf) -> bool {
+    if !p.exists() { return false; }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return std::fs::metadata(p)
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+    }
+    #[cfg(windows)]
+    {
+        return p.extension().and_then(|s| s.to_str()) == Some("exe");
+    }
+}
+
+async fn poll_get_id(bin: &PathBuf, total: Duration) -> Result<String> {
+    let start = std::time::Instant::now();
+    let mut attempts = 0u32;
+    let mut last_err: Option<anyhow::Error> = None;
+    while start.elapsed() < total {
+        attempts += 1;
+        match get_id(bin).await {
+            Ok(id) => {
+                log::info!("rustdesk_host: got ID on attempt {attempts}: {id}");
+                return Ok(id);
+            }
+            Err(e) => {
+                log::debug!("rustdesk_host: --get-id attempt {attempts} failed: {e}");
+                last_err = Some(e);
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow!("no attempts ran")))
 }
 
 fn derive_pass(token: &str) -> String {
