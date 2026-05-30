@@ -19,8 +19,8 @@
 // for now the agent's binary uses RustDesk's permanent password.
 
 use anyhow::{anyhow, Context, Result};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::path::PathBuf;
+use std::time::Duration;
 use tokio::process::{Child, Command};
 use tokio::time::timeout;
 #[cfg(windows)]
@@ -138,7 +138,7 @@ enable-audio = 'N'
     Ok(())
 }
 
-pub async fn start(server_host: &str, _session_token: &str) -> Result<HostHandle> {
+pub async fn start(server_host: &str, session_token: &str) -> Result<HostHandle> {
     let bin = bundled_path()
         .ok_or_else(|| anyhow!("no rustdesk binary bundled in resources/rustdesk/"))?;
 
@@ -146,10 +146,10 @@ pub async fn start(server_host: &str, _session_token: &str) -> Result<HostHandle
 
     write_server_config(server_host)?;
 
+    // 1. Spawn the long-running rustdesk host process. Detach stdout/err
+    //    — RustDesk is a Flutter GUI, not a CLI; capturing pipes risks
+    //    buffer-deadlock on a multi-hour session.
     let mut cmd = Command::new(&bin);
-    // Avoid stdout/stderr capture — rustdesk isn't a CLI tool and
-    // capturing them risks pipe-buffer deadlock on a long-running GUI
-    // process.
     cmd.stdout(std::process::Stdio::null())
        .stderr(std::process::Stdio::null());
     #[cfg(windows)]
@@ -157,76 +157,79 @@ pub async fn start(server_host: &str, _session_token: &str) -> Result<HostHandle
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-
     let child = cmd.spawn().context("rustdesk spawn")?;
 
-    // Poll RustDesk.toml (created by the child) for the id + password.
-    // Cold start can take a few seconds while it contacts hbbs.
-    let cfg_path = rustdesk_config_dir()
-        .ok_or_else(|| anyhow!("config dir gone"))?
-        .join("RustDesk.toml");
-    let (rustdesk_id, rustdesk_password) = match timeout(
-        Duration::from_secs(READY_TIMEOUT_SECS),
-        wait_for_identity(&cfg_path),
-    ).await {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => return Err(e),
-        Err(_) => {
-            return Err(anyhow!(
-                "rustdesk did not write id/password to {:?} within {}s",
-                cfg_path, READY_TIMEOUT_SECS
-            ));
+    // 2. Give it a moment to register with hbbs and write its keypair to
+    //    %APPDATA%\RustDesk\config\RustDesk.toml.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // 3. Derive a short, RustDesk-friendly per-session password from the
+    //    JWT. Full JWTs are too long for RustDesk's password field; first
+    //    8 alnum chars of a sha256 give a stable 8-char token. This also
+    //    means subsequent admin reconnects to the same session can use
+    //    the same password without a DB lookup.
+    let session_pass = derive_pass(session_token);
+
+    // 4. Set the permanent password via the CLI one-shot. This rewrites
+    //    `password` in RustDesk.toml. RustDesk persists it bcrypted so
+    //    subsequent admin connects must use this exact password.
+    if let Err(e) = run_cli(&bin, &["--password", &session_pass]).await {
+        log::warn!("rustdesk_host: --password CLI failed: {e} (continuing)");
+    }
+
+    // 5. Query the decrypted 9-digit ID. `--get-id` exits after printing.
+    let rustdesk_id = match get_id(&bin).await {
+        Ok(id) => id,
+        Err(e) => {
+            log::warn!("rustdesk_host: --get-id failed: {e}");
+            // Fall back to reading enc_id from RustDesk.toml — better
+            // than nothing, but the dashboard won't be able to use the
+            // encrypted form. Caller will fail downstream.
+            return Err(anyhow!("could not obtain rustdesk ID: {e}"));
         }
     };
 
     log::info!("rustdesk_host: ready, ID={rustdesk_id}");
     Ok(HostHandle {
         rustdesk_id,
-        rustdesk_password: Some(rustdesk_password),
+        rustdesk_password: Some(session_pass),
         child: Some(child),
     })
 }
 
-async fn wait_for_identity(path: &Path) -> Result<(String, String)> {
-    let start = Instant::now();
-    loop {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            let id  = extract_field(&content, "id");
-            let pwd = extract_field(&content, "password");
-            if let (Some(id), Some(pwd)) = (id.as_ref(), pwd.as_ref()) {
-                if id.len() >= 6 && !pwd.is_empty() {
-                    return Ok((id.clone(), pwd.clone()));
-                }
-            }
-            // Some rustdesk versions store id but defer password until the
-            // first incoming connect request. If we have an id but no
-            // password after 8s, return with an empty password — the user
-            // can still see the ID and rustdesk will prompt for password
-            // interactively.
-            if start.elapsed() > Duration::from_secs(8) {
-                if let Some(id) = id {
-                    if id.len() >= 6 {
-                        return Ok((id, pwd.unwrap_or_default()));
-                    }
-                }
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
+fn derive_pass(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let h = Sha256::digest(token.as_bytes());
+    hex::encode(&h[..4]) // 8 hex chars
 }
 
-/// Extract a top-level scalar `key = 'value'` (or `key = "value"`) from a
-/// minimal TOML file. We don't need a full TOML parser — RustDesk's
-/// identity file is a flat key=value list and we only read two fields.
-fn extract_field(content: &str, key: &str) -> Option<String> {
-    for line in content.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix(&format!("{key} =")) {
-            let v = rest.trim()
-                .trim_matches('"').trim_matches('\'')
-                .trim().to_string();
-            if !v.is_empty() { return Some(v); }
+async fn run_cli(bin: &PathBuf, args: &[&str]) -> Result<std::process::Output> {
+    let mut cmd = Command::new(bin);
+    cmd.args(args);
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = timeout(Duration::from_secs(READY_TIMEOUT_SECS), cmd.output())
+        .await
+        .map_err(|_| anyhow!("rustdesk CLI timed out after {}s", READY_TIMEOUT_SECS))??;
+    Ok(out)
+}
+
+async fn get_id(bin: &PathBuf) -> Result<String> {
+    let out = run_cli(bin, &["--get-id"]).await?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // RustDesk prints either:
+    //   "Your ID is 123456789"
+    //   or just "123456789" depending on version.
+    let combined = format!("{stdout}\n{stderr}");
+    for line in combined.lines() {
+        let digits: String = line.chars().filter(|c| c.is_ascii_digit()).collect();
+        if digits.len() >= 6 && digits.len() <= 12 {
+            return Ok(digits);
         }
     }
-    None
+    Err(anyhow!("rustdesk --get-id stdout did not contain a numeric ID: {stdout:?} stderr: {stderr:?}"))
 }
