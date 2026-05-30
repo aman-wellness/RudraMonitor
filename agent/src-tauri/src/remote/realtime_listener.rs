@@ -202,6 +202,11 @@ async fn handle_event(
                 if let Some(handle) = slot.take() {
                     let _ = handle.shutdown().await;
                 }
+                // Even if the slot was already empty, sweep any stray
+                // rustdesk processes — the previous shutdown may have
+                // missed a helper child (--cm connection manager, etc).
+                drop(slot);
+                rustdesk_host::kill_orphan_rustdesk().await;
             });
         }
         _ => {
@@ -236,16 +241,20 @@ async fn handle_request(
     let req: RequestPayload = serde_json::from_value(payload)
         .context("parse remote.request payload")?;
 
-    // Singleton enforcement — refuse a 2nd session if one is in flight.
+    // If a previous session is still in our slot, shut it down before
+    // starting a new one. Refusing-with-deny was customer-hostile: any
+    // crash/abort that left active_session populated would block all
+    // future sessions until agent restart. Now we always recover.
     {
-        let slot = remote.active_session.lock().await;
-        if slot.is_some() {
-            log::warn!("remote: session ignored — another already active");
-            super::audit::post_decision(&state, &req.session_id, "deny",
-                Some("agent already has an active session")).await.ok();
-            return Ok(());
+        let mut slot = remote.active_session.lock().await;
+        if let Some(handle) = slot.take() {
+            log::info!("remote: shutting down stale active_session before new request");
+            let _ = handle.shutdown().await;
         }
     }
+    // Belt-and-suspenders: nuke any rustdesk.exe that survived our
+    // shutdown (helper child processes, OS-killed parents, etc).
+    rustdesk_host::kill_orphan_rustdesk().await;
 
     // Consent step (skipped if auto_approved by org policy).
     let approved = if req.auto_approved {

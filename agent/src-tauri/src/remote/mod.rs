@@ -61,6 +61,11 @@ pub fn spawn(state: AppState, app: AppHandle) {
         }
         log::info!("remote: subsystem starting");
 
+        // Boot-time cleanup: if the previous agent process crashed or
+        // was force-killed, rustdesk.exe might still be running. Kill
+        // it so the first new session starts from a clean slate.
+        rustdesk_host::kill_orphan_rustdesk().await;
+
         // Reconnect-with-backoff loop. Supabase Realtime can drop the
         // WSS connection on network blips, server restarts, etc. — we
         // want the agent to silently reconnect without losing

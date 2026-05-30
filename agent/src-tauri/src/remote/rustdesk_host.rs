@@ -138,6 +138,37 @@ enable-audio = 'N'
     Ok(())
 }
 
+/// Best-effort: kill any rustdesk.exe still running from a prior session
+/// where the OS killed our parent process before our shutdown handler
+/// ran, or where rustdesk spawned helper child processes that survived
+/// our `child.start_kill()`. Called at agent boot, before a new spawn,
+/// and after each session end.
+pub async fn kill_orphan_rustdesk() {
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = Command::new("taskkill");
+        cmd.args(["/F", "/IM", "rustdesk.exe"]);
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let _ = timeout(Duration::from_secs(3), cmd.status()).await;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = timeout(
+            Duration::from_secs(3),
+            Command::new("killall").args(["-9", "RustDesk"]).status(),
+        ).await;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = timeout(
+            Duration::from_secs(3),
+            Command::new("pkill").args(["-9", "-x", "rustdesk"]).status(),
+        ).await;
+    }
+}
+
 pub async fn start(server_host: &str, session_token: &str) -> Result<HostHandle> {
     let bin = bundled_path()
         .ok_or_else(|| anyhow!("no rustdesk binary bundled in resources/rustdesk/"))?;
@@ -147,6 +178,12 @@ pub async fn start(server_host: &str, session_token: &str) -> Result<HostHandle>
             bin
         ));
     }
+
+    // Always start from a clean slate — kill any lingering rustdesk from
+    // a prior session that didn't shut down cleanly. Otherwise the new
+    // spawn races against the old instance and we end up with two
+    // rustdesks fighting over the same RustDesk.toml.
+    kill_orphan_rustdesk().await;
 
     log::info!("rustdesk_host: spawning {:?} against server {}", bin, server_host);
 
@@ -247,7 +284,7 @@ fn derive_pass(token: &str) -> String {
     hex::encode(&h[..4]) // 8 hex chars
 }
 
-async fn run_cli(bin: &PathBuf, args: &[&str]) -> Result<std::process::Output> {
+async fn run_cli_with_timeout(bin: &PathBuf, args: &[&str], t: Duration) -> Result<std::process::Output> {
     let mut cmd = Command::new(bin);
     cmd.args(args);
     #[cfg(windows)]
@@ -255,25 +292,41 @@ async fn run_cli(bin: &PathBuf, args: &[&str]) -> Result<std::process::Output> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let out = timeout(Duration::from_secs(READY_TIMEOUT_SECS), cmd.output())
+    let out = timeout(t, cmd.output())
         .await
-        .map_err(|_| anyhow!("rustdesk CLI timed out after {}s", READY_TIMEOUT_SECS))??;
+        .map_err(|_| anyhow!("rustdesk CLI timed out after {:?}", t))??;
     Ok(out)
+}
+
+async fn run_cli(bin: &PathBuf, args: &[&str]) -> Result<std::process::Output> {
+    // Default 5s — most one-shot CLI calls (--get-id, --password) exit
+    // within ~200ms. Anything taking longer is hung; we'd rather fail
+    // fast and continue than block the whole consent → spawn flow.
+    run_cli_with_timeout(bin, args, Duration::from_secs(5)).await
 }
 
 async fn get_id(bin: &PathBuf) -> Result<String> {
     let out = run_cli(bin, &["--get-id"]).await?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    // RustDesk prints either:
-    //   "Your ID is 123456789"
-    //   or just "123456789" depending on version.
+    log::debug!("rustdesk --get-id stdout={stdout:?} stderr={stderr:?}");
+    // RustDesk IDs are always 9 digits. Earlier loose-matching grabbed
+    // unrelated numbers from log lines (PIDs etc) — strict 9-digit-only.
     let combined = format!("{stdout}\n{stderr}");
     for line in combined.lines() {
         let digits: String = line.chars().filter(|c| c.is_ascii_digit()).collect();
-        if digits.len() >= 6 && digits.len() <= 12 {
+        if digits.len() == 9 {
             return Ok(digits);
         }
     }
-    Err(anyhow!("rustdesk --get-id stdout did not contain a numeric ID: {stdout:?} stderr: {stderr:?}"))
+    // Fall back: if upstream now emits a different length, accept 7-12
+    // (but log a warning so we notice the drift).
+    for line in combined.lines() {
+        let digits: String = line.chars().filter(|c| c.is_ascii_digit()).collect();
+        if digits.len() >= 7 && digits.len() <= 12 {
+            log::warn!("rustdesk --get-id returned unexpected length: {digits} (expected 9)");
+            return Ok(digits);
+        }
+    }
+    Err(anyhow!("rustdesk --get-id did not return a numeric ID. stdout={stdout:?} stderr={stderr:?}"))
 }
