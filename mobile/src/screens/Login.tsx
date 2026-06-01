@@ -39,20 +39,32 @@ export default function Login() {
     try {
       const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
       if (error) throw error;
-      // One-time biometric enrolment prompt.
-      const asked = await Preferences.get({ key: ASKED_BIO_KEY });
-      if (asked.value !== "1" && (await bioAvailable())) {
+    } catch (e) {
+      setErr((e as Error).message);
+      setBusy(false);
+      return;
+    }
+    // From here on, auth succeeded. Reset the button immediately so the
+    // router can flip to the signed-in routes; the biometric enrolment
+    // prompt is fire-and-forget after that. Previously biometric
+    // bioAvailable() / confirm() blocking on some Android devices kept
+    // the button stuck on "Signing in…" forever even though the user
+    // was already authenticated.
+    setBusy(false);
+    void (async () => {
+      try {
+        const asked = await Preferences.get({ key: ASKED_BIO_KEY });
+        if (asked.value === "1") return;
+        if (!(await bioAvailable())) return;
         await Preferences.set({ key: ASKED_BIO_KEY, value: "1" });
         if (confirm("Enable Face ID / fingerprint for faster sign-in next time?")) {
           const r = await saveCredentials(email.trim(), password);
           if (!r.ok) console.warn("biometric save failed:", r.error);
         }
+      } catch (bioErr) {
+        console.warn("biometric enrolment skipped:", bioErr);
       }
-    } catch (e) {
-      setErr((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
+    })();
   };
 
   const oauth = async (provider: "google" | "azure") => {
