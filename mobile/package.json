@@ -1,0 +1,40 @@
+{
+  "name": "rudrans-invoice-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "iOS + Android camera-first companion to the Rudrans Auto-Invoice web dashboard. Tap shutter → Claude extracts fields → row lands in the same credential_invoices table the web reads.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "build:pwa": "tsc --noEmit && VITE_BASE=/m/ vite build --outDir dist-pwa",
+    "preview": "vite preview",
+    "sync": "npm run build && cap sync",
+    "ios": "npm run sync && cap open ios",
+    "android": "npm run sync && cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.0.0",
+    "@capacitor/app": "^7.1.2",
+    "@capacitor/browser": "^7.0.5",
+    "@capacitor/camera": "^7.0.0",
+    "@capacitor/core": "^7.0.0",
+    "@capacitor/ios": "^7.0.0",
+    "@capacitor/preferences": "^7.0.0",
+    "@capacitor/splash-screen": "^7.0.0",
+    "@capacitor/status-bar": "^7.0.0",
+    "@supabase/supabase-js": "^2.57.4",
+    "capacitor-native-biometric": "^4.2.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.0.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}
