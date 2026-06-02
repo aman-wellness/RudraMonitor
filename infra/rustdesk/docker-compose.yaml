@@ -22,7 +22,7 @@ services:
     image: rustdesk/rustdesk-server:latest
     container_name: rustdesk-hbbs
     network_mode: host
-    command: hbbs -r rustdesk.rudrans.com:21117 -k _
+    command: hbbs -r rustdesk.wellnessextract.com:21117 -k _
     volumes:
       - /opt/rudrans/rustdesk/data:/root
     restart: unless-stopped

@@ -28,5 +28,5 @@ insert into public.integrations (key, value, category, label, description, is_se
   ('CRED_REQUEST_SIGNING_KEY', null, 'security', 'Credentials Request Signing Key',
    'HMAC key for the public credential-request form session token. 32+ chars random.', true),
   ('APP_PUBLIC_URL', null, 'general', 'Public App URL',
-   'Origin used in magic links sent by edge functions (e.g. https://app.rudrans.com)', false)
+   'Origin used in magic links sent by edge functions (e.g. https://ems.wellnessextract.com)', false)
 on conflict (key) do nothing;

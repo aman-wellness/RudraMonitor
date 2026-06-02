@@ -1,0 +1,40 @@
+# Canonical list of Rudrans dashboard screens to capture for the marketing
+# video screenshot bank. capture-screens.py walks this file, logs in once,
+# navigates to each path, captures a 1920×1080 PNG, and uploads with the
+# given key to the marketing-app-screens bucket.
+#
+# Format (one row per screen, # for comments, blank lines OK):
+#   <screen_key>  <relative_path>  [wait_selector_or_blank]
+#
+# screen_key      → the name the AI references in scene JSON (must be unique)
+# relative_path   → page path appended to https://app.rudrans.com
+# wait_selector   → CSS selector to wait for before screenshotting (optional;
+#                   useful when a page has a heavy first-paint). Use "_" to skip.
+#
+# To re-capture a single screen later, just delete its row's PNG from the
+# bucket and rerun; the script is idempotent on key.
+
+dashboard               /dashboard                          _
+monitoring-live         /monitoring                         _
+agents-list             /agents                             _
+alerts                  /alerts                             _
+system-health           /system-health                      _
+performance-reports     /performance-reports                _
+reports                 /reports                            _
+dlp                     /dlp                                _
+
+employees-list          /employees                          _
+employees-groups        /employees/groups                   _
+employees-managers      /employees/managers                 _
+credentials-vault       /employees/credentials              _
+credentials-access      /employees/credentials?tab=access   _
+credentials-requests    /employees/credentials?tab=requests _
+auto-invoice            /employees/auto-invoice             _
+otp-settings            /employees/otp-settings             _
+hardware-inventory      /employees/hardware                 _
+offboarding             /employees/offboarding              _
+integrations            /employees/integrations             _
+
+setup-install           /setup                              _
+admin-portal            /admin-portal                       _
+subscription            /subscription                       _

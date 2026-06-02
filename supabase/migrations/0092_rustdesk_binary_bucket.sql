@@ -10,7 +10,7 @@
 --        -H "Authorization: Bearer <service_role>" \
 --        -H "Content-Type: application/octet-stream" \
 --        --data-binary @rustdesk \
---        https://api.rudrans.com/storage/v1/object/rustdesk/rustdesk-macos-arm64
+--        https://api-ems.wellnessextract.com/storage/v1/object/rustdesk/rustdesk-macos-arm64
 --
 -- Object naming convention (matches workflow case-statement):
 --   rustdesk-macos-arm64

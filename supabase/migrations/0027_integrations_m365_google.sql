@@ -250,7 +250,7 @@ insert into public.integrations (key, value, category, label, description, is_se
   ('GOOGLE_OAUTH_CLIENT_SECRET', null, 'directory', 'Google OAuth Client Secret', 'Secret for the above',                                              true),
   ('DIRECTORY_M365_CLIENT_ID',   null, 'directory', 'M365 App Client ID',         'Multi-tenant Azure AD app registration client ID (Directory features)', false),
   ('DIRECTORY_M365_CLIENT_SECRET',null,'directory', 'M365 App Client Secret',     'Secret value for the multi-tenant app registration',                   true),
-  ('DIRECTORY_M365_REDIRECT_URI',null, 'directory', 'M365 OAuth Redirect URI',    'https://app.rudrans.com/employees/integrations/m365/callback',      false),
+  ('DIRECTORY_M365_REDIRECT_URI',null, 'directory', 'M365 OAuth Redirect URI',    'https://ems.wellnessextract.com/employees/integrations/m365/callback',      false),
   ('DIRECTORY_TOKEN_ENC_KEY',    null, 'directory', 'Directory Token Enc Key',    'pgp_sym_encrypt passphrase for org_integrations tokens (>= 32 chars)', true),
   ('CRED_VAULT_ENC_KEY',         null, 'security',  'Credentials Vault Enc Key',  'pgp_sym_encrypt passphrase for the credentials vault (>= 32 chars)',  true)
 on conflict (key) do nothing;

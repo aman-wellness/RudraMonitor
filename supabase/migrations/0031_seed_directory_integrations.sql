@@ -24,5 +24,5 @@ values
   ('DIRECTORY_TOKEN_ENC_KEY',      '', 'employee_management', 'Directory token encryption key',     '32-byte hex key used to encrypt OAuth tokens at rest.', true),
   ('CRED_VAULT_ENC_KEY',           '', 'employee_management', 'Credential vault encryption key',    '32-byte hex key used to encrypt vault passwords at rest.', true),
   ('CRED_REQUEST_SIGNING_KEY',     '', 'employee_management', 'Credential request HMAC key',        'HMAC key used to sign magic-link tokens in the cred-request flow.', true),
-  ('APP_PUBLIC_URL',               'https://app.rudrans.com', 'employee_management', 'Public app URL', 'Origin used to build magic links shipped over email.', false)
+  ('APP_PUBLIC_URL',               'https://ems.wellnessextract.com', 'employee_management', 'Public app URL', 'Origin used to build magic links shipped over email.', false)
 on conflict (key) do nothing;

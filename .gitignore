@@ -49,3 +49,20 @@ leaf.key
 leaf.csr
 leaf.ext
 *.srl
+
+# Added 2026-06-02 — prevent secret/build leaks
+.env.production
+.env.staging
+.claude/
+supabase/.temp/
+mobile/dist/
+mobile/dist-pwa/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/local.properties
+mobile/android/keystore.properties
+mobile/android/*.jks
+mobile/android/*.keystore
+*.apk
+agent.pem

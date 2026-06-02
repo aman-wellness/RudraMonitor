@@ -29,7 +29,7 @@ on:
       - 'v*'
 
 env:
-  SUPABASE_BASE_URL: ${{ secrets.SUPABASE_BASE_URL || 'https://api.rudrans.com' }}
+  SUPABASE_BASE_URL: ${{ secrets.SUPABASE_BASE_URL || 'https://api-ems.wellnessextract.com' }}
   SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF || 'ttjazaxjhzvrzhptrpmd' }}
 
 jobs:
@@ -136,15 +136,15 @@ jobs:
           mkdir -p agent/src-tauri/resources
           case "${{ matrix.target }}" in
             aarch64-apple-darwin|x86_64-apple-darwin)
-              URL="https://api.rudrans.com/storage/v1/object/public/ffmpeg/ffmpeg-macos-universal"
+              URL="https://api-ems.wellnessextract.com/storage/v1/object/public/ffmpeg/ffmpeg-macos-universal"
               OUT="agent/src-tauri/resources/ffmpeg"
               ;;
             x86_64-pc-windows-msvc)
-              URL="https://api.rudrans.com/storage/v1/object/public/ffmpeg/ffmpeg-windows-x64.exe"
+              URL="https://api-ems.wellnessextract.com/storage/v1/object/public/ffmpeg/ffmpeg-windows-x64.exe"
               OUT="agent/src-tauri/resources/ffmpeg.exe"
               ;;
             x86_64-unknown-linux-gnu)
-              URL="https://api.rudrans.com/storage/v1/object/public/ffmpeg/ffmpeg-linux-x64"
+              URL="https://api-ems.wellnessextract.com/storage/v1/object/public/ffmpeg/ffmpeg-linux-x64"
               OUT="agent/src-tauri/resources/ffmpeg"
               ;;
             *)
@@ -173,7 +173,7 @@ jobs:
             x86_64-pc-windows-msvc)   ZIP=rustdesk-windows-x64.zip ;;
             x86_64-unknown-linux-gnu) ZIP=rustdesk-linux-x64.zip   ;;
           esac
-          URL="https://api.rudrans.com/storage/v1/object/public/rustdesk/$ZIP"
+          URL="https://api-ems.wellnessextract.com/storage/v1/object/public/rustdesk/$ZIP"
           if curl -fL --retry 3 "$URL" -o /tmp/rustdesk.zip; then
             unzip -q /tmp/rustdesk.zip -d agent/src-tauri/resources/rustdesk
             # Ensure execute bit on launchers (zip preserves mode but be safe).

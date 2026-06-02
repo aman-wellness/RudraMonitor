@@ -47,7 +47,7 @@ create table if not exists public.org_otp_settings (
   whatsapp_admin_numbers       text[] not null default array[]::text[],   -- E.164 list
   whatsapp_template_name       text,                 -- approved Meta template for OTP prompts
 
-  magic_link_base_url          text,                 -- override; defaults to https://app.rudrans.com
+  magic_link_base_url          text,                 -- override; defaults to https://ems.wellnessextract.com
 
   updated_at                   timestamptz not null default now(),
   updated_by                   uuid references auth.users(id) on delete set null
