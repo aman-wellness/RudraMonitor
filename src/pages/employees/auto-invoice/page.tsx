@@ -52,7 +52,13 @@ interface ChannelStatus {
 
 interface OrgInfo {
   id: string;
+  invoice_inbound_slug: string;                 // 8-char unique slug (migration 0096)
   accounts_recipient_emails: string[];
+  invoice_digest_enabled: boolean;
+  invoice_digest_time: string;                  // "HH:MM:SS"
+  invoice_digest_timezone: string;
+  invoice_digest_recipient_emails: string[];
+  invoice_digest_last_sent_at: string | null;
 }
 
 interface CronRun {
@@ -100,7 +106,17 @@ export default function AutoInvoicePage() {
         .gte('issue_date', monthIso.slice(0, 10)),
       supabase.from('org_otp_settings_safe').select('teams_connected, slack_connected, google_chat_connected, whatsapp_connected').maybeSingle(),
       supabase.from('cron_runs').select('id, name, started_at, completed_at, ok, enqueued, error').order('started_at', { ascending: false }).limit(8),
-      supabase.from('organizations').select('id, accounts_recipient_emails').limit(1).maybeSingle(),
+      // Pin the org lookup to the user's ACTUAL org from AuthContext.
+      // Without `.eq('id', orgId)`, super-admins (who have an RLS pass on
+      // every org) get back an arbitrary row from `.limit(1)` — which
+      // makes the page display some other tenant's inbound address while
+      // org-settings-save targets the user's real org, so saves "vanish".
+      orgId
+        ? supabase.from('organizations')
+            .select('id, invoice_inbound_slug, accounts_recipient_emails, invoice_digest_enabled, invoice_digest_time, invoice_digest_timezone, invoice_digest_recipient_emails, invoice_digest_last_sent_at')
+            .eq('id', orgId)
+            .maybeSingle()
+        : Promise.resolve({ data: null }),
     ]);
     setEvents((ev.data ?? []) as FetchEvent[]);
     setCoverage((cov.data ?? []) as CoverageRow[]);
@@ -111,7 +127,10 @@ export default function AutoInvoicePage() {
     setLoading(false);
   };
 
-  useEffect(() => { void loadAll(); }, []);
+  // Re-run loadAll once orgId resolves from AuthContext (it's async on
+  // first paint). Without the dep, the initial render runs with orgId=null
+  // and the org panel stays empty until a manual refresh.
+  useEffect(() => { void loadAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [orgId]);
 
   // Realtime feed.
   useEffect(() => {
@@ -176,6 +195,7 @@ export default function AutoInvoicePage() {
           <>
             <KpiRow kpis={kpis} />
             <DeliveryCard org={org} onChanged={loadAll} />
+            <DigestCard org={org} onChanged={loadAll} />
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
               <ActivityFeed events={events} className="lg:col-span-2" />
               <ConnectionsCard channels={channels} crons={crons} onTested={loadAll} />
@@ -195,7 +215,13 @@ export default function AutoInvoicePage() {
 //     uses; every fetched invoice gets forwarded there.
 
 function DeliveryCard({ org, onChanged }: { org: OrgInfo | null; onChanged: () => void }) {
-  const inboundAddr = org ? `inv-${org.id}@invoices.rudrans.com` : '';
+  // Prefer the short slug; fall back to the legacy full-uuid form so the
+  // address still resolves while a brand-new org is missing its slug
+  // (shouldn't happen post-migration 0096 but the trigger could theoretically
+  // race a fast follow-up insert).
+  const inboundAddr = org
+    ? `inv-${org.invoice_inbound_slug || org.id}@invoices.wellnessextract.com`
+    : '';
   const initial = (org?.accounts_recipient_emails ?? []).join(', ');
   const [draft, setDraft] = useState(initial);
   const [saving, setSaving] = useState(false);
@@ -300,6 +326,154 @@ function DeliveryCard({ org, onChanged }: { org: OrgInfo | null; onChanged: () =
           {parsed.length === 0 && draft.trim() !== '' && (
             <p className="text-[11px] text-amber-300/80 mt-1">No valid email in input — needs an "@"</p>
           )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ── Daily-digest schedule card ──────────────────────────────────────────
+// Admin sets a local time + recipients. Pg_cron's invoice_digest_tick
+// (every 15 min) fires the edge fn, which finds orgs whose local time
+// matches and sends a single digest email listing the day's invoices.
+
+const TIMEZONES = [
+  'Asia/Kolkata', 'Asia/Singapore', 'Asia/Dubai',
+  'Europe/London', 'Europe/Berlin',
+  'America/New_York', 'America/Los_Angeles',
+  'UTC',
+];
+
+function DigestCard({ org, onChanged }: { org: OrgInfo | null; onChanged: () => void }) {
+  const initialEnabled = !!org?.invoice_digest_enabled;
+  const initialTime = (org?.invoice_digest_time ?? '09:00:00').slice(0, 5);
+  const initialTz = org?.invoice_digest_timezone ?? 'Asia/Kolkata';
+  const initialRecips = (org?.invoice_digest_recipient_emails ?? []).join(', ');
+
+  const [enabled, setEnabled] = useState(initialEnabled);
+  const [time, setTime] = useState(initialTime);
+  const [tz, setTz] = useState(initialTz);
+  const [recips, setRecips] = useState(initialRecips);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedFlash, setSavedFlash] = useState(false);
+
+  useEffect(() => {
+    setEnabled(!!org?.invoice_digest_enabled);
+    setTime((org?.invoice_digest_time ?? '09:00:00').slice(0, 5));
+    setTz(org?.invoice_digest_timezone ?? 'Asia/Kolkata');
+    setRecips((org?.invoice_digest_recipient_emails ?? []).join(', '));
+  }, [org?.id]);
+
+  const parsed = useMemo(
+    () => recips.split(/[,\s]+/).map((s) => s.trim()).filter((s) => s.includes('@')),
+    [recips],
+  );
+  const dirty = enabled !== initialEnabled || time !== initialTime || tz !== initialTz || recips !== initialRecips;
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const r = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/org-settings-save`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session?.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          invoice_digest_enabled: enabled,
+          invoice_digest_time: time,
+          invoice_digest_timezone: tz,
+          invoice_digest_recipient_emails: parsed,
+        }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error ?? `${r.status}`);
+      setSavedFlash(true);
+      setTimeout(() => setSavedFlash(false), 3000);
+      onChanged();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally { setSaving(false); }
+  };
+
+  const lastSent = org?.invoice_digest_last_sent_at
+    ? new Date(org.invoice_digest_last_sent_at).toLocaleString('en-IN', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short' })
+    : null;
+
+  return (
+    <section className="bg-dark-800 border border-dark-700 rounded-xl p-5">
+      <div className="flex items-start justify-between flex-wrap gap-2 mb-4">
+        <div>
+          <h2 className="text-white font-medium text-sm flex items-center gap-2">
+            <i className="ri-time-line text-cyan-400" /> Daily digest
+          </h2>
+          <p className="text-[11px] text-gray-500 mt-0.5">
+            One batch email at your chosen time listing every invoice received in the last 24 h. Separate from per-invoice forwarding above.
+          </p>
+        </div>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <span className="text-[11px] text-gray-400">{enabled ? 'Enabled' : 'Disabled'}</span>
+          <span className={`relative inline-block w-9 h-5 rounded-full transition-colors ${enabled ? 'bg-emerald-500' : 'bg-dark-600'}`}>
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(e) => setEnabled(e.target.checked)}
+              className="sr-only"
+            />
+            <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform ${enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
+          </span>
+        </label>
+      </div>
+
+      <div className={`grid grid-cols-1 md:grid-cols-3 gap-3 ${enabled ? '' : 'opacity-50 pointer-events-none'}`}>
+        <div>
+          <label className="text-[11px] uppercase tracking-wider text-gray-500 block mb-1">Send time (local)</label>
+          <input
+            type="time"
+            value={time}
+            onChange={(e) => setTime(e.target.value)}
+            className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white"
+          />
+        </div>
+        <div>
+          <label className="text-[11px] uppercase tracking-wider text-gray-500 block mb-1">Timezone</label>
+          <select
+            value={tz}
+            onChange={(e) => setTz(e.target.value)}
+            className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white"
+          >
+            {TIMEZONES.map((z) => <option key={z} value={z}>{z}</option>)}
+            {!TIMEZONES.includes(tz) && <option value={tz}>{tz}</option>}
+          </select>
+        </div>
+        <div>
+          <label className="text-[11px] uppercase tracking-wider text-gray-500 block mb-1">Recipients</label>
+          <input
+            value={recips}
+            onChange={(e) => setRecips(e.target.value)}
+            placeholder="accounts@…, finance@…"
+            className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white font-mono placeholder-gray-600"
+          />
+          <p className="text-[11px] text-gray-500 mt-1">{parsed.length > 0 ? `${parsed.length} email${parsed.length === 1 ? '' : 's'}` : 'leave empty to reuse accounts list above'}</p>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between mt-4">
+        <p className="text-[11px] text-gray-500">
+          {lastSent
+            ? `Last sent: ${lastSent} (${tz})`
+            : 'Never sent yet — first run will fire at your configured time.'}
+        </p>
+        <div className="flex items-center gap-3">
+          {savedFlash && <span className="text-[11px] text-emerald-400">✓ Saved</span>}
+          {error && <span className="text-[11px] text-rose-400">{error}</span>}
+          <button
+            onClick={save}
+            disabled={!dirty || saving}
+            className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-semibold disabled:opacity-40"
+          >
+            {saving ? 'Saving…' : 'Save schedule'}
+          </button>
         </div>
       </div>
     </section>

@@ -79,7 +79,7 @@ export default function SuperLogin() {
         <div>
           <label className="block text-xs text-slate-500 uppercase tracking-wider mb-1.5">Email</label>
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email"
-            placeholder="admin@rudrans.com"
+            placeholder="admin@wellnessextract.com"
             className={`${loginInputClass} focus:border-purple-500 focus:ring-purple-500`} />
         </div>
         <div>

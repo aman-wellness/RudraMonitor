@@ -22,8 +22,8 @@ const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const LIVEKIT_API_KEY = Deno.env.get("LIVEKIT_API_KEY")!;
 const LIVEKIT_API_SECRET = Deno.env.get("LIVEKIT_API_SECRET")!;
 // Public LiveKit endpoint the client connects to. nginx fronts our self-
-// hosted server at https://api.rudrans.com/livekit/.
-const LIVEKIT_URL = Deno.env.get("LIVEKIT_URL") ?? "wss://api.rudrans.com/livekit";
+// hosted server at https://api-ems.wellnessextract.com/livekit/.
+const LIVEKIT_URL = Deno.env.get("LIVEKIT_URL") ?? "wss://api-ems.wellnessextract.com/livekit";
 
 type Body = { agent_id?: string };
 
@@ -174,10 +174,26 @@ Deno.serve(async (req) => {
         url?: string;
         stream_key?: string;
       };
-      if (body.url && body.stream_key) {
+      // LiveKit Ingress returns `url: ""` when no public WHIP endpoint
+      // is configured server-side — it expects the deployer to know
+      // their own reverse-proxy mapping. We DO know ours: nginx routes
+      // /whip/<stream_key> to localhost:8090. Build the URL here from
+      // the public Supabase host (same host fronts both edge functions
+      // and the LiveKit/Ingress stack via nginx).
+      if (body.stream_key) {
+        // Derive public WHIP base from livekit URL host. wss://api-ems.wellnessextract.com/livekit
+        // → https://api-ems.wellnessextract.com/whip. Falls back to the request's
+        // own origin (works when the dashboard + livekit share a host,
+        // which is the only deployment shape we ship right now).
+        const lkBase = LIVEKIT_URL
+          .replace(/^wss?:/, "https:")
+          .replace(/\/livekit\/?$/, "");
+        const publicUrl = body.url && body.url.trim() !== ""
+          ? body.url
+          : `${lkBase}/whip/${body.stream_key}`;
         ingressInfo = {
           ingress_id: body.ingress_id ?? "",
-          url: body.url,
+          url: publicUrl,
           stream_key: body.stream_key,
         };
       }

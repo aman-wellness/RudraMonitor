@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import { supabase } from '@/lib/supabase';
 import { useAppAccess } from '@/lib/useAppAccess';
+import { useAuth } from '@/context/AuthContext';
 
 type Credential = {
   id: string;
@@ -88,6 +89,14 @@ export default function CredentialsVault() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState('');
+  // Per-column filters layered on top of the global search `q`. Each filter
+  // narrows the visible rows independently, AND-combined with the others.
+  // Empty string / 'all' means "no filter on this column".
+  const [filterCategory, setFilterCategory] = useState<string>('');
+  const [filterDept, setFilterDept]         = useState<string>('');   // '' all, 'orgwide' no-dept, else dept_id
+  const [filterBilling, setFilterBilling]   = useState<string>('');
+  const [filterCurrency, setFilterCurrency] = useState<string>('');
+  const [filterActive, setFilterActive]     = useState<'all' | 'active' | 'inactive'>('all');
   const [editing, setEditing] = useState<(Partial<Credential> & { password?: string }) | null>(null);
   const [assignFor, setAssignFor] = useState<Credential[] | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -126,9 +135,39 @@ export default function CredentialsVault() {
 
   const filtered = useMemo(() => {
     const ql = q.trim().toLowerCase();
-    if (!ql) return rows;
-    return rows.filter((r) => [r.platform_name, r.category, r.username, ...(r.tags ?? [])].filter(Boolean).join(' ').toLowerCase().includes(ql));
-  }, [rows, q]);
+    return rows.filter((r) => {
+      if (ql && ![r.platform_name, r.category, r.username, ...(r.tags ?? [])]
+            .filter(Boolean).join(' ').toLowerCase().includes(ql)) return false;
+      if (filterCategory && (r.category ?? '') !== filterCategory) return false;
+      if (filterDept === 'orgwide') { if (r.owner_dept_id) return false; }
+      else if (filterDept && r.owner_dept_id !== filterDept) return false;
+      if (filterBilling && (r.billing_cycle ?? '') !== filterBilling) return false;
+      if (filterCurrency && (r.price_currency ?? '') !== filterCurrency) return false;
+      if (filterActive === 'active'   && !r.active) return false;
+      if (filterActive === 'inactive' &&  r.active) return false;
+      return true;
+    });
+  }, [rows, q, filterCategory, filterDept, filterBilling, filterCurrency, filterActive]);
+
+  // Distinct values for the column-filter dropdowns. Recomputed only when
+  // `rows` changes; the dropdowns themselves dont rerender otherwise.
+  const distinctCategories = useMemo(
+    () => [...new Set(rows.map((r) => r.category).filter(Boolean) as string[])].sort(),
+    [rows],
+  );
+  const distinctBilling = useMemo(
+    () => [...new Set(rows.map((r) => r.billing_cycle).filter(Boolean) as string[])].sort(),
+    [rows],
+  );
+  const distinctCurrencies = useMemo(
+    () => [...new Set(rows.map((r) => r.price_currency).filter(Boolean) as string[])].sort(),
+    [rows],
+  );
+
+  const anyFilterActive = !!(filterCategory || filterDept || filterBilling || filterCurrency || filterActive !== 'all');
+  const clearFilters = () => {
+    setFilterCategory(''); setFilterDept(''); setFilterBilling(''); setFilterCurrency(''); setFilterActive('all');
+  };
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const safePage = Math.min(page, totalPages);
@@ -136,7 +175,9 @@ export default function CredentialsVault() {
     () => filtered.slice((safePage - 1) * pageSize, safePage * pageSize),
     [filtered, safePage],
   );
-  useEffect(() => { setPage(1); }, [q, tab]);
+  // Reset to page 1 on any narrowing change so the user doesn't end up
+  // stranded on an empty page after applying a filter.
+  useEffect(() => { setPage(1); }, [q, tab, filterCategory, filterDept, filterBilling, filterCurrency, filterActive]);
 
   const toggleSelect = (id: string) => setSelected((s) => {
     const next = new Set(s);
@@ -248,11 +289,75 @@ export default function CredentialsVault() {
         ) : (
         <>
         <div className="bg-dark-800 border border-dark-700 rounded-xl">
-          <div className="p-4 flex flex-col md:flex-row gap-3 md:items-center border-b border-dark-700">
-            <div className="flex-1 flex items-center bg-dark-900 border border-dark-700 rounded-lg px-3 py-1.5">
+          <div className="p-4 flex flex-col gap-3 border-b border-dark-700">
+            <div className="flex-1 flex items-center bg-dark-900 border border-dark-700 rounded-lg px-3 py-1.5 transition-colors focus-within:border-emerald-500/50">
               <i className="ri-search-line text-gray-500 text-sm mr-2" />
               <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search platform, tag, username…"
                 className="bg-transparent text-sm text-white placeholder-gray-600 focus:outline-none flex-1" />
+            </div>
+            {/* Per-column filters. Each dropdown shows the distinct values currently
+                in the vault, so an admin never picks a category that no row has. */}
+            <div className="flex flex-wrap gap-2 items-center">
+              <span className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mr-1">Filters</span>
+              <select
+                value={filterCategory}
+                onChange={(e) => setFilterCategory(e.target.value)}
+                className="bg-dark-900 border border-dark-700 rounded-md px-2 py-1 text-xs text-white focus:outline-none focus:border-emerald-500"
+                title="Filter by category"
+              >
+                <option value="">Category · all</option>
+                {distinctCategories.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <select
+                value={filterDept}
+                onChange={(e) => setFilterDept(e.target.value)}
+                className="bg-dark-900 border border-dark-700 rounded-md px-2 py-1 text-xs text-white focus:outline-none focus:border-emerald-500"
+                title="Filter by department"
+              >
+                <option value="">Department · all</option>
+                <option value="orgwide">Org-wide (no dept)</option>
+                {depts.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+              <select
+                value={filterBilling}
+                onChange={(e) => setFilterBilling(e.target.value)}
+                className="bg-dark-900 border border-dark-700 rounded-md px-2 py-1 text-xs text-white focus:outline-none focus:border-emerald-500"
+                title="Filter by billing cycle"
+              >
+                <option value="">Billing · all</option>
+                {distinctBilling.map((b) => <option key={b} value={b}>{b}</option>)}
+              </select>
+              <select
+                value={filterCurrency}
+                onChange={(e) => setFilterCurrency(e.target.value)}
+                className="bg-dark-900 border border-dark-700 rounded-md px-2 py-1 text-xs text-white focus:outline-none focus:border-emerald-500"
+                title="Filter by currency"
+              >
+                <option value="">Currency · all</option>
+                {distinctCurrencies.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <select
+                value={filterActive}
+                onChange={(e) => setFilterActive(e.target.value as 'all' | 'active' | 'inactive')}
+                className="bg-dark-900 border border-dark-700 rounded-md px-2 py-1 text-xs text-white focus:outline-none focus:border-emerald-500"
+                title="Filter by status"
+              >
+                <option value="all">Status · all</option>
+                <option value="active">Active only</option>
+                <option value="inactive">Inactive only</option>
+              </select>
+              {anyFilterActive && (
+                <button
+                  onClick={clearFilters}
+                  className="ml-auto text-[11px] text-gray-400 hover:text-rose-300 px-2 py-1 rounded border border-dark-700 hover:border-rose-500/40"
+                  title="Reset all column filters"
+                >
+                  <i className="ri-close-circle-line mr-1" />Clear filters
+                </button>
+              )}
+              <span className={`text-[11px] text-gray-500 ${anyFilterActive ? '' : 'ml-auto'}`}>
+                {filtered.length} of {rows.length}
+              </span>
             </div>
           </div>
 
@@ -525,7 +630,7 @@ function CredentialModal({
                 </select>
               </Field>
             </div>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               <Field label="Billing cycle">
                 <select value={f.billing_cycle ?? ''} onChange={(e) => setF({ ...f, billing_cycle: (e.target.value || null) as Credential['billing_cycle'] })} className={inputCls}>
                   <option value="">—</option>
@@ -879,19 +984,26 @@ function RequestsTab() {
   // Public form URL — what employees use. We construct it from the current
   // origin so it works in dev (localhost) and prod automatically.
   const publicFormUrl = `${window.location.origin}/r/credentials-request`;
+  // Pin the org lookup to the user's actual org — super-admins see ALL
+  // orgs through RLS, so `.limit(1)` would otherwise return some other
+  // tenant's it_recipient_emails. See feedback-super-admin-rls-limit-pitfall.
+  const { organization } = useAuth();
+  const orgId = organization?.id ?? null;
 
   const load = useCallback(async () => {
     setLoading(true);
     const [r, c, o] = await Promise.all([
       supabase.from('credential_requests').select('*').order('created_at', { ascending: false }),
       supabase.from('credentials_safe').select('id, platform_name'),
-      supabase.from('organizations').select('it_recipient_emails').limit(1).maybeSingle(),
+      orgId
+        ? supabase.from('organizations').select('it_recipient_emails').eq('id', orgId).maybeSingle()
+        : Promise.resolve({ data: null }),
     ]);
     setReqs((r.data ?? []) as RequestRow[]);
     setCreds((c.data ?? []) as Credential[]);
     setItRecipients(((o.data?.it_recipient_emails ?? []) as string[]));
     setLoading(false);
-  }, []);
+  }, [orgId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -1340,8 +1452,12 @@ function CostCard({
 // separate — no FX conversion.
 
 function DepartmentBreakdown({ rows, depts }: { rows: Credential[]; depts: Department[] }) {
+  // Track which department bucket the admin is inspecting via a modal.
+  // null = closed. 'orgwide' = the no-department bucket. Any other value = dept_id.
+  const [inspectKey, setInspectKey] = useState<string | null>(null);
   const data = useMemo(() => {
-    // key = dept_id (or 'orgwide') → bucket of per-currency totals.
+    // key = dept_id (or 'orgwide') → bucket of per-currency totals + the
+    // actual rows that fed the totals (used by the click-through modal).
     // `est` mirrors `monthly` but accumulates estimated_amount (the
     // operator's expected monthly spend on usage-based subs). Kept in a
     // separate column so contracted vs estimated stay distinguishable.
@@ -1351,10 +1467,11 @@ function DepartmentBreakdown({ rows, depts }: { rows: Credential[]; depts: Depar
       oneTime: Record<string, number>;
       est: Record<string, number>;
       count: number;
+      creds: Credential[];
     };
     const byDept = new Map<string, Bucket>();
     const ensure = (k: string): Bucket => {
-      if (!byDept.has(k)) byDept.set(k, { monthly: {}, yearly: {}, oneTime: {}, est: {}, count: 0 });
+      if (!byDept.has(k)) byDept.set(k, { monthly: {}, yearly: {}, oneTime: {}, est: {}, count: 0, creds: [] });
       return byDept.get(k)!;
     };
 
@@ -1366,6 +1483,7 @@ function DepartmentBreakdown({ rows, depts }: { rows: Credential[]; depts: Depar
       const key = r.owner_dept_id ?? 'orgwide';
       const bucket = ensure(key);
       bucket.count++;
+      bucket.creds.push(r);
       if (r.price_amount != null) {
         const amt = Number(r.price_amount);
         if (r.billing_cycle === 'monthly') {
@@ -1485,7 +1603,19 @@ function DepartmentBreakdown({ rows, depts }: { rows: Credential[]; depts: Depar
                       )}
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-right text-gray-400 text-xs tabular-nums align-middle">{b.count}</td>
+                  <td className="px-4 py-3 text-right text-xs tabular-nums align-middle">
+                    {b.count > 0 ? (
+                      <button
+                        onClick={() => setInspectKey(k)}
+                        className="text-emerald-300 hover:text-emerald-200 hover:underline focus:outline-none"
+                        title={`View the ${b.count} credential${b.count === 1 ? '' : 's'} in this bucket`}
+                      >
+                        {b.count}
+                      </button>
+                    ) : (
+                      <span className="text-gray-400">{b.count}</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-right align-middle"><CurrencyCell obj={b.monthly} /></td>
                   <td className="px-4 py-3 text-right align-middle"><CurrencyCell obj={b.yearly} /></td>
                   {showOneTime && <td className="px-4 py-3 text-right align-middle"><CurrencyCell obj={b.oneTime} /></td>}
@@ -1497,7 +1627,19 @@ function DepartmentBreakdown({ rows, depts }: { rows: Credential[]; depts: Depar
           <tfoot className="bg-dark-900/40 border-t-2 border-dark-600">
             <tr>
               <td className="px-4 py-3 text-[11px] uppercase tracking-wider text-gray-400 font-semibold">Total</td>
-              <td className="px-4 py-3 text-right text-gray-300 text-xs tabular-nums font-semibold">{totals.count}</td>
+              <td className="px-4 py-3 text-right text-xs tabular-nums font-semibold">
+                {totals.count > 0 ? (
+                  <button
+                    onClick={() => setInspectKey('_all')}
+                    className="text-emerald-300 hover:text-emerald-200 hover:underline focus:outline-none"
+                    title={`View all ${totals.count} credentials across every bucket`}
+                  >
+                    {totals.count}
+                  </button>
+                ) : (
+                  <span className="text-gray-300">{totals.count}</span>
+                )}
+              </td>
               <td className="px-4 py-3 text-right"><CurrencyCell obj={totals.monthly} /></td>
               <td className="px-4 py-3 text-right"><CurrencyCell obj={totals.yearly} /></td>
               {showOneTime && <td className="px-4 py-3 text-right"><CurrencyCell obj={totals.oneTime} /></td>}
@@ -1505,6 +1647,106 @@ function DepartmentBreakdown({ rows, depts }: { rows: Credential[]; depts: Depar
             </tr>
           </tfoot>
         </table>
+      </div>
+      {inspectKey != null && (
+        <DepartmentCredsModal
+          deptKey={inspectKey}
+          deptLabel={inspectKey === '_all'
+            ? 'All departments'
+            : deptName(inspectKey)}
+          creds={inspectKey === '_all'
+            ? [...data.values()].flatMap((b) => b.creds)
+            : (data.get(inspectKey)?.creds ?? [])}
+          onClose={() => setInspectKey(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Modal listing the credentials inside one Spend-by-Department bucket.
+// Triggered by clicking the count cell. Lists platform / category /
+// billing / price so the admin can see what they're paying for in one
+// glance — same shape as the Vault table but scoped to the bucket.
+function DepartmentCredsModal({
+  deptKey, deptLabel, creds, onClose,
+}: {
+  deptKey: string;
+  deptLabel: string;
+  creds: Credential[];
+  onClose: () => void;
+}) {
+  const sorted = useMemo(
+    () => [...creds].sort((a, b) => a.platform_name.localeCompare(b.platform_name)),
+    [creds],
+  );
+  // Esc closes — keyboard parity with the other modals on this page.
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [onClose]);
+  return (
+    <div
+      className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-dark-800 border border-dark-700 rounded-xl w-full max-w-2xl max-h-[80vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-5 py-3 border-b border-dark-700 flex items-center justify-between">
+          <div>
+            <p className="text-[10px] uppercase tracking-wider text-gray-500">Credentials in</p>
+            <h3 className="text-base text-white font-semibold">
+              {deptLabel}
+              {deptKey === 'orgwide' && <span className="ml-2 text-[10px] text-gray-500">(no dept)</span>}
+            </h3>
+          </div>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-white rounded hover:bg-dark-700"
+            aria-label="Close"
+          >
+            <i className="ri-close-line text-lg" />
+          </button>
+        </div>
+        <div className="overflow-y-auto flex-1">
+          {sorted.length === 0 ? (
+            <p className="p-6 text-center text-sm text-gray-500">No credentials in this bucket.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="text-[11px] text-gray-500 uppercase tracking-wider bg-dark-900/40 sticky top-0">
+                <tr className="border-b border-dark-700">
+                  <th className="px-4 py-2.5 text-left font-medium">Platform</th>
+                  <th className="px-4 py-2.5 text-left font-medium">Category</th>
+                  <th className="px-4 py-2.5 text-left font-medium">Billing</th>
+                  <th className="px-4 py-2.5 text-right font-medium">Price</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((r) => (
+                  <tr key={r.id} className="border-b border-dark-700/40">
+                    <td className="px-4 py-2.5 text-white">{r.platform_name}</td>
+                    <td className="px-4 py-2.5 text-gray-300">{r.category ?? '—'}</td>
+                    <td className="px-4 py-2.5 text-gray-300">{r.billing_cycle ?? '—'}</td>
+                    <td className="px-4 py-2.5 text-right text-gray-300 tabular-nums">
+                      {r.price_amount != null
+                        ? `${r.price_currency ?? ''} ${Number(r.price_amount).toLocaleString()}`
+                        : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div className="px-5 py-3 border-t border-dark-700 flex items-center justify-between text-[11px] text-gray-500">
+          <span>{sorted.length} credential{sorted.length === 1 ? '' : 's'}</span>
+          <button onClick={onClose} className="px-3 py-1.5 bg-dark-700 hover:bg-dark-600 text-white rounded-md text-xs">
+            Close
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -1535,6 +1777,7 @@ function AccessMap() {
   const [groupBy, setGroupBy] = useState<'platform' | 'user'>('platform');
   const [showRevoked, setShowRevoked] = useState(false);
   const [grantOpen, setGrantOpen] = useState(false);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1548,6 +1791,35 @@ function AccessMap() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  const revoke = async (assignmentId: string, userName: string, platformName: string) => {
+    if (!confirm(`Revoke ${userName}'s access to ${platformName}? They will lose access immediately. This is logged in the audit trail.`)) return;
+    setRevokingId(assignmentId);
+    // `select()` returns the rows the UPDATE actually modified. Under RLS,
+    // a denied update silently returns 0 rows with no error — so checking
+    // the count is the only way to surface the "you don't have permission"
+    // case to the admin (otherwise the row just stays put and the button
+    // looks like a no-op).
+    const { data, error } = await supabase
+      .from('credential_assignments')
+      .update({ revoked_at: new Date().toISOString(), revoked_reason: 'manual_revoke' })
+      .eq('id', assignmentId)
+      .select('id');
+    setRevokingId(null);
+    if (error) { alert(`Could not revoke: ${error.message}`); return; }
+    if (!data || data.length === 0) {
+      alert(
+        'Revoke failed: no rows updated.\n\n' +
+        'Most likely the RLS policy that lets org owners/admins revoke access ' +
+        'has not been applied to the database yet. Run migration ' +
+        '0094_credential_assignments_admin_revoke.sql in the Supabase SQL editor, ' +
+        'then try again.\n\n' +
+        'If you are an owner/admin and this still fails, check your org_members.role.'
+      );
+      return;
+    }
+    await load();
+  };
 
   const filtered = useMemo(() => {
     const ql = q.trim().toLowerCase();
@@ -1637,7 +1909,19 @@ function AccessMap() {
                         {' · sent '}{new Date(r.sent_at).toLocaleDateString()}
                       </p>
                     </div>
-                    {r.revoked_at && <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-400">revoked</span>}
+                    {r.revoked_at ? (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-400 flex-shrink-0">revoked</span>
+                    ) : (
+                      <button
+                        onClick={() => revoke(r.assignment_id, r.user_name, r.platform_name)}
+                        disabled={revokingId === r.assignment_id}
+                        className="text-[11px] px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 disabled:opacity-50 flex items-center gap-1 flex-shrink-0"
+                        title="Revoke this user's access"
+                      >
+                        <i className="ri-close-circle-line" />
+                        {revokingId === r.assignment_id ? 'Revoking…' : 'Revoke'}
+                      </button>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -1808,6 +2092,21 @@ function CsvImportModal({
 // Minimal RFC-4180-ish parser: header row → object per row. Supports quoted
 // fields and embedded commas / newlines inside quotes. Doubled "" inside a
 // quoted field is treated as a literal quote.
+// Read a File as raw base64 (no data:URI prefix), suitable for sending to
+// invoice-extract / vision APIs. Used by the modal's auto-extract flow.
+function fileToBase64(f: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => {
+      const result = r.result as string;
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    r.onerror = () => reject(new Error('file read failed'));
+    r.readAsDataURL(f);
+  });
+}
+
 function parseCsv(text: string): Record<string, string>[] {
   const rows: string[][] = [];
   let row: string[] = [];
@@ -2555,6 +2854,11 @@ function InvoiceModal({ invoice, credentials, onClose, onSaved }: {
   });
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
+  // LLM auto-extraction state. Fires on file pick (PDF only — vision can't
+  // parse JPG/PNG receipts as reliably). Populates the form fields the
+  // user can still override before save.
+  const [extracting, setExtracting] = useState(false);
+  const [extractNote, setExtractNote] = useState<string | null>(null);
 
   // Accept these client-side too — server (storage bucket) re-enforces
   // via allowed_mime_types in migration 0082, but failing early gives
@@ -2564,24 +2868,77 @@ function InvoiceModal({ invoice, credentials, onClose, onSaved }: {
 
   const pickFile = (f: File | null) => {
     setErr(null);
+    setExtractNote(null);
     if (!f) { setFile(null); return; }
     if (!ACCEPTED_MIME.includes(f.type)) { setErr(`Unsupported file type: ${f.type || 'unknown'}. Use PDF, PNG, JPG or WEBP.`); return; }
     if (f.size > MAX_BYTES) { setErr(`File too large (${(f.size / 1024 / 1024).toFixed(1)} MB). Max 25 MB.`); return; }
     setFile(f);
+    // Only auto-extract for PDFs and only when creating (not editing). The
+    // user may still override any field after Claude fills it in.
+    if (!invoice && f.type === 'application/pdf') void autoExtract(f);
+  };
+
+  // Fires invoice-extract with the PDF, then merges results into form
+  // fields. Never overwrites a field the user has already typed into.
+  const autoExtract = async (f: File) => {
+    setExtracting(true);
+    setExtractNote(null);
+    try {
+      const b64 = await fileToBase64(f);
+      const { data: { session } } = await supabase.auth.getSession();
+      const r = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/invoice-extract`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session?.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pdf_base64: b64, filename: f.name }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error ?? `${r.status}`);
+      const ex = j.extracted ?? {};
+      // Merge only into empty fields — user keeps control of edits.
+      if (!invoiceNumber && ex.invoice_number) setInvoiceNumber(ex.invoice_number);
+      if (!issueDate && ex.issue_date) setIssueDate(ex.issue_date);
+      if (!periodStart && ex.period_start) setPeriodStart(ex.period_start);
+      if (!periodEnd && ex.period_end) setPeriodEnd(ex.period_end);
+      if (!dueDate && ex.due_date) setDueDate(ex.due_date);
+      if (!amount && ex.amount != null) setAmount(String(ex.amount));
+      if (ex.currency && currency === 'INR') setCurrency(ex.currency);   // INR is the default we want to override
+      if (ex.status) setStatus(ex.status);
+      if (!notes && ex.notes) setNotes(ex.notes);
+      if (!credId && j.matched_credential_id) setCredId(j.matched_credential_id);
+
+      const matched = j.matched_credential_platform;
+      const vendor = ex.vendor_name;
+      setExtractNote(
+        matched
+          ? `Auto-filled from ${vendor ?? 'PDF'} → matched to ${matched}`
+          : vendor
+            ? `Auto-filled from ${vendor} (no matching credential found — leave platform unset or pick manually)`
+            : 'Auto-filled from PDF',
+      );
+    } catch (e) {
+      setExtractNote(`Auto-extract failed — fill manually. (${(e as Error).message})`);
+    } finally {
+      setExtracting(false);
+    }
   };
 
   const uploadIfNeeded = async (): Promise<{ path: string | null; mime: string | null; name: string | null }> => {
     if (!file) return attachment;
     setUploading(true);
     try {
-      // Find the credential's org so the path matches storage RLS.
-      const cred = credentials.find((c) => c.id === credId);
-      if (!cred) throw new Error('Pick a credential first');
-      const orgId = cred.org_id;
-      // Random object key. We keep original extension so HEAD requests
-      // serve the right Content-Type when downloaded.
+      // Path scheme: `<org_id>/<credential_id-or-_unassigned>/<uuid>.<ext>`.
+      // RLS policy gates on first folder = org_id, so unassigned uploads
+      // still satisfy storage policy as long as we resolve the org.
+      let orgId: string | undefined = credentials.find((c) => c.id === credId)?.org_id;
+      if (!orgId) {
+        // No credential picked — fall back to any credential's org_id
+        // (all rows in `credentials` already belong to caller's org).
+        orgId = credentials[0]?.org_id;
+      }
+      if (!orgId) throw new Error('Cannot resolve org for upload — add a credential first or pick one');
+      const folder = credId || '_unassigned';
       const ext = (file.name.split('.').pop() ?? 'bin').toLowerCase().slice(0, 6);
-      const objectKey = `${orgId}/${credId}/${crypto.randomUUID()}.${ext}`;
+      const objectKey = `${orgId}/${folder}/${crypto.randomUUID()}.${ext}`;
       const { error } = await supabase.storage
         .from('credential-invoices')
         .upload(objectKey, file, {
@@ -2609,7 +2966,7 @@ function InvoiceModal({ invoice, credentials, onClose, onSaved }: {
         headers: { Authorization: `Bearer ${session?.access_token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           id: invoice?.id,
-          credential_id: credId,
+          credential_id: credId || null,
           invoice_number: invoiceNumber || null,
           issue_date: issueDate || null,
           period_start: periodStart || null,
@@ -2642,59 +2999,15 @@ function InvoiceModal({ invoice, credentials, onClose, onSaved }: {
         </header>
         <div className="p-5 space-y-3 overflow-y-auto">
           {err && <div className="px-3 py-2 rounded-lg text-xs bg-rose-500/10 border border-rose-500/30 text-rose-300">{err}</div>}
-          <Field label="Platform / credential *">
-            <select value={credId} onChange={(e) => setCredId(e.target.value)} className={inputCls}>
-              <option value="">— pick credential —</option>
-              {credentials.map((c) => <option key={c.id} value={c.id}>{c.platform_name}</option>)}
-            </select>
-          </Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Invoice number">
-              <input value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} className={inputCls} placeholder="INV-2026-0042" />
-            </Field>
-            <Field label="Issue date">
-              <input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} className={inputCls} />
-            </Field>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Period start">
-              <input type="date" value={periodStart} onChange={(e) => setPeriodStart(e.target.value)} className={inputCls} />
-            </Field>
-            <Field label="Period end">
-              <input type="date" value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)} className={inputCls} />
-            </Field>
-          </div>
-          <div className="grid grid-cols-3 gap-3">
-            <Field label="Amount">
-              <input type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} className={inputCls} placeholder="0.00" />
-            </Field>
-            <Field label="Currency">
-              <select value={currency} onChange={(e) => setCurrency(e.target.value)} className={inputCls}>
-                {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
-              </select>
-            </Field>
-            <Field label="Status">
-              <select value={status} onChange={(e) => setStatus(e.target.value as Invoice['status'])} className={inputCls}>
-                <option value="pending">Pending</option>
-                <option value="paid">Paid</option>
-                <option value="overdue">Overdue</option>
-                <option value="failed">Failed</option>
-                <option value="refunded">Refunded</option>
-                <option value="draft">Draft</option>
-              </select>
-            </Field>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Due date">
-              <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className={inputCls} />
-            </Field>
-            <Field label="External link (optional)">
-              <input value={pdfUrl} onChange={(e) => setPdfUrl(e.target.value)} className={inputCls} placeholder="https://… (use only if not uploading a file)" />
-            </Field>
-          </div>
+          {!invoice && (
+            <div className="px-3 py-2 rounded-lg text-[11px] bg-emerald-500/5 border border-emerald-500/20 text-emerald-200">
+              💡 Drop any invoice PDF below — we'll auto-fill the rest. Only the file is required.
+            </div>
+          )}
 
-          {/* Attached file (PDF / image) — drag-drop or browse */}
-          <Field label="Invoice file">
+          {/* Move the file drop to the TOP so it's the first action. The
+              upload triggers Claude vision extraction for PDFs. */}
+          <Field label={invoice ? 'Invoice file' : 'Invoice file *'}>
             {attachment.path && !file ? (
               <div className="flex items-center justify-between bg-dark-900 border border-dark-700 rounded-lg px-3 py-2">
                 <div className="flex items-center gap-2 min-w-0">
@@ -2754,15 +3067,82 @@ function InvoiceModal({ invoice, credentials, onClose, onSaved }: {
                 )}
               </div>
             )}
+            {extracting && (
+              <p className="text-[11px] text-cyan-400 mt-1 animate-pulse">
+                <i className="ri-magic-line mr-1" /> Reading invoice with Claude…
+              </p>
+            )}
+            {extractNote && !extracting && (
+              <p className={`text-[11px] mt-1 ${extractNote.includes('failed') ? 'text-amber-400' : 'text-emerald-400'}`}>
+                {extractNote.includes('failed') ? '⚠ ' : '✓ '}{extractNote}
+              </p>
+            )}
             {uploading && <p className="text-[11px] text-gray-500 mt-1">Uploading…</p>}
           </Field>
+
+          <Field label="Platform / credential (optional — auto-matched from PDF)">
+            <select value={credId} onChange={(e) => setCredId(e.target.value)} className={inputCls}>
+              <option value="">— Unassigned —</option>
+              {credentials.map((c) => <option key={c.id} value={c.id}>{c.platform_name}</option>)}
+            </select>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Invoice number">
+              <input value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} className={inputCls} placeholder="INV-2026-0042" />
+            </Field>
+            <Field label="Issue date">
+              <input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} className={inputCls} />
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Period start">
+              <input type="date" value={periodStart} onChange={(e) => setPeriodStart(e.target.value)} className={inputCls} />
+            </Field>
+            <Field label="Period end">
+              <input type="date" value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)} className={inputCls} />
+            </Field>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            <Field label="Amount">
+              <input type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} className={inputCls} placeholder="0.00" />
+            </Field>
+            <Field label="Currency">
+              <select value={currency} onChange={(e) => setCurrency(e.target.value)} className={inputCls}>
+                {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </Field>
+            <Field label="Status">
+              <select value={status} onChange={(e) => setStatus(e.target.value as Invoice['status'])} className={inputCls}>
+                <option value="pending">Pending</option>
+                <option value="paid">Paid</option>
+                <option value="overdue">Overdue</option>
+                <option value="failed">Failed</option>
+                <option value="refunded">Refunded</option>
+                <option value="draft">Draft</option>
+              </select>
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Due date">
+              <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className={inputCls} />
+            </Field>
+            <Field label="External link (optional)">
+              <input value={pdfUrl} onChange={(e) => setPdfUrl(e.target.value)} className={inputCls} placeholder="https://… (use only if not uploading a file)" />
+            </Field>
+          </div>
+
           <Field label="Notes">
             <textarea value={notes} onChange={(e) => setNotes(e.target.value)} className={`${inputCls} h-16 resize-none`} placeholder="Anything else worth recording" />
           </Field>
         </div>
         <footer className="px-5 py-3 border-t border-dark-700 flex justify-end gap-2">
           <button disabled={busy} onClick={onClose} className="px-4 py-2 bg-dark-700 hover:bg-dark-600 rounded-lg text-sm text-white">Cancel</button>
-          <button disabled={!credId || busy} onClick={save} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-lg text-sm text-white font-medium">
+          <button
+            disabled={busy || extracting || (!invoice && !file && !attachment.path)}
+            onClick={save}
+            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-lg text-sm text-white font-medium"
+            title={!invoice && !file && !attachment.path ? 'Drop an invoice file first' : ''}
+          >
             {busy ? 'Saving…' : 'Save'}
           </button>
         </footer>

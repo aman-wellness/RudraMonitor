@@ -358,6 +358,27 @@ export function useOrgMembers() {
     await refresh();
   };
 
+  // Re-send the magic-link invite for a pending user. No-op if the user
+  // has already accepted (server returns 409 → surfaced as an error).
+  const resendInvite = async (email: string) => {
+    if (!session) throw new Error('not signed in');
+    const url = (import.meta.env.VITE_SUPABASE_URL as string).replace(/\/+$/, '') +
+      '/functions/v1/invite-member';
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.access_token}`,
+        apikey: import.meta.env.VITE_SUPABASE_ANON_KEY as string,
+      },
+      body: JSON.stringify({ email, resend: true }),
+    });
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      throw new Error(body.error ?? `resend failed (${resp.status})`);
+    }
+  };
+
   const removeMember = async (memberId: string) => {
     if (!organization) throw new Error('No organization loaded');
     const prev = members;
@@ -373,7 +394,7 @@ export function useOrgMembers() {
     }
   };
 
-  return { members, loading, refresh, inviteMember, removeMember };
+  return { members, loading, refresh, inviteMember, resendInvite, removeMember };
 }
 
 // =============== Productivity rules ===============

@@ -58,13 +58,19 @@ export default function Footer() {
               Product
             </h4>
             <ul className="space-y-2.5">
-              {['Features', 'Pricing', 'Integrations', 'Security', 'API'].map((item) => (
-                <li key={item}>
+              {[
+                { label: 'Features',     href: '#features' },
+                { label: 'Pricing',      href: '#pricing' },
+                { label: 'Integrations', href: '/docs/integrations' },
+                { label: 'Security',     href: '/legal/privacy' },
+                { label: 'API',          href: '/docs/integrations' },
+              ].map((item) => (
+                <li key={item.label}>
                   <a
-                    href="#"
+                    href={item.href}
                     className="text-sm text-gray-500 hover:text-emerald-400 transition-colors duration-200"
                   >
-                    {item}
+                    {item.label}
                   </a>
                 </li>
               ))}
@@ -80,6 +86,11 @@ export default function Footer() {
               <li>
                 <a href="/docs/user-guide" className="text-sm text-gray-500 hover:text-emerald-400 transition-colors duration-200">
                   User Guide
+                </a>
+              </li>
+              <li>
+                <a href="/docs/integrations" className="text-sm text-gray-500 hover:text-emerald-400 transition-colors duration-200">
+                  Integrations Setup
                 </a>
               </li>
               <li>
@@ -127,7 +138,7 @@ export default function Footer() {
                 <span className="w-4 h-4 flex items-center justify-center">
                   <i className="ri-mail-line text-gray-500 text-xs" />
                 </span>
-                <span className="text-sm text-gray-500">support@rudrans.com</span>
+                <span className="text-sm text-gray-500">support@wellnessextract.com</span>
               </div>
               <div className="flex items-center gap-2">
                 <span className="w-4 h-4 flex items-center justify-center">

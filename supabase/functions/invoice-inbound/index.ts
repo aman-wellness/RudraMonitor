@@ -1,7 +1,7 @@
 // POST /functions/v1/invoice-inbound
 // Webhook receiver for inbound-email providers (Resend Inbound / Postmark /
 // SendGrid Inbound Parse). Customer sets their per-org invoice forwarding
-// address (`inv-<orgid>@invoices.rudrans.com`) as the billing email on each
+// address (`inv-<orgid>@invoices.wellnessextract.com`) as the billing email on each
 // SaaS platform. When the platform mails the monthly invoice PDF, the
 // provider POSTs it here.
 //
@@ -11,7 +11,7 @@
 //
 // Body shape (after normalising):
 //   {
-//     to: string,                   // "inv-<orgid>@invoices.rudrans.com"
+//     to: string,                   // "inv-<orgid>@invoices.wellnessextract.com"
 //     from: string,                 // "billing@razorpay.com"
 //     subject: string,
 //     received_at: string,
@@ -61,20 +61,22 @@ Deno.serve(async (req) => {
   const from = (body.from ?? "").toLowerCase().trim();
   if (!to) return json({ error: "missing `to`" }, 400);
 
-  // Extract org_id from inv-<uuid>@invoices.rudrans.com
-  const m = to.match(/^inv-([0-9a-f-]{36})@/);
-  if (!m) return json({ error: "unrecognised inbound address" }, 400);
-  const orgId = m[1];
+  const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+
+  // Resolve org from either short slug or legacy full UUID:
+  //   • new: inv-<8-hex-slug>@…       → look up by organizations.invoice_inbound_slug
+  //   • old: inv-<full-org-uuid>@…    → look up by organizations.id (back-compat for
+  //                                      platforms already configured with the long address)
+  const orgId = await resolveInboundOrg(admin, to);
+  if (!orgId) return json({ error: "unrecognised inbound address" }, 400);
 
   const pdfs = (body.attachments ?? []).filter(
     (a) => a.content_type?.toLowerCase().includes("pdf")
       || a.filename?.toLowerCase().endsWith(".pdf"),
   );
   if (pdfs.length === 0) return json({ error: "no PDF attachment" }, 400);
-
-  const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
 
   // Pick the candidate credential by sender-domain heuristic.
   const senderDomain = from.split("@").pop() ?? "";
@@ -194,6 +196,33 @@ function b64ToBytes(b64: string): Uint8Array {
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
+}
+
+// Pull the org id out of an inbound `inv-XXXX@invoices.wellnessextract.com` address.
+// New format: 8-hex-char slug (migration 0096) — looked up via
+// `organizations.invoice_inbound_slug`.
+// Legacy format: full 36-char UUID — looked up via `organizations.id`.
+// Returns null if the address doesn't match either form or no org owns it.
+// deno-lint-ignore no-explicit-any
+async function resolveInboundOrg(admin: any, to: string): Promise<string | null> {
+  const local = to.match(/^inv-([a-z0-9-]+)@/i)?.[1]?.toLowerCase();
+  if (!local) return null;
+
+  // Slug path — 8 chars, hex only.
+  if (/^[0-9a-f]{8}$/.test(local)) {
+    const { data } = await admin
+      .from("organizations").select("id").eq("invoice_inbound_slug", local).maybeSingle();
+    if (data?.id) return data.id as string;
+    // fall through to UUID check below — extremely unlikely but a slug
+    // could collide with the first 8 hex chars of an old UUID.
+  }
+  // Legacy UUID path.
+  if (/^[0-9a-f-]{36}$/.test(local)) {
+    const { data } = await admin
+      .from("organizations").select("id").eq("id", local).maybeSingle();
+    if (data?.id) return data.id as string;
+  }
+  return null;
 }
 
 function json(body: unknown, status: number) {

@@ -33,7 +33,7 @@ const ANON_KEY          = Deno.env.get("SUPABASE_ANON_KEY")!;
 // RustDesk infrastructure exposed to clients. The agent dials the same
 // public host on the native TCP/UDP ports (21115/21116/21117); the
 // dashboard's browser viewer dials the WSS bridge under /rustdesk-relay/.
-const RUSTDESK_SERVER   = Deno.env.get("RUSTDESK_SERVER") ?? "api.rudrans.com";
+const RUSTDESK_SERVER   = Deno.env.get("RUSTDESK_SERVER") ?? "api-ems.wellnessextract.com";
 // HS256 secret used to sign the per-session JWT we hand back to both
 // the dashboard and the agent. Different from LIVEKIT_API_SECRET so a
 // LiveKit token can't be replayed as a RustDesk token.

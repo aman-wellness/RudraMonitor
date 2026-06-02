@@ -13,9 +13,23 @@
 // Set the same dashboard secret as RAZORPAY_WEBHOOK_SECRET project secret.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.4";
-import { createHmac } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { Buffer } from "node:buffer";
 import { corsHeaders } from "../_shared/cors.ts";
 import { getIntegration } from "../_shared/integrations.ts";
+import { findAuthUserIdByEmail } from "../_shared/find-user.ts";
+
+function hmacEqual(a: string, b: string): boolean {
+  // Use a constant-time comparison so an attacker cannot recover the expected
+  // HMAC byte-by-byte via response timing. Both sides are lowercase hex of the
+  // same length when valid, so a length mismatch is itself a fail.
+  if (a.length !== b.length) return false;
+  try {
+    return timingSafeEqual(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
+  } catch {
+    return false;
+  }
+}
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -44,7 +58,7 @@ Deno.serve(async (req) => {
   const signature = req.headers.get("x-razorpay-signature") ?? "";
   const raw = await req.text();
   const expected = createHmac("sha256", WEBHOOK_SECRET).update(raw).digest("hex");
-  if (signature !== expected) return new Response("invalid signature", { status: 401 });
+  if (!hmacEqual(signature, expected)) return new Response("invalid signature", { status: 401 });
 
   let event: {
     event: string;
@@ -61,6 +75,71 @@ Deno.serve(async (req) => {
 
   const sub  = event.payload?.subscription?.entity;
   const pay  = event.payload?.payment?.entity;
+
+  // Upgrade / add-on / trial-switch subscriptions stamp their intent in
+  // `notes` when the subscription is created (see razorpay-create-upgrade).
+  // Detect those FIRST — they take a different code path than signup
+  // (no pending_signup row).
+  const intent = (sub?.notes?.intent as string | undefined) ?? null;
+  if (intent === "plan_switch" || intent === "addon_add" || intent === "trial_switch") {
+    if (event.event === "subscription.authenticated" || event.event === "subscription.charged") {
+      const orgId = sub?.notes?.org_id as string | undefined;
+      const planCode = sub?.notes?.plan_code as string | undefined;
+      if (!orgId || !planCode) return fail(`upgrade webhook missing notes: ${JSON.stringify(sub?.notes)}`);
+      const seats = Number(sub?.notes?.seats ?? 0) || (intent === "plan_switch" ? 5 : intent === "addon_add" ? null : undefined);
+      let rpc: string;
+      let args: Record<string, unknown>;
+      if (intent === "plan_switch") {
+        rpc = "swap_org_plan";
+        args = { p_org_id: orgId, p_new_plan_code: planCode, p_razorpay_subscription_id: sub!.id!, p_razorpay_customer_id: sub!.customer_id ?? null, p_seats: seats };
+      } else if (intent === "trial_switch") {
+        rpc = "swap_trial_plan";
+        args = { p_org_id: orgId, p_new_plan_code: planCode, p_razorpay_subscription_id: sub!.id!, p_razorpay_customer_id: sub!.customer_id ?? null };
+      } else {
+        rpc = "activate_org_addon";
+        args = { p_org_id: orgId, p_addon_plan_code: planCode, p_razorpay_subscription_id: sub!.id!, p_seats: seats };
+      }
+      const { error } = await admin.rpc(rpc, args);
+      if (error) return fail(`${rpc}: ${error.message}`);
+
+      // Generate invoice for the renewal / first-charge. Idempotent on
+      // razorpay_payment_id so the verify-endpoint call (if any) and this
+      // webhook call don't double-insert.
+      if (event.event === "subscription.charged" && pay?.id && pay?.amount && intent !== "trial_switch") {
+        try {
+          const { data: planRow } = await admin
+            .from("plans").select("price_inr").eq("code", planCode).eq("is_active", true).maybeSingle();
+          const perSeat = Number((planRow as { price_inr?: number } | null)?.price_inr ?? 0);
+          const expectedRupees = perSeat > 0 && seats ? perSeat * seats : null;
+          const paidRupees = pay.amount / 100;
+          // If we have a server-side expected total, refuse to invoice when the
+          // amount Razorpay reports diverges by more than 1 rupee (covers
+          // rounding) — protects against tampered notes / stale plan refs.
+          if (expectedRupees !== null && Math.abs(expectedRupees - paidRupees) > 1) {
+            console.warn(`[razorpay-webhook] amount mismatch org=${orgId} plan=${planCode} expected=${expectedRupees} paid=${paidRupees} — skipping invoice`);
+            return ok({ event: event.event, intent, subscription_id: sub!.id, plan_code: planCode, invoice: "skipped_amount_mismatch" });
+          }
+          const totalRupees = expectedRupees ?? paidRupees;
+          await admin.rpc("generate_billing_invoice", {
+            p_org_id: orgId,
+            p_amount_inr: totalRupees,
+            p_plan_id: null,
+            p_license_id: null,
+            p_razorpay_order_id: pay.order_id ?? null,
+            p_razorpay_payment_id: pay.id,
+            p_kind: intent === "plan_switch" ? "renewal" : "addon",
+            p_is_renewal: true,
+          });
+        } catch (e) {
+          console.warn("invoice gen (webhook renewal):", (e as Error).message);
+        }
+      }
+
+      return ok({ event: event.event, intent, subscription_id: sub!.id, plan_code: planCode });
+    }
+    // Other lifecycle events for upgrade subs (halted/cancelled) fall through
+    // to the existing handlers below.
+  }
 
   switch (event.event) {
     // ── ₹2 verification captured → create user, send invite, finalize org ──
@@ -86,10 +165,9 @@ Deno.serve(async (req) => {
       //    if the email is new; if it already exists, we just look it up.
       let userId: string | null = pending.user_id;
       if (!userId) {
-        const { data: list } = await admin.auth.admin.listUsers({ page: 1, perPage: 1 });
-        const existingUser = list?.users?.find((u) => u.email?.toLowerCase() === pending.email?.toLowerCase());
-        if (existingUser) {
-          userId = existingUser.id;
+        const existingId = pending.email ? await findAuthUserIdByEmail(admin, pending.email) : null;
+        if (existingId) {
+          userId = existingId;
         } else {
           const APP_URL = Deno.env.get("APP_URL") ?? "http://localhost:3000";
           const { data: invited, error: invErr } = await admin.auth.admin.inviteUserByEmail(pending.email!, {

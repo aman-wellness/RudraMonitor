@@ -1,6 +1,6 @@
 // POST /functions/v1/invoice-inbound-resend
 // Resend Inbound webhook receiver. Resend POSTs the parsed email here
-// whenever someone sends to a `*@invoices.rudrans.com` address that's
+// whenever someone sends to a `*@invoices.wellnessextract.com` address that's
 // forwarded into our Resend Inbound endpoint.
 //
 // Resend signs the request with Svix-style headers — we verify against
@@ -82,20 +82,20 @@ Deno.serve(async (req) => {
   const toAddr = d.to?.[0]?.address ?? "";
   const fromAddr = d.from?.address ?? "";
 
+  const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+
   // ── Match credential and upload (same logic as invoice-inbound) ─────
-  const m = toAddr.toLowerCase().match(/^inv-([0-9a-f-]{36})@/);
-  if (!m) return json({ error: `unrecognised To: ${toAddr}` }, 400);
-  const orgId = m[1];
+  // Accepts the new 8-hex slug (migration 0096) or the legacy full UUID.
+  const orgId = await resolveInboundOrg(admin, toAddr);
+  if (!orgId) return json({ error: `unrecognised To: ${toAddr}` }, 400);
 
   const pdfs = (d.attachments ?? []).filter(
     (a) => a.content_type?.toLowerCase().includes("pdf")
       || a.filename?.toLowerCase().endsWith(".pdf"),
   );
   if (pdfs.length === 0) return json({ ok: true, note: "no PDF attachment" }, 200);
-
-  const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
 
   // Credential picker (mirrors invoice-inbound logic).
   const senderDomain = fromAddr.toLowerCase().split("@").pop() ?? "";
@@ -193,6 +193,28 @@ function constantTimeEq(a: string, b: string): boolean {
   for (let i = 0; i < a.length; i++) m |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return m === 0;
 }
+// Resolve org from inv-<slug>@invoices.wellnessextract.com (new) or
+// inv-<full-uuid>@invoices.wellnessextract.com (legacy). Mirror of the helper in
+// supabase/functions/invoice-inbound/index.ts — kept duplicated rather
+// than putting in _shared/ because the two functions are independently
+// versioned and shipping a shared change requires redeploying both.
+// deno-lint-ignore no-explicit-any
+async function resolveInboundOrg(admin: any, to: string): Promise<string | null> {
+  const local = to.match(/^inv-([a-z0-9-]+)@/i)?.[1]?.toLowerCase();
+  if (!local) return null;
+  if (/^[0-9a-f]{8}$/.test(local)) {
+    const { data } = await admin
+      .from("organizations").select("id").eq("invoice_inbound_slug", local).maybeSingle();
+    if (data?.id) return data.id as string;
+  }
+  if (/^[0-9a-f-]{36}$/.test(local)) {
+    const { data } = await admin
+      .from("organizations").select("id").eq("id", local).maybeSingle();
+    if (data?.id) return data.id as string;
+  }
+  return null;
+}
+
 function json(body: unknown, status: number) {
   return new Response(JSON.stringify(body), {
     status,

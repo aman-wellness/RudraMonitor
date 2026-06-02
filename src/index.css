@@ -645,3 +645,18 @@ html:not(.dark) .dashboard-shell *:focus-visible {
   border-radius: 4px;
 }
 
+/* Inputs deliberately styled `bg-transparent` are meant to inherit their
+   wrapper's chrome (search bars: icon + outer border own the look). The
+   global cyan focus ring above renders OUTSIDE the input edge and lands
+   inside the wrapper's padding, making the input look like a separate
+   nested box. Suppress the ring on transparent inputs and let the wrapper
+   carry the focus cue via `focus-within:` utilities instead. */
+.dark [class*="bg-dark-"] input.bg-transparent:focus,
+.dark [class*="bg-dark-"] input.bg-transparent:focus-visible,
+.dark [class*="bg-dark-"] textarea.bg-transparent:focus,
+.dark [class*="bg-dark-"] textarea.bg-transparent:focus-visible,
+html:not(.dark) .dashboard-shell input.bg-transparent:focus-visible,
+html:not(.dark) .dashboard-shell textarea.bg-transparent:focus-visible {
+  outline: none;
+}
+

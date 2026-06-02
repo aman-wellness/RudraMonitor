@@ -39,9 +39,26 @@ Deno.serve(async (req) => {
   if (!requestId) return json({ error: "request_id required" }, 400);
   if (!code || code.length < 4) return json({ error: "code required (min 4 digits)" }, 400);
 
+  // Reject obviously malformed request_ids before touching the DB so an
+  // attacker cannot use this endpoint as an existence oracle.
+  if (!/^[0-9a-f-]{36}$/i.test(requestId)) {
+    return json({ error: "invalid request_id" }, 400);
+  }
+
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
+
+  // Per (request_id, ip) brute-force protection. See migration 0110.
+  const xff = (req.headers.get("x-forwarded-for") ?? "").split(",")[0]?.trim() || "0.0.0.0";
+  const { data: rl } = await admin.rpc("check_and_record_otp_attempt", {
+    p_scope: "invoice_otp",
+    p_channel_key: requestId,
+    p_ip: xff,
+  });
+  if (rl && (rl as { allowed?: boolean }).allowed === false) {
+    return json({ error: "too many attempts — try again in 15 minutes" }, 429);
+  }
 
   // Lazy-expire stale rows, then fetch.
   await admin.rpc("otp_requests_expire_stale").catch(() => null);

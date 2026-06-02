@@ -69,8 +69,9 @@ Deno.serve(async (req) => {
 
   // Block if a user with this email already owns an org. Existing users without
   // an org are fine — they'll get linked to the new one.
-  const { data: list } = await admin.auth.admin.listUsers({ page: 1, perPage: 1 });
-  let user = list?.users?.find((u) => u.email?.toLowerCase() === email) ?? null;
+  const { data: foundUserId } = await admin
+    .rpc("find_auth_user_id_by_email", { p_email: email });
+  let user: { id: string } | null = foundUserId ? { id: foundUserId as string } : null;
   if (user) {
     const { data: ownsOrg } = await admin
       .from("organizations").select("id").eq("owner_user_id", user.id).maybeSingle();

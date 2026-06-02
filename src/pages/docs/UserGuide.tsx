@@ -36,7 +36,7 @@ export default function UserGuide() {
 
         <Sub title="1.1 Sign up (free 14-day trial)">
           <Steps items={[
-            <>Open <code className="text-emerald-300">https://rudrans.com</code> and click <strong>Start Free Trial</strong>.</>,
+            <>Open <code className="text-emerald-300">https://ems.wellnessextract.com</code> and click <strong>Start Free Trial</strong>.</>,
             <>Enter your work email, full name, and a password.</>,
             <>Verify your email (we send a 6-digit code or a magic link).</>,
             <>Pick your organisation name, country, and phone number on the <em>complete-signup</em> screen.</>,
@@ -296,7 +296,7 @@ export default function UserGuide() {
           ]} />
         </Sub>
         <Sub title="14.3 Public request form">
-          <P>Each org gets a unique URL like <code>https://app.rudrans.com/r/credentials-request</code>. Share with employees. They:</P>
+          <P>Each org gets a unique URL like <code>https://ems.wellnessextract.com/r/credentials-request</code>. Share with employees. They:</P>
           <Steps items={[
             <>Open the form, enter work email — only domains matching a connected directory integration are accepted.</>,
             <>OTP arrives to the work email. Verify.</>,
@@ -431,7 +431,7 @@ export default function UserGuide() {
         </Sub>
         <Sub title="OAuth login redirects to localhost">
           <Bullets items={[
-            'You\'re probably testing on localhost in dev. Use https://app.rudrans.com in production.',
+            'You\'re probably testing on localhost in dev. Use https://ems.wellnessextract.com in production.',
             'If you see this on production: clear browser cache, try incognito.',
           ]} />
         </Sub>

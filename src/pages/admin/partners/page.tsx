@@ -143,8 +143,8 @@ export default function AdminPartners() {
 
       {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
 
-      <div className="bg-dark-800 border border-dark-700 rounded-xl overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="bg-dark-800 border border-dark-700 rounded-xl overflow-x-auto">
+        <table className="w-full text-sm min-w-[640px]">
           <thead className="bg-dark-900/50 text-[10px] uppercase tracking-wider text-gray-500">
             <tr>
               <th className="px-4 py-3 text-left">Partner</th>

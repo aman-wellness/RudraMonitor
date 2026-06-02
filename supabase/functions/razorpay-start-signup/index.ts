@@ -18,6 +18,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.4";
 import { corsHeaders } from "../_shared/cors.ts";
 import { getIntegrations } from "../_shared/integrations.ts";
+import { findAuthUserIdByEmail } from "../_shared/find-user.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -30,8 +31,18 @@ type Body = {
   email?: string;
   org_name?: string;
   plan_id?: string;
+  plan_code?: string;
   phone?: string;
   country?: string;
+  // Optional company details — captured upfront for invoicing + sales
+  // follow-up. Stored on pending_signups, copied to organizations on
+  // finalize. All trimmed + nulled-if-empty server-side.
+  gst_number?: string;
+  pan_number?: string;
+  address?: string;
+  city?: string;
+  state?: string;
+  postal_code?: string;
 };
 
 Deno.serve(async (req) => {
@@ -41,31 +52,62 @@ Deno.serve(async (req) => {
   let body: Body;
   try { body = await req.json(); } catch { return json({ error: "invalid json" }, 400); }
 
+  // If caller is authenticated (OAuth signup completing), trust the JWT for
+  // email + identity and skip the OTP gate — the OAuth provider already
+  // verified the email. The user_id from the JWT gets stamped onto the
+  // pending row so the webhook skips inviteUserByEmail.
+  const adminAuth = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+  let authedUserId: string | null = null;
+  let authedEmail:  string | null = null;
+  const authHeader = req.headers.get("Authorization") ?? "";
+  const token = authHeader.toLowerCase().startsWith("bearer ") ? authHeader.slice(7).trim() : "";
+  if (token) {
+    const { data: { user: jwtUser } } = await adminAuth.auth.getUser(token);
+    if (jwtUser?.id && jwtUser.email) {
+      authedUserId = jwtUser.id;
+      authedEmail  = jwtUser.email.toLowerCase();
+    }
+  }
+
   const fullName = (body.full_name ?? "").trim();
-  const email    = (body.email ?? "").trim().toLowerCase();
+  const email    = (authedEmail ?? body.email ?? "").trim().toLowerCase();
   const orgName  = (body.org_name ?? "").trim();
-  const planId   = (body.plan_id ?? "").trim();
+  const planRef  = (body.plan_id ?? body.plan_code ?? "").trim();
   const phone    = body.phone?.trim() || null;
   const country  = (body.country ?? "India").trim();
+  const trimOrNull = (v: string | undefined) => {
+    const t = (v ?? "").trim();
+    return t.length > 0 ? t : null;
+  };
+  const gstNumber  = trimOrNull(body.gst_number);
+  const panNumber  = trimOrNull(body.pan_number);
+  const address    = trimOrNull(body.address);
+  const city       = trimOrNull(body.city);
+  const state      = trimOrNull(body.state);
+  const postalCode = trimOrNull(body.postal_code);
 
   if (!fullName) return json({ error: "full_name required" }, 400);
   if (!email || !email.includes("@")) return json({ error: "valid email required" }, 400);
   if (!orgName)  return json({ error: "org_name required" }, 400);
-  if (!planId)   return json({ error: "plan_id required" }, 400);
+  if (!planRef)  return json({ error: "plan_id or plan_code required" }, 400);
 
-  // Email must have been OTP-verified within the last 30 minutes.
-  const adminCheck = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-  const since = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-  const { data: cv } = await adminCheck
-    .from("contact_verifications")
-    .select("target")
-    .ilike("target", email)
-    .gte("verified_at", since)
-    .maybeSingle();
-  if (!cv) {
-    return json({ error: "Email not verified — request and enter the OTP first" }, 400);
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(planRef);
+
+  // Email must have been OTP-verified within the last 30 minutes — UNLESS the
+  // caller is already authenticated (OAuth provider verified the email for us).
+  if (!authedUserId) {
+    const since = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const { data: cv } = await adminAuth
+      .from("contact_verifications")
+      .select("target")
+      .ilike("target", email)
+      .gte("verified_at", since)
+      .maybeSingle();
+    if (!cv) {
+      return json({ error: "Email not verified — request and enter the OTP first" }, 400);
+    }
   }
 
   const cfg = await getIntegrations(["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET"]);
@@ -80,22 +122,33 @@ Deno.serve(async (req) => {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 
-  // 1. Don't accept signup if an auth user with this email already has an org.
-  //    (Reset-password / sign-in is the right path for them.)
-  const { data: existing } = await admin.auth.admin.listUsers({ page: 1, perPage: 1 });
-  const existingUser = existing?.users?.find((u) => u.email?.toLowerCase() === email);
-  if (existingUser) {
+  // 1. Don't accept signup if the user already owns an org (handles both
+  //    OAuth-authenticated callers and email/OTP signups where the user was
+  //    invited earlier).
+  if (authedUserId) {
     const { data: org } = await admin
-      .from("organizations").select("id").eq("owner_user_id", existingUser.id).maybeSingle();
-    if (org) return json({ error: "An account with this email already exists. Sign in instead." }, 409);
+      .from("organizations").select("id").eq("owner_user_id", authedUserId).maybeSingle();
+    if (org) return json({ error: "You already have an organization." }, 409);
+  } else {
+    const existingUserId = await findAuthUserIdByEmail(admin, email);
+    if (existingUserId) {
+      const { data: org } = await admin
+        .from("organizations").select("id").eq("owner_user_id", existingUserId).maybeSingle();
+      if (org) return json({ error: "An account with this email already exists. Sign in instead." }, 409);
+    }
   }
 
-  // 2. Look up the plan + currency choice.
-  const { data: plan, error: planErr } = await admin
+  // 2. Look up the plan + currency choice. Caller may pass UUID (plan_id) or
+  //    short code (plan_code, e.g. "starter-m") — resolve both.
+  const planQuery = admin
     .from("plans")
     .select("id, name, billing_cycle, razorpay_plan_id, razorpay_plan_id_usd, price_inr, price_usd")
-    .eq("id", planId).eq("is_active", true).maybeSingle();
-  if (planErr || !plan) return json({ error: "plan not found" }, 400);
+    .eq("is_active", true);
+  const { data: plan, error: planErr } = await (isUuid
+    ? planQuery.eq("id", planRef).maybeSingle()
+    : planQuery.eq("code", planRef).maybeSingle());
+  if (planErr || !plan) return json({ error: `plan not found for "${planRef}"` }, 400);
+  const planId = plan.id;
 
   const isIndia = country.toLowerCase() === "india" || country.toLowerCase() === "in";
   const useUSD = !isIndia && !!plan.razorpay_plan_id_usd;
@@ -122,6 +175,9 @@ Deno.serve(async (req) => {
     .insert({
       email, full_name_pending: fullName,
       org_name: orgName, plan_id: planId, phone, country,
+      user_id: authedUserId,
+      gst_number: gstNumber, pan_number: panNumber,
+      address, city, state, postal_code: postalCode,
     })
     .select("id")
     .single();
@@ -143,8 +199,10 @@ Deno.serve(async (req) => {
   }
   const customer = await custResp.json();
 
-  // 5. Create Subscription. start_at = +14 days; ₹2 / $0.50 addon billed now.
-  const startAt = Math.floor(Date.now() / 1000) + 14 * 24 * 60 * 60;
+  // 5. Create Subscription. start_at = +21 days (14-day trial + 7-day grace
+  //    window) so Razorpay's first real charge fires AFTER the grace period
+  //    runs out. ₹2 / $0.50 addon billed immediately on card auth.
+  const startAt = Math.floor(Date.now() / 1000) + 21 * 24 * 60 * 60;
   const totalCount = plan.billing_cycle === "yearly" ? 5 : 12;
   const subResp = await fetch("https://api.razorpay.com/v1/subscriptions", {
     method: "POST",

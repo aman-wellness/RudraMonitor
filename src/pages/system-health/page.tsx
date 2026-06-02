@@ -209,7 +209,7 @@ export default function SystemHealthPage() {
                           </div>
                           <span className="px-2 py-0.5 rounded-full bg-red-500/15 text-red-400 text-[10px] font-medium">Critical</span>
                         </div>
-                        <div className="grid grid-cols-3 gap-2">
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                           {m && (
                             <>
                               <div className="text-center">
@@ -355,7 +355,7 @@ export default function SystemHealthPage() {
                     {svc.status === 'running' ? 'Running' : 'Maintenance'}
                   </span>
                 </div>
-                <div className="grid grid-cols-3 gap-3 mb-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-4">
                   <div className="bg-dark-900 rounded-lg border border-dark-700 p-2.5 text-center">
                     <p className="text-xs font-bold text-white">{svc.uptime}</p>
                     <p className="text-[10px] text-gray-500 mt-0.5">Uptime</p>

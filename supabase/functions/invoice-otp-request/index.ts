@@ -87,7 +87,7 @@ Deno.serve(async (req) => {
   await admin.from("invoice_fetch_jobs").update({ status: "needs_otp" }).eq("id", jobId);
 
   const baseUrl = (await getIntegration("MAGIC_LINK_BASE_URL").catch(() => ""))
-    || "https://app.rudrans.com";
+    || "https://ems.wellnessextract.com";
   const magicUrl = `${baseUrl}/otp/${inserted.id}?token=${encodeURIComponent(rawToken)}`;
 
   // Phase 2 channels: magic_link (email to admins), dashboard (realtime),

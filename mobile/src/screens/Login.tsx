@@ -191,7 +191,7 @@ export default function Login() {
         </form>
 
         <p style={{ marginTop: 32, fontSize: 11, color: "#6b7280", textAlign: "center" }}>
-          Same email + password as <span style={{ color: "#22d3a2" }}>app.rudrans.com</span>.
+          Same email + password as <span style={{ color: "#22d3a2" }}>ems.wellnessextract.com</span>.
           <br />Forgot password? Reset it on the web dashboard.
         </p>
       </div>

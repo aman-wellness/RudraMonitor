@@ -8,6 +8,7 @@ import { useOrgRole } from '@/lib/useOrgRole';
 import { useFeatures, type FeatureCode } from '@/lib/useFeatures';
 import { useAppAccess } from '@/lib/useAppAccess';
 import OtpRequestBanner from '@/components/OtpRequestBanner';
+import TrialGraceBanner from '@/components/TrialGraceBanner';
 
 const formatRelative = (iso: string) => {
   const diffMs = Date.now() - new Date(iso).getTime();
@@ -379,6 +380,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <main className="flex-1 min-w-0 w-full p-4 md:p-6 lg:p-8 overflow-y-auto overflow-x-hidden">
           <div className="w-full max-w-screen-2xl mx-auto">
             <ViewerBanner />
+            <TrialGraceBanner />
             <OtpRequestBanner />
             {children}
           </div>

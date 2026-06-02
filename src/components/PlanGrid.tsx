@@ -58,6 +58,13 @@ export interface PlanGridProps {
   disableCtas?: boolean;
   ctaLabelFor?: (planCode: string, isCurrent: boolean) => string;
   onSelect: (sel: PlanSelection) => void;
+  /**
+   * Called when a customer commits to activating an add-on with a chosen
+   * seat count. The add-on toggle pops a small seat picker; on confirm,
+   * this fires with the addon's SKU code + the seat count to charge for.
+   * Caller navigates to /checkout?addons=<code>&seats=<n>.
+   */
+  onAddonImmediate?: (addonCode: string, seats: number) => void;
   defaultCurrency?: Currency;
   defaultCycle?: Cycle;
   defaultSeats?: number;
@@ -86,6 +93,7 @@ export default function PlanGrid({
   disableCtas,
   ctaLabelFor,
   onSelect,
+  onAddonImmediate,
   defaultCurrency = 'INR',
   defaultCycle = 'monthly',
   defaultSeats = 10,
@@ -172,7 +180,27 @@ export default function PlanGrid({
     return Math.max(0, Math.round(((m12 - y) / m12) * 100));
   }, [planGroups]);
 
+  // When onAddonImmediate is wired, opening an addon pops a seat picker
+  // modal so the customer can buy fewer/more DLP seats than their main
+  // plan. Confirm → onAddonImmediate(code, seats).
+  const [addonPickerFor, setAddonPickerFor] = useState<{ addonKey: string; addonCode: string; addonName: string; pricePerSeatLabel: string; cycleWord: string } | null>(null);
+  const [addonSeatPick, setAddonSeatPick] = useState(seats);
+
   const toggleAddon = (planName: string, addonKey: string) => {
+    if (onAddonImmediate) {
+      const card = addonCards.find((a) => a.key === addonKey);
+      const variant = cycle === 'yearly' ? card?.yearly : card?.monthly;
+      if (!variant?.code) return;
+      setAddonSeatPick(seats);
+      setAddonPickerFor({
+        addonKey,
+        addonCode: variant.code,
+        addonName: card?.name ?? variant.code,
+        pricePerSeatLabel: fmt(variant.price_inr, variant.price_usd),
+        cycleWord: cycle === 'yearly' ? 'year' : 'month',
+      });
+      return;
+    }
     setSelectedAddons((prev) => {
       const cur = new Set(prev[planName] ?? []);
       if (cur.has(addonKey)) cur.delete(addonKey); else cur.add(addonKey);
@@ -270,10 +298,13 @@ export default function PlanGrid({
                 .map((k) => addonCards.find((a) => a.key === k))
                 .map((a) => (cycle === 'yearly' ? a?.yearly?.code : a?.monthly?.code))
                 .filter(Boolean) as string[];
+              // EM-standalone plans always purchase as 1 license — ignore
+              // the global seat picker for this product.
+              const seatsForPlan = group.is_em_standalone ? 1 : seats;
               onSelect({
                 planCode: variant.code,
                 cycle,
-                seats,
+                seats: seatsForPlan,
                 addons: addonCodes,
                 currency,
               });
@@ -289,6 +320,73 @@ export default function PlanGrid({
           onSelect={() => onSelect({ planCode: 'enterprise', cycle, seats, addons: [], currency })}
         />
       </div>
+
+      {/* Add-on seat picker modal */}
+      {addonPickerFor && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center px-4"
+             onClick={() => setAddonPickerFor(null)}>
+          <div className="bg-dark-800 border border-dark-700 rounded-2xl p-6 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+            <h2 className="text-base font-semibold text-white mb-1">{addonPickerFor.addonName}</h2>
+            <p className="text-xs text-gray-500 mb-5">
+              How many seats? Each seat lets one agent use this add-on. You can assign specific agents after activation.
+            </p>
+            <label className="block text-[11px] text-gray-400 uppercase tracking-wider mb-1.5">Seats</label>
+            <div className="flex items-center gap-2 mb-1">
+              <button type="button" onClick={() => setAddonSeatPick((s) => Math.max(1, s - 1))}
+                      className="w-9 h-9 rounded-lg bg-dark-700 hover:bg-dark-600 text-white">−</button>
+              <input type="number" min={1} max={10000} value={addonSeatPick}
+                     onChange={(e) => setAddonSeatPick(Math.max(1, Math.min(10000, parseInt(e.target.value || '1', 10))))}
+                     className="flex-1 text-center bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-white" />
+              <button type="button" onClick={() => setAddonSeatPick((s) => Math.min(10000, s + 1))}
+                      className="w-9 h-9 rounded-lg bg-dark-700 hover:bg-dark-600 text-white">+</button>
+            </div>
+            <p className="text-[11px] text-gray-500 mb-5">
+              {addonPickerFor.pricePerSeatLabel} per seat / {addonPickerFor.cycleWord} ·
+              {' '}<span className="text-emerald-300">
+                Total: {currency === 'INR' ? '₹' : '$'}
+                {(() => {
+                  const card = addonCards.find((a) => a.key === addonPickerFor.addonKey);
+                  const variant = cycle === 'yearly' ? card?.yearly : card?.monthly;
+                  const per = currency === 'INR' ? (variant?.price_inr ?? 0) : (variant?.price_usd ?? 0);
+                  return (per * addonSeatPick).toLocaleString(currency === 'INR' ? 'en-IN' : 'en-US');
+                })()} / {addonPickerFor.cycleWord}
+              </span>
+            </p>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setAddonPickerFor(null)}
+                      className="text-xs text-gray-400 hover:text-gray-200 px-3 py-1.5">
+                Cancel
+              </button>
+              <button type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const code = addonPickerFor.addonCode;
+                        const sk = addonSeatPick;
+                        // Fire the parent's handler (React Router navigate).
+                        // Fall back to a hard navigation if for any reason
+                        // the parent handler doesn't change the URL within
+                        // the current tick — guarantees the customer reaches
+                        // /checkout instead of getting stuck on the modal.
+                        try { onAddonImmediate?.(code, sk); } catch { /* ignore */ }
+                        const url = `/checkout?addons=${encodeURIComponent(code)}&seats=${sk}`;
+                        if (typeof window !== 'undefined' && window.location.pathname !== '/checkout') {
+                          // setTimeout 0 lets React commit any pending navigate first.
+                          setTimeout(() => {
+                            if (window.location.pathname !== '/checkout') {
+                              window.location.assign(url);
+                            }
+                          }, 50);
+                        }
+                        setAddonPickerFor(null);
+                      }}
+                      className="bg-emerald-500 hover:bg-emerald-400 text-dark-950 font-medium text-xs px-3 py-1.5 rounded-md">
+                Activate &amp; pay
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -345,6 +443,12 @@ function PlanCardView({
   const effective = variant ?? group.yearly ?? group.monthly;
   if (!effective) return null;
 
+  // EM-standalone plans (em-m / em-y) are a single-license product —
+  // 1 license = unlimited employees (up to the 2000 cap). Hide the global
+  // seat picker for this card and price it as a flat single-seat purchase.
+  const isEmStandalone = !!group.is_em_standalone;
+  const effectiveSeats = isEmStandalone ? 1 : seats;
+
   const addonsTotal = Array.from(selectedAddons).reduce(
     (acc, addonKey) => {
       const a = addons.find((x) => x.key === addonKey);
@@ -355,10 +459,10 @@ function PlanCardView({
     },
     { inr: 0, usd: 0 },
   );
-  const planTotal = { inr: effective.price_inr * seats, usd: effective.price_usd * seats };
+  const planTotal = { inr: effective.price_inr * effectiveSeats, usd: effective.price_usd * effectiveSeats };
   const grandTotal = {
-    inr: planTotal.inr + addonsTotal.inr * seats,
-    usd: planTotal.usd + addonsTotal.usd * seats,
+    inr: planTotal.inr + addonsTotal.inr * effectiveSeats,
+    usd: planTotal.usd + addonsTotal.usd * effectiveSeats,
   };
 
   const featuresBullets = expandFeatureBullets(group.features);
@@ -402,13 +506,21 @@ function PlanCardView({
         <div className="text-center mb-4">
           <div>
             <span className="text-3xl font-bold text-white tabular-nums">{fmt(effective.price_inr, effective.price_usd)}</span>
-            <span className="text-xs text-gray-500 ml-1">/ seat / {effective.billing_cycle === 'yearly' ? 'year' : 'month'}</span>
+            <span className="text-xs text-gray-500 ml-1">
+              {isEmStandalone
+                ? `/ ${effective.billing_cycle === 'yearly' ? 'year' : 'month'}`
+                : `/ seat / ${effective.billing_cycle === 'yearly' ? 'year' : 'month'}`}
+            </span>
           </div>
-          <p className="text-[11px] text-emerald-400 mt-1.5 font-medium">
-            {seats} seat{seats === 1 ? '' : 's'} = {fmt(planTotal.inr, planTotal.usd)} / {effective.billing_cycle === 'yearly' ? 'year' : 'month'}
-          </p>
-          {group.is_em_standalone && (
-            <p className="text-[10px] text-amber-300/80 mt-1">Up to 2,000 users — Enterprise above that.</p>
+          {!isEmStandalone && (
+            <p className="text-[11px] text-emerald-400 mt-1.5 font-medium">
+              {seats} seat{seats === 1 ? '' : 's'} = {fmt(planTotal.inr, planTotal.usd)} / {effective.billing_cycle === 'yearly' ? 'year' : 'month'}
+            </p>
+          )}
+          {isEmStandalone && (
+            <p className="text-[11px] text-emerald-400 mt-1.5 font-medium">
+              1 license · unlimited employees up to 2,000
+            </p>
           )}
           {variant === undefined && (
             <p className="text-[10px] text-amber-300/80 mt-1">{cycle === 'yearly' ? 'Yearly' : 'Monthly'} variant not available — showing {effective.billing_cycle}.</p>

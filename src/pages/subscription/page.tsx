@@ -181,6 +181,11 @@ export default function SubscriptionPage() {
             });
             navigate(`/checkout?${qs.toString()}`);
           }}
+          onAddonImmediate={(addonCode, seats) => {
+            // One-click add-on activation with a chosen seat count.
+            // /checkout figures out the right Razorpay flow.
+            navigate(`/checkout?addons=${encodeURIComponent(addonCode)}&seats=${seats}`);
+          }}
         />
 
         <p className="mt-8 text-center text-[11px] text-gray-500 max-w-3xl mx-auto leading-relaxed">

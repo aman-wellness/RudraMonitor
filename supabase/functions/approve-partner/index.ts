@@ -78,7 +78,7 @@ Deno.serve(async (req) => {
   try {
     await admin.auth.admin.inviteUserByEmail(email, {
       data: { partner_id: partnerId, partner_name: partner.name },
-      redirectTo: `${(await getIntegration("APP_URL")) || "https://app.rudrans.com"}/post-login`,
+      redirectTo: `${(await getIntegration("APP_URL")) || "https://ems.wellnessextract.com"}/post-login`,
     });
   } catch (e) {
     const msg = (e as Error).message ?? "";

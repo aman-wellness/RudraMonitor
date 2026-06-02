@@ -26,7 +26,26 @@ interface Draft {
   openai_cost_usd: number | null;
   created_at: string;
   approved_at: string | null;
+  style: string | null;
+  scene_types: string[] | null;
 }
+
+// Must stay in sync with STYLE_LIBRARY keys in scripts/marketing/generate.py.
+// The dropdown lists the short-form styles for short_video drafts and
+// long-form styles for long_video drafts; daemon falls back to its rotation
+// if the user picks one that's incompatible with the draft's kind.
+const SHORT_STYLES = [
+  'product-tour',
+  'problem-solution',
+  'feature-spotlight',
+  'before-after',
+  'compare-vs-competitor',
+  'tutorial-walkthrough',
+];
+const LONG_STYLES = [
+  'tutorial-walkthrough-long',
+  'product-tour-long',
+];
 
 interface Settings {
   brand_voice: string;
@@ -283,9 +302,16 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: () => void }) 
     }
   };
 
+  const [regenStyle, setRegenStyle] = useState<string>('');
+
   const approve   = () => callEdge('marketing-approve',   { draft_id: draft.id });
   const reject    = () => callEdge('marketing-approve',   { draft_id: draft.id, reject: true });
-  const regen     = () => callEdge('marketing-regenerate', { draft_id: draft.id });
+  const regen     = () => callEdge('marketing-regenerate', regenStyle
+    ? { draft_id: draft.id, style: regenStyle }
+    : { draft_id: draft.id }
+  );
+
+  const availableStyles = draft.kind === 'long_video' ? LONG_STYLES : SHORT_STYLES;
 
   const statusColor: Record<DraftStatus, string> = {
     pending:           'bg-amber-500/15 text-amber-300 border-amber-500/30',
@@ -310,6 +336,14 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: () => void }) 
           <span className="text-[10px] px-2 py-0.5 rounded-full bg-dark-700 text-gray-400 border border-dark-600">
             {kindLabel[draft.kind]}
           </span>
+          {draft.style && (
+            <span
+              className="text-[10px] px-2 py-0.5 rounded-full bg-violet-500/15 text-violet-300 border border-violet-500/30"
+              title={draft.scene_types?.length ? `scene mix: ${draft.scene_types.join(' · ')}` : undefined}
+            >
+              {draft.style}
+            </span>
+          )}
           <h3 className="text-sm text-white font-semibold">{draft.hook_title || '(untitled hook)'}</h3>
         </div>
         <div className="flex items-center gap-2 text-[11px] text-gray-500">
@@ -339,7 +373,7 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: () => void }) 
           {imageUrls.length > 0 && (
             <div>
               <p className="text-[10px] uppercase tracking-wider text-gray-500 font-medium mb-2">Scene images</p>
-              <div className="grid grid-cols-5 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
                 {imageUrls.map((u, i) => (
                   <a key={i} href={u} target="_blank" rel="noreferrer" className="block">
                     <img src={u} alt={`Scene ${i + 1}`} className="w-full aspect-square rounded object-cover border border-dark-700 hover:border-emerald-500/50" />
@@ -416,13 +450,26 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: () => void }) 
                 >
                   Reject
                 </button>
-                <button
-                  onClick={regen}
-                  disabled={!!busy}
-                  className="flex-1 px-3 py-2 rounded-lg text-xs font-medium bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 disabled:opacity-50"
-                >
-                  Regenerate
-                </button>
+                <div className="flex-1 flex gap-1.5 min-w-0">
+                  <button
+                    onClick={regen}
+                    disabled={!!busy}
+                    className="flex-1 px-3 py-2 rounded-lg text-xs font-medium bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 disabled:opacity-50 min-w-0 truncate"
+                    title={regenStyle ? `Regenerate with style: ${regenStyle}` : 'Regenerate (daemon picks today\'s rotation style)'}
+                  >
+                    {busy === 'marketing-regenerate' ? '…' : (regenStyle ? `Regen · ${regenStyle}` : 'Regenerate')}
+                  </button>
+                  <select
+                    value={regenStyle}
+                    onChange={(e) => setRegenStyle(e.target.value)}
+                    disabled={!!busy}
+                    title="Override the daemon's style pick for this regen"
+                    className="px-2 py-2 rounded-lg text-[11px] bg-cyan-500/10 hover:bg-cyan-500/15 border border-cyan-500/30 text-cyan-200 disabled:opacity-50 min-w-0 max-w-[140px] truncate"
+                  >
+                    <option value="">auto</option>
+                    {availableStyles.map((st) => <option key={st} value={st}>{st}</option>)}
+                  </select>
+                </div>
               </>
             )}
             {videoUrl && (
@@ -537,7 +584,7 @@ function SettingsForm({ initial, onSaved }: { initial: Settings | null; onSaved:
         />
       </Field>
 
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         <Field label="Daily UTC hour" hint="0–23. India is UTC+5:30 so 6 UTC = 11:30 AM IST.">
           <input
             type="number"

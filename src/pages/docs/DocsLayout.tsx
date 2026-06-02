@@ -60,6 +60,7 @@ export default function DocsLayout({
           </Link>
           <nav className="flex items-center gap-3 text-xs">
             <Link to="/docs/user-guide" className={loc.pathname === '/docs/user-guide' ? 'text-emerald-400' : 'text-gray-400 hover:text-white'}>User Guide</Link>
+            <Link to="/docs/integrations" className={loc.pathname === '/docs/integrations' ? 'text-cyan-400' : 'text-gray-400 hover:text-white'}>Integrations</Link>
             <Link to="/docs/partner-guide" className={loc.pathname === '/docs/partner-guide' ? 'text-violet-400' : 'text-gray-400 hover:text-white'}>Partner Guide</Link>
             <Link to="/" className="text-gray-400 hover:text-white">← Back to Rudrans</Link>
           </nav>
@@ -181,7 +182,7 @@ export function Shot({ caption }: { caption: string }) {
 
 export function KV({ k, v }: { k: string; v: React.ReactNode }) {
   return (
-    <div className="grid grid-cols-[160px_1fr] gap-3 text-sm border-b border-dark-800 py-2">
+    <div className="grid grid-cols-1 sm:grid-cols-[160px_1fr] gap-1 sm:gap-3 text-sm border-b border-dark-800 py-2">
       <span className="text-gray-500">{k}</span>
       <span className="text-gray-200">{v}</span>
     </div>

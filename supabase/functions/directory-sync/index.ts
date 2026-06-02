@@ -133,10 +133,15 @@ async function syncM365(admin: ReturnType<typeof createClient>, orgId: string): 
   // aborts the entire paged enumeration. Re-add via a second call once the
   // customer grants AuditLog.Read.All.
   const userRows: Record<string, unknown>[] = [];
+  // Extended $select pulls every "Manage contact information" field so the
+  // Rudrans Employees page mirrors the M365 admin centre 1:1. The phone
+  // fields come back as arrays from Graph (businessPhones); we collapse to
+  // the first element since our DB stores a single office_phone string.
   for await (const u of graphPaged<Record<string, unknown>>(orgId, "/users", {
-    "$select": "id,userPrincipalName,displayName,mail,givenName,surname,jobTitle,department,accountEnabled,userType",
+    "$select": "id,userPrincipalName,displayName,mail,givenName,surname,jobTitle,department,accountEnabled,userType,officeLocation,businessPhones,faxNumber,mobilePhone,streetAddress,city,state,postalCode,country",
     "$top": 999,
   })) {
+    const phones = Array.isArray(u.businessPhones) ? u.businessPhones as string[] : [];
     userRows.push({
       org_id: orgId, provider: "m365",
       external_id: u.id as string,
@@ -150,6 +155,15 @@ async function syncM365(admin: ReturnType<typeof createClient>, orgId: string): 
       account_enabled: (u.accountEnabled as boolean) ?? null,
       is_shared_mailbox: false,
       last_signin_at: null,
+      office_location: u.officeLocation as string ?? null,
+      office_phone:    phones[0] ?? null,
+      fax_number:      u.faxNumber as string ?? null,
+      mobile_phone:    u.mobilePhone as string ?? null,
+      street_address:  u.streetAddress as string ?? null,
+      city:            u.city as string ?? null,
+      state_province:  u.state as string ?? null,
+      postal_code:     u.postalCode as string ?? null,
+      country:         u.country as string ?? null,
       raw: u,
       synced_at: new Date().toISOString(),
     });
@@ -205,16 +219,36 @@ async function syncM365(admin: ReturnType<typeof createClient>, orgId: string): 
   const { data: dbGroups } = await admin.from("directory_groups").select("id, external_id").eq("org_id", orgId).eq("provider", "m365");
   const groupIdByExternal = new Map<string, string>((dbGroups ?? []).map((g: { id: string; external_id: string }) => [g.external_id, g.id]));
 
+  // Groups can disappear between listGroups() and the per-group member
+  // enumeration (admin deleted them in Azure AD), and some special
+  // group types (mail-enabled distribution groups, on-prem-synced groups,
+  // service-principal-owned groups) reply 404 on member expansion even
+  // though they showed up in the list. Both cases used to abort the
+  // entire sync. Now we count them as "skipped" and continue — the rest
+  // of the org's users + groups still land cleanly.
+  let skippedGroups = 0;
   for (const [extId, intId] of groupIdByExternal) {
     const memberRows: Record<string, unknown>[] = [];
     let ownerCt = 0, memberCt = 0;
-    for await (const m of graphPaged<Record<string, unknown>>(orgId, `/groups/${extId}/members`, { "$select": "id", "$top": 999 })) {
-      memberRows.push({ org_id: orgId, group_id: intId, external_user_id: m.id as string, role: "member" });
-      memberCt++;
-    }
-    for await (const o of graphPaged<Record<string, unknown>>(orgId, `/groups/${extId}/owners`, { "$select": "id", "$top": 999 })) {
-      memberRows.push({ org_id: orgId, group_id: intId, external_user_id: o.id as string, role: "owner" });
-      ownerCt++;
+    try {
+      for await (const m of graphPaged<Record<string, unknown>>(orgId, `/groups/${extId}/members`, { "$select": "id", "$top": 999 })) {
+        memberRows.push({ org_id: orgId, group_id: intId, external_user_id: m.id as string, role: "member" });
+        memberCt++;
+      }
+      for await (const o of graphPaged<Record<string, unknown>>(orgId, `/groups/${extId}/owners`, { "$select": "id", "$top": 999 })) {
+        memberRows.push({ org_id: orgId, group_id: intId, external_user_id: o.id as string, role: "owner" });
+        ownerCt++;
+      }
+    } catch (e) {
+      const msg = (e as Error).message;
+      // 404 = group vanished or unsupported for member expansion. Skip cleanly.
+      // Anything else (auth, rate-limit, 5xx) is a real failure — re-throw.
+      if (/\b404\b/.test(msg) && /Request_ResourceNotFound|does not exist/i.test(msg)) {
+        skippedGroups++;
+        console.warn(`[directory-sync] m365 group ${extId} skipped: ${msg.slice(0, 200)}`);
+        continue;
+      }
+      throw e;
     }
     await admin.from("directory_group_members").delete().eq("group_id", intId);
     if (memberRows.length) {
@@ -222,6 +256,9 @@ async function syncM365(admin: ReturnType<typeof createClient>, orgId: string): 
       if (error) throw new Error(`m365 members upsert (${extId}): ${error.message}`);
     }
     await admin.from("directory_groups").update({ members_count: memberCt, owners_count: ownerCt, synced_at: new Date().toISOString() }).eq("id", intId);
+  }
+  if (skippedGroups > 0) {
+    console.log(`[directory-sync] m365 sync complete; ${skippedGroups} group(s) skipped (deleted or unsupported)`);
   }
 }
 
@@ -275,13 +312,27 @@ async function syncGoogle(admin: ReturnType<typeof createClient>, orgId: string)
   const { data: dbGroups } = await admin.from("directory_groups").select("id, external_id").eq("org_id", orgId).eq("provider", "google");
   const groupIdByExternal = new Map<string, string>((dbGroups ?? []).map((g: { id: string; external_id: string }) => [g.external_id, g.id]));
 
+  // Same "group vanished between list and member fetch" resilience as
+  // the M365 path. Google returns 404 (sometimes 403 on Suspended groups);
+  // both are transient per-group failures and shouldn't abort the run.
+  let skippedGroups = 0;
   for (const [extId, intId] of groupIdByExternal) {
     const memberRows: Record<string, unknown>[] = [];
     let ownerCt = 0, memberCt = 0;
-    for await (const m of googlePaged<Record<string, unknown>>(orgId, `/groups/${extId}/members`, "members", {})) {
-      const role = ((m.role as string) || "MEMBER").toLowerCase() === "owner" ? "owner" : "member";
-      memberRows.push({ org_id: orgId, group_id: intId, external_user_id: m.id as string, role });
-      if (role === "owner") ownerCt++; else memberCt++;
+    try {
+      for await (const m of googlePaged<Record<string, unknown>>(orgId, `/groups/${extId}/members`, "members", {})) {
+        const role = ((m.role as string) || "MEMBER").toLowerCase() === "owner" ? "owner" : "member";
+        memberRows.push({ org_id: orgId, group_id: intId, external_user_id: m.id as string, role });
+        if (role === "owner") ownerCt++; else memberCt++;
+      }
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (/\b40[34]\b/.test(msg)) {
+        skippedGroups++;
+        console.warn(`[directory-sync] google group ${extId} skipped: ${msg.slice(0, 200)}`);
+        continue;
+      }
+      throw e;
     }
     await admin.from("directory_group_members").delete().eq("group_id", intId);
     if (memberRows.length) {
@@ -289,6 +340,9 @@ async function syncGoogle(admin: ReturnType<typeof createClient>, orgId: string)
       if (error) throw new Error(`google members upsert (${extId}): ${error.message}`);
     }
     await admin.from("directory_groups").update({ members_count: memberCt, owners_count: ownerCt, synced_at: new Date().toISOString() }).eq("id", intId);
+  }
+  if (skippedGroups > 0) {
+    console.log(`[directory-sync] google sync complete; ${skippedGroups} group(s) skipped`);
   }
 }
 

@@ -233,7 +233,7 @@ export default function SuperAdminGuide() {
         <Sub title="Cloud (production)">
           <Code>{`https://supabase.com/dashboard/project/ttjazaxjhzvrzhptrpmd/sql/new`}</Code>
         </Sub>
-        <Sub title="Self-hosted (api.rudrans.com)">
+        <Sub title="Self-hosted (api-ems.wellnessextract.com)">
           <Code>{`ssh -i agent.pem ubuntu@54.241.176.28
 sudo docker exec -it supabase-db psql -U postgres -d postgres`}</Code>
         </Sub>
@@ -272,11 +272,11 @@ sudo docker exec -it supabase-db psql -U postgres -d postgres`}</Code>
           <Code>{`# Build
 npm run build         # outputs to ./out
 
-# Deploy to api.rudrans.com (self-hosted)
+# Deploy to api-ems.wellnessextract.com (self-hosted)
 rsync -avz out/ ubuntu@54.241.176.28:/tmp/rudrans-app-deploy/
 ssh ubuntu@54.241.176.28 'sudo rsync -a --delete /tmp/rudrans-app-deploy/ /var/www/rudrans-app/'
 
-# Supabase Cloud frontend lives at app.rudrans.com (same bundle, different .env)`}</Code>
+# Supabase Cloud frontend lives at ems.wellnessextract.com (same bundle, different .env)`}</Code>
         </Sub>
         <Sub title="Edge functions">
           <Code>{`# Cloud

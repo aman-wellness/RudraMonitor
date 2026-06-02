@@ -370,8 +370,71 @@ function EditEmployeeModal({
   const [doj, setDoj] = useState(employee.doj ?? '');
   const [personalEmail, setPersonalEmail] = useState(employee.personal_email ?? '');
   const [status, setStatus] = useState(employee.status as string);
+  // Contact-info fields (mirror Microsoft 365 "Manage contact information").
+  // Loaded async from `employees` because v_org_users doesn't surface them.
+  // While loading they stay empty; save() still works (untouched fields are
+  // simply not included in the patch).
+  const [officeLocation, setOfficeLocation] = useState('');
+  const [officePhone, setOfficePhone]       = useState('');
+  const [faxNumber, setFaxNumber]           = useState('');
+  const [mobilePhone, setMobilePhone]       = useState('');
+  const [streetAddress, setStreetAddress]   = useState('');
+  const [city, setCity]                     = useState('');
+  const [stateProvince, setStateProvince]   = useState('');
+  const [postalCode, setPostalCode]         = useState('');
+  const [country, setCountry]               = useState('');
+  const [contactLoaded, setContactLoaded]   = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // Pull the long-form contact fields straight from `employees`. They're not
+  // on v_org_users to keep the list query lean, but the edit modal needs
+  // them so the customer can review + edit what's currently on the M365
+  // user's contact form. If the employee doesn't have a Rudrans row yet
+  // (directory-only), seed from directory_users instead.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (employee.employee_id) {
+        const { data } = await supabase
+          .from('employees')
+          .select('office_location, office_phone, fax_number, mobile_phone, street_address, city, state_province, postal_code, country')
+          .eq('id', employee.employee_id)
+          .maybeSingle();
+        if (cancelled || !data) { setContactLoaded(true); return; }
+        const e = data as Record<string, string | null>;
+        setOfficeLocation(e.office_location ?? '');
+        setOfficePhone(e.office_phone ?? '');
+        setFaxNumber(e.fax_number ?? '');
+        setMobilePhone(e.mobile_phone ?? '');
+        setStreetAddress(e.street_address ?? '');
+        setCity(e.city ?? '');
+        setStateProvince(e.state_province ?? '');
+        setPostalCode(e.postal_code ?? '');
+        setCountry(e.country ?? '');
+      } else if (employee.m365_user_id || employee.google_user_id) {
+        const ext = employee.m365_user_id ?? employee.google_user_id;
+        const { data } = await supabase
+          .from('directory_users')
+          .select('office_location, office_phone, fax_number, mobile_phone, street_address, city, state_province, postal_code, country')
+          .eq('external_id', ext!)
+          .maybeSingle();
+        if (cancelled || !data) { setContactLoaded(true); return; }
+        const e = data as Record<string, string | null>;
+        setOfficeLocation(e.office_location ?? '');
+        setOfficePhone(e.office_phone ?? '');
+        setFaxNumber(e.fax_number ?? '');
+        setMobilePhone(e.mobile_phone ?? '');
+        setStreetAddress(e.street_address ?? '');
+        setCity(e.city ?? '');
+        setStateProvince(e.state_province ?? '');
+        setPostalCode(e.postal_code ?? '');
+        setCountry(e.country ?? '');
+      }
+      if (!cancelled) setContactLoaded(true);
+    })();
+    return () => { cancelled = true; };
+  }, [employee.employee_id, employee.m365_user_id, employee.google_user_id]);
 
   // Manager candidates: anyone in the org except self and offboarded users.
   // Directory-only users get an employees row auto-created on save.
@@ -404,6 +467,17 @@ function EditEmployeeModal({
             doj: doj || null,
             personal_email: personalEmail.trim() || null,
             status,
+            // Contact info — pushed to Graph automatically by employee-save
+            // for users linked to an M365 account.
+            office_location: officeLocation.trim() || null,
+            office_phone:    officePhone.trim() || null,
+            fax_number:      faxNumber.trim() || null,
+            mobile_phone:    mobilePhone.trim() || null,
+            street_address:  streetAddress.trim() || null,
+            city:            city.trim() || null,
+            state_province:  stateProvince.trim() || null,
+            postal_code:     postalCode.trim() || null,
+            country:         country.trim() || null,
           },
         }),
       });
@@ -419,8 +493,8 @@ function EditEmployeeModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={onClose}>
-      <div className="bg-dark-800 border border-dark-700 rounded-xl w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
-        <header className="px-5 py-4 border-b border-dark-700 flex items-center justify-between">
+      <div className="bg-dark-800 border border-dark-700 rounded-xl w-full max-w-2xl max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <header className="px-5 py-4 border-b border-dark-700 flex items-center justify-between flex-shrink-0">
           <div className="min-w-0">
             <h2 className="text-lg text-white font-semibold truncate">Edit {employee.display_name}</h2>
             <p className="text-xs text-gray-500 truncate">{employee.work_email ?? '—'}</p>
@@ -428,7 +502,13 @@ function EditEmployeeModal({
           <button onClick={onClose} className="w-8 h-8 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-400"><i className="ri-close-line" /></button>
         </header>
 
-        <div className="p-5 space-y-3">
+        <div className="p-5 space-y-3 overflow-y-auto">
+          {employee.m365_user_id && (
+            <div className="px-3 py-2 rounded-lg text-[11px] text-sky-200 bg-sky-500/10 border border-sky-500/30 flex items-start gap-2">
+              <i className="ri-microsoft-fill text-base mt-0.5" />
+              <span>Changes to contact info + manager will be mirrored to this user's Microsoft 365 profile.</span>
+            </div>
+          )}
           {err && <div className="px-3 py-2 rounded-lg text-xs bg-rose-500/10 border border-rose-500/30 text-rose-300">{err}</div>}
 
           <label className="block">
@@ -451,7 +531,12 @@ function EditEmployeeModal({
           </div>
 
           <label className="block">
-            <span className="block text-xs text-gray-400 mb-1">Reports to (manager)</span>
+            <span className="block text-xs text-gray-400 mb-1">
+              Manager (reports to)
+              {employee.m365_user_id && (
+                <span className="ml-2 text-[10px] text-sky-300 font-normal">· syncs to Microsoft 365</span>
+              )}
+            </span>
             <select value={managerRowId} onChange={(e) => setManagerRowId(e.target.value)} className={inputCls}>
               <option value="">— no manager —</option>
               {managerCandidates.map((m) => (
@@ -460,7 +545,10 @@ function EditEmployeeModal({
                 </option>
               ))}
             </select>
-            <p className="text-[11px] text-gray-500 mt-1">Any directory user can be picked. We'll auto-create their Rudrans record on save.</p>
+            <p className="text-[11px] text-gray-500 mt-1">
+              Any directory user can be picked. We'll auto-create their Rudrans record on save.
+              {employee.m365_user_id && <span className="text-sky-300"> Manager will also be set on this user in Microsoft 365.</span>}
+            </p>
           </label>
 
           <div className="grid grid-cols-2 gap-3">
@@ -482,9 +570,64 @@ function EditEmployeeModal({
             <span className="block text-xs text-gray-400 mb-1">Personal email (welcome / fallback mail)</span>
             <input type="email" value={personalEmail} onChange={(e) => setPersonalEmail(e.target.value)} className={inputCls} placeholder="firstname@gmail.com" />
           </label>
+
+          {/* ──── Contact information (M365 "Manage contact information" parity) ──── */}
+          <div className="pt-2 mt-2 border-t border-dark-700">
+            <p className="text-[11px] uppercase tracking-wider text-gray-500 font-semibold mb-2">
+              Contact information {!contactLoaded && <span className="text-gray-600 normal-case font-normal ml-1">· loading…</span>}
+            </p>
+
+            <label className="block mb-3">
+              <span className="block text-xs text-gray-400 mb-1">Office</span>
+              <input value={officeLocation} onChange={(e) => setOfficeLocation(e.target.value)} className={inputCls} />
+            </label>
+
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              <label className="block">
+                <span className="block text-xs text-gray-400 mb-1">Office phone</span>
+                <input value={officePhone} onChange={(e) => setOfficePhone(e.target.value)} className={inputCls} />
+              </label>
+              <label className="block">
+                <span className="block text-xs text-gray-400 mb-1">Fax number</span>
+                <input value={faxNumber} onChange={(e) => setFaxNumber(e.target.value)} className={inputCls} />
+              </label>
+            </div>
+
+            <label className="block mb-3">
+              <span className="block text-xs text-gray-400 mb-1">Mobile phone</span>
+              <input value={mobilePhone} onChange={(e) => setMobilePhone(e.target.value)} className={inputCls} />
+            </label>
+
+            <label className="block mb-3">
+              <span className="block text-xs text-gray-400 mb-1">Street address</span>
+              <input value={streetAddress} onChange={(e) => setStreetAddress(e.target.value)} className={inputCls} />
+            </label>
+
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              <label className="block">
+                <span className="block text-xs text-gray-400 mb-1">City</span>
+                <input value={city} onChange={(e) => setCity(e.target.value)} className={inputCls} />
+              </label>
+              <label className="block">
+                <span className="block text-xs text-gray-400 mb-1">State or province</span>
+                <input value={stateProvince} onChange={(e) => setStateProvince(e.target.value)} className={inputCls} />
+              </label>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block">
+                <span className="block text-xs text-gray-400 mb-1">Zip or postal code</span>
+                <input value={postalCode} onChange={(e) => setPostalCode(e.target.value)} className={inputCls} />
+              </label>
+              <label className="block">
+                <span className="block text-xs text-gray-400 mb-1">Country or region</span>
+                <input value={country} onChange={(e) => setCountry(e.target.value)} className={inputCls} />
+              </label>
+            </div>
+          </div>
         </div>
 
-        <footer className="px-5 py-3 border-t border-dark-700 flex justify-end gap-2">
+        <footer className="px-5 py-3 border-t border-dark-700 flex justify-end gap-2 flex-shrink-0">
           <button disabled={busy} onClick={onClose} className="px-4 py-2 bg-dark-700 hover:bg-dark-600 rounded-lg text-sm text-white">Cancel</button>
           <button disabled={busy} onClick={save} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-lg text-sm text-white font-medium">
             {busy ? 'Saving…' : 'Save'}

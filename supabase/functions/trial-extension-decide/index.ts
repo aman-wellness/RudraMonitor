@@ -44,12 +44,31 @@ Deno.serve(async (req) => {
 
   const { data: reqRow } = await admin
     .from("trial_extension_requests")
-    .select("id, org_id, status")
+    .select("id, org_id, status, kind, days_requested")
     .eq("id", body.request_id)
     .maybeSingle();
   if (!reqRow) return json({ error: "request not found" }, 404);
   if (reqRow.status !== "pending") {
     return json({ error: `request already ${reqRow.status}` }, 409);
+  }
+
+  if (body.decision === "approved") {
+    if (reqRow.kind === "time_extension") {
+      // RPC handles status update + audit log atomically.
+      const { error: rpcErr } = await admin.rpc("approve_trial_time_extension", {
+        p_request_id: body.request_id,
+        p_super_admin_id: uid,
+        p_decision_note: note,
+      });
+      if (rpcErr) return json({ error: `approve_trial_time_extension: ${rpcErr.message}` }, 500);
+      return json({ ok: true, kind: reqRow.kind, days: reqRow.days_requested });
+    }
+    // feature_access: flip the flag.
+    const { error: orgErr } = await admin
+      .from("organizations")
+      .update({ trial_full_access: true })
+      .eq("id", reqRow.org_id);
+    if (orgErr) return json({ error: `Approved but org flip failed: ${orgErr.message}` }, 500);
   }
 
   const { error: updErr } = await admin
@@ -63,19 +82,11 @@ Deno.serve(async (req) => {
     .eq("id", body.request_id);
   if (updErr) return json({ error: `Could not update request: ${updErr.message}` }, 500);
 
-  if (body.decision === "approved") {
-    const { error: orgErr } = await admin
-      .from("organizations")
-      .update({ trial_full_access: true })
-      .eq("id", reqRow.org_id);
-    if (orgErr) return json({ error: `Approved but org flip failed: ${orgErr.message}` }, 500);
-  }
-
   await admin.from("audit_log").insert({
     actor_user: uid, actor_role: "super_admin",
-    action: `trial.full_access.${body.decision}`,
+    action: `trial.${reqRow.kind}.${body.decision}`,
     target_type: "organization", target_id: reqRow.org_id,
-    metadata: { request_id: body.request_id, note },
+    metadata: { request_id: body.request_id, note, kind: reqRow.kind },
   });
 
   return json({ ok: true });

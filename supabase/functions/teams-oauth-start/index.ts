@@ -78,7 +78,7 @@ Deno.serve(async (req) => {
   // The internal SUPABASE_URL is `http://kong:8000` in self-hosted Docker
   // — Microsoft rejects that as a redirect. Use the public URL configured
   // in the integrations table.
-  const publicBase = (await getIntegration("PUBLIC_API_BASE_URL").catch(() => "")) || "https://api.rudrans.com";
+  const publicBase = (await getIntegration("PUBLIC_API_BASE_URL").catch(() => "")) || "https://api-ems.wellnessextract.com";
   const redirect = `${publicBase}/functions/v1/teams-oauth-callback`;
   const url = new URL(`https://login.microsoftonline.com/${tenant}/oauth2/v2.0/authorize`);
   url.searchParams.set("client_id", clientId);

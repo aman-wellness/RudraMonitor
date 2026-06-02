@@ -180,7 +180,7 @@ async function sendSilentFailureEmail(
         <thead><tr><th style="text-align:left;color:#888">Platform</th><th style="text-align:left;color:#888">Last invoice</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
-      <p style="margin:18px 0"><a href="https://app.rudrans.com/employees/auto-invoice" style="background:#111;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none">Open Auto-Invoice center</a></p>
+      <p style="margin:18px 0"><a href="${(Deno.env.get("APP_URL") ?? "https://ems.wellnessextract.com").replace(/\/+$/, "")}/employees/auto-invoice" style="background:#111;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none">Open Auto-Invoice center</a></p>
       <p style="font-size:11px;color:#aaa">We'll re-alert in 14 days if nothing changes. Disable auto-fetch per credential to silence.</p>
     </div>`;
   const { sendGraphEmail } = await import("../_shared/graph-email.ts");
@@ -221,7 +221,7 @@ async function sendDigestEmail(
         <tr><td style="padding:6px 12px 6px 0;color:#888">Open OTP / human review</td><td>${s.openNeedsOtp}</td></tr>
         <tr><td style="padding:6px 12px 6px 0;color:#888">Forwarded amount</td><td>${s.forwardedAmount.toLocaleString()}</td></tr>
       </table>
-      <p style="margin:18px 0"><a href="https://app.rudrans.com/employees/auto-invoice" style="background:#111;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none">Open Auto-Invoice center</a></p>
+      <p style="margin:18px 0"><a href="${(Deno.env.get("APP_URL") ?? "https://ems.wellnessextract.com").replace(/\/+$/, "")}/employees/auto-invoice" style="background:#111;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none">Open Auto-Invoice center</a></p>
     </div>`;
   const { sendGraphEmail } = await import("../_shared/graph-email.ts");
   await sendGraphEmail({

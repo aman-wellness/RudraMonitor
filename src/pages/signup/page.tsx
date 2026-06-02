@@ -1,7 +1,10 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
+import { startSubscriptionCheckout } from '../../lib/razorpay';
 import { useAuth } from '../../context/AuthContext';
+import PhoneInput from '@/components/forms/PhoneInput';
+import CountryStatePicker from '@/components/forms/CountryStatePicker';
 
 export default function Signup() {
   const navigate = useNavigate();
@@ -18,10 +21,12 @@ export default function Signup() {
     confirmPassword: '',
     companyName: '',
     gstNumber: '',
+    panNumber: '',
     address: '',
     city: '',
     state: '',
-    country: 'India',
+    postalCode: '',
+    country: 'IN', // ISO2 — drives PhoneInput default + CountryStatePicker
     phone: '',
   });
   const [showPassword, setShowPassword] = useState(false);
@@ -124,28 +129,48 @@ export default function Signup() {
 
     setSubmitting(true);
     try {
-      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/start-trial-signup`;
+      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/razorpay-start-signup`;
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: import.meta.env.VITE_SUPABASE_ANON_KEY },
         body: JSON.stringify({
-          full_name:  formData.fullName,
-          email:      formData.email,
-          org_name:   formData.companyName,
-          phone:      formData.phone || null,
-          country:    formData.country,
-          trial_plan: trialPlan,
+          full_name:   formData.fullName,
+          email:       formData.email,
+          org_name:    formData.companyName,
+          plan_code:   trialPlan,
+          phone:       formData.phone || null,
+          country:     formData.country,
+          gst_number:  formData.gstNumber || null,
+          pan_number:  formData.panNumber || null,
+          address:     formData.address || null,
+          city:        formData.city || null,
+          state:       formData.state || null,
+          postal_code: formData.postalCode || null,
         }),
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body?.error ?? 'Signup failed');
 
-      // Trial is provisioned + welcome/invite email has been sent. Land on
-      // the success screen so the user knows to check their inbox.
-      navigate(`/signup-success?email=${encodeURIComponent(formData.email)}`);
+      // Open Razorpay Checkout for the ₹2 / $0.50 card-verification charge.
+      // The trial only starts after the webhook fires (subscription.authenticated)
+      // — it creates the auth user, sends the invite email, and provisions the org.
+      await startSubscriptionCheckout({
+        keyId:         body.key_id,
+        subscriptionId: body.subscription_id,
+        customerName:  formData.fullName,
+        customerEmail: formData.email,
+        customerPhone: formData.phone || null,
+        amountLabel:   body.auth_amount_label,
+        onSuccess: () => {
+          navigate(`/signup-success?email=${encodeURIComponent(formData.email)}`);
+        },
+        onDismiss: () => {
+          setError('Payment cancelled. Your trial will start once the card-verification charge succeeds.');
+          setSubmitting(false);
+        },
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Signup failed');
-    } finally {
       setSubmitting(false);
     }
   };
@@ -158,7 +183,7 @@ export default function Signup() {
       <div className="aurora aurora-c" aria-hidden />
       <div className="absolute inset-0 grid-overlay pointer-events-none" aria-hidden />
 
-      <div className="relative z-10 w-full max-w-lg">
+      <div className={`relative z-10 w-full ${step === 2 ? 'max-w-3xl' : 'max-w-lg'}`}>
         {/* Logo */}
         <div className="text-center mb-8">
           <Link to="/" className="inline-flex items-center gap-3">
@@ -193,7 +218,7 @@ export default function Signup() {
           {/* Social Login */}
           {step === 1 && (
             <>
-              <div className="grid grid-cols-2 gap-3 mb-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
                 <button
                   type="button"
                   onClick={() => handleOAuth('google')}
@@ -347,83 +372,73 @@ export default function Signup() {
                   </p>
                 </div>
 
-                <div>
-                  <label className="block text-sm text-gray-400 mb-1.5">
-                    Company Name
-                  </label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center text-gray-500">
-                      <i className="ri-building-line" />
-                    </span>
-                    <input
-                      type="text"
-                      name="companyName"
-                      value={formData.companyName}
-                      onChange={handleChange}
-                      placeholder="Your Company Pvt Ltd"
-                      required
-                      className="w-full bg-dark-900 border border-dark-700 rounded-lg pl-10 pr-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-sm text-gray-400 mb-1.5">
-                    GST Number (Optional)
-                  </label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center text-gray-500">
-                      <i className="ri-barcode-line" />
-                    </span>
-                    <input
-                      type="text"
-                      name="gstNumber"
-                      value={formData.gstNumber}
-                      onChange={handleChange}
-                      placeholder="22AAAAA0000A1Z5"
-                      className="w-full bg-dark-900 border border-dark-700 rounded-lg pl-10 pr-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors"
-                    />
-                  </div>
-                  <p className="text-xs text-gray-600 mt-1">
-                    Enter GST number to auto-fetch company details
-                  </p>
-                </div>
-
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm text-gray-400 mb-1.5">Phone Number</label>
+                    <label className="block text-sm text-gray-400 mb-1.5">
+                      Company Name
+                    </label>
                     <div className="relative">
                       <span className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center text-gray-500">
-                        <i className="ri-phone-line" />
+                        <i className="ri-building-line" />
                       </span>
                       <input
-                        type="tel"
-                        name="phone"
-                        value={formData.phone}
+                        type="text"
+                        name="companyName"
+                        value={formData.companyName}
                         onChange={handleChange}
-                        placeholder="+91 98765 43210"
+                        placeholder="Your Company Pvt Ltd"
                         required
                         className="w-full bg-dark-900 border border-dark-700 rounded-lg pl-10 pr-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors"
                       />
                     </div>
                   </div>
+                  <div>
+                    <label className="block text-sm text-gray-400 mb-1.5">Phone Number</label>
+                    <PhoneInput
+                      value={formData.phone}
+                      onChange={(next) => setFormData({ ...formData, phone: next })}
+                      defaultCountry={formData.country || 'IN'}
+                      className="flex-1 min-w-0 bg-dark-900 border border-dark-700 rounded-lg px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
 
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm text-gray-400 mb-1.5">
-                      Country
+                      GST Number (Optional)
                     </label>
-                    <select
-                      name="country"
-                      value={formData.country}
-                      onChange={handleChange}
-                      className="w-full bg-dark-900 border border-dark-700 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500 transition-colors"
-                    >
-                      <option value="India">India</option>
-                      <option value="USA">USA</option>
-                      <option value="UK">UK</option>
-                      <option value="Canada">Canada</option>
-                      <option value="Australia">Australia</option>
-                    </select>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center text-gray-500">
+                        <i className="ri-barcode-line" />
+                      </span>
+                      <input
+                        type="text"
+                        name="gstNumber"
+                        value={formData.gstNumber}
+                        onChange={handleChange}
+                        placeholder="22AAAAA0000A1Z5"
+                        className="w-full bg-dark-900 border border-dark-700 rounded-lg pl-10 pr-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-400 mb-1.5">
+                      PAN Number
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center text-gray-500">
+                        <i className="ri-id-card-line" />
+                      </span>
+                      <input
+                        type="text"
+                        name="panNumber"
+                        value={formData.panNumber}
+                        onChange={handleChange}
+                        placeholder="AAAAA0000A"
+                        className="w-full bg-dark-900 border border-dark-700 rounded-lg pl-10 pr-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors uppercase"
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -447,31 +462,27 @@ export default function Signup() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm text-gray-400 mb-1.5">
-                      City
-                    </label>
-                    <input
-                      type="text"
-                      name="city"
-                      value={formData.city}
-                      onChange={handleChange}
-                      placeholder="City"
-                      className="w-full bg-dark-900 border border-dark-700 rounded-lg px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors"
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                  <div className="sm:col-span-3">
+                    <CountryStatePicker
+                      country={formData.country}
+                      state={formData.state}
+                      city={formData.city}
+                      onChange={({ country, state, city }) => setFormData({ ...formData, country, state, city })}
+                      inputClassName="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500"
                     />
                   </div>
                   <div>
-                    <label className="block text-sm text-gray-400 mb-1.5">
-                      State
-                    </label>
+                    <label className="text-[11px] text-gray-500 uppercase tracking-wider block">Pincode</label>
                     <input
                       type="text"
-                      name="state"
-                      value={formData.state}
+                      name="postalCode"
+                      value={formData.postalCode}
                       onChange={handleChange}
-                      placeholder="State"
-                      className="w-full bg-dark-900 border border-dark-700 rounded-lg px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors"
+                      placeholder="ZIP code"
+                      inputMode="numeric"
+                      maxLength={10}
+                      className="mt-1 w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500"
                     />
                   </div>
                 </div>
@@ -490,7 +501,7 @@ export default function Signup() {
               className="w-full bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60 disabled:cursor-not-allowed text-white py-2.5 rounded-lg font-medium transition-all duration-200"
               title={step === 1 && !emailVerified ? 'Verify your email with the OTP first' : undefined}
             >
-              {submitting ? 'Creating trial…' : step === 1 ? 'Continue' : 'Start 14-Day Trial'}
+              {submitting ? 'Opening payment…' : step === 1 ? 'Continue' : 'Verify Card & Start 14-Day Trial'}
             </button>
           </form>
 

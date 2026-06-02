@@ -31,7 +31,7 @@ export default function Architecture() {
         <KV k="Backend" v="Supabase: Postgres 15 + PostgREST + GoTrue (Auth) + Edge Functions (Deno)" />
         <KV k="Desktop agent" v="Tauri 2 (Rust + WebView) with notify-rs filesystem watcher + uiautomation crate (Windows) / osascript (macOS)" />
         <KV k="AI" v="Anthropic Claude Haiku 4.5 (primary classifier), OpenAI GPT-4o-mini (fallback)" />
-        <KV k="Hosting" v="Two parallel stacks: Supabase Cloud (ttjazaxjhzvrzhptrpmd) AND self-hosted Supabase on EC2 (api.rudrans.com)" />
+        <KV k="Hosting" v="Two parallel stacks: Supabase Cloud (ttjazaxjhzvrzhptrpmd) AND self-hosted Supabase on EC2 (api-ems.wellnessextract.com)" />
         <KV k="Reverse proxy" v="nginx 1.24 on Ubuntu 22.04" />
         <KV k="Builds" v="GitHub Actions for agent multi-platform releases (Windows, macOS arm/intel, Linux)" />
       </Section>
@@ -413,15 +413,15 @@ create policy XXX_write on public.XXX
           <Code>{`Project ref: ttjazaxjhzvrzhptrpmd
 URL:         https://ttjazaxjhzvrzhptrpmd.supabase.co
 Region:      West US (Oregon)
-Frontend:    https://rudrans.com (Vercel or static via nginx app.rudrans.com)
-Auth:        Cloud-managed, GOTRUE_SITE_URL=https://app.rudrans.com`}</Code>
+Frontend:    https://ems.wellnessextract.com (Vercel or static via nginx ems.wellnessextract.com)
+Auth:        Cloud-managed, GOTRUE_SITE_URL=https://ems.wellnessextract.com`}</Code>
         </Sub>
         <Sub title="Self-hosted (EC2 + Docker) — parallel">
           <Code>{`EC2:         54.241.176.28 (Ubuntu 22.04)
 SSH:         ssh -i agent.pem ubuntu@54.241.176.28
 Stack:       /opt/rudrans/supabase/docker/docker-compose.yml
-API:         https://api.rudrans.com (nginx → kong:8000 → auth/rest/realtime/functions)
-Frontend:    https://app.rudrans.com (nginx serves /var/www/rudrans-app/)
+API:         https://api-ems.wellnessextract.com (nginx → kong:8000 → auth/rest/realtime/functions)
+Frontend:    https://ems.wellnessextract.com (nginx serves /var/www/rudrans-app/)
 TLS:         Let's Encrypt via certbot`}</Code>
         </Sub>
         <Sub title="nginx hardening (migration 0057 + conf.d)">
@@ -430,7 +430,7 @@ TLS:         Let's Encrypt via certbot`}</Code>
             'Connection cap: 50 concurrent per IP',
             'HSTS preload: max-age=63072000',
             'X-Frame-Options DENY · X-Content-Type-Options nosniff · Referrer-Policy strict-origin',
-            'CSP on app.rudrans.com whitelisting only Supabase + Razorpay + Google + Microsoft + readdy CDN',
+            'CSP on ems.wellnessextract.com whitelisting only Supabase + Razorpay + Google + Microsoft + readdy CDN',
             'gzip enabled with proper gzip_types (JS / CSS / JSON / SVG)',
             'proxy_buffer_size 128k for Supabase OAuth callback (long JWT in Set-Cookie)',
           ]} />

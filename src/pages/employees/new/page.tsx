@@ -221,7 +221,7 @@ export default function NewEmployee() {
                 <Input value={form.employee_code} onChange={(v) => onChange('employee_code', v)} placeholder="EMP-1234" />
               </Row>
             </div>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               <Row label="Mail nickname *">
                 <Input value={form.mail_nickname} onChange={(v) => onChange('mail_nickname', v.toLowerCase().replace(/[^a-z0-9._-]/g, ''))} placeholder="priya.sharma" />
               </Row>

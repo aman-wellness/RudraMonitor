@@ -5,7 +5,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useAgents } from '@/lib/dataHooks';
 import { supabase } from '@/lib/supabase';
 
-const RELEASES_BASE = 'https://api.rudrans.com/storage/v1/object/public/releases';
+const RELEASES_BASE = 'https://api-ems.wellnessextract.com/storage/v1/object/public/releases';
 // Builds are produced by .github/workflows/build-agent.yml on every workflow_dispatch / tag push.
 // File names embed the git ref (`v0.2.0` for tag pushes, `main` for branch builds).
 // We default to the latest tagged release and fetch the actual current version
@@ -58,18 +58,19 @@ const buildOsData = (version: string, ref: string) => [
     arch: 'x64',
     downloads: [
       {
-        label: 'Security Assistant (.msi)',
-        filename: `Security-Assistant-Windows-${ref}.msi`,
-        url: `${RELEASES_BASE}/Security-Assistant-Windows-${ref}.msi`,
+        label: 'Security Assistant (.exe)',
+        filename: `Security-Assistant-Windows-${ref}.exe`,
+        url: `${RELEASES_BASE}/Security-Assistant-Windows-${ref}.exe`,
         size: '~12 MB',
         version,
       },
     ],
     steps: [
-      'Download the .msi installer',
-      'Double-click and follow the installer (admin/UAC prompt)',
+      'Download the .exe installer',
+      'Double-click to run — installs silently to your user profile (no admin prompt)',
+      'If Windows SmartScreen warns "Unknown publisher" → click "More info" → "Run anyway"',
       'Enrollment dialog opens — paste the License Key below and your name',
-      'Agent runs hidden in the background; auto-starts on every reboot',
+      'Agent runs hidden in the tray; auto-updates silently going forward',
     ],
   },
   {
@@ -197,7 +198,7 @@ export default function SetupPage() {
 
   // Generate a tiny shell/batch script that:
   //   1. Drops a prefill JSON containing the agent name in the agent's data dir.
-  //   2. Downloads the standard .pkg / .msi / .deb from Supabase Storage.
+  //   2. Downloads the standard .pkg / .exe / .deb from Supabase Storage.
   //   3. Runs the installer.
   // The Rust agent reads this prefill on first launch, hides the name field, and only
   // asks the employee for the license key.
@@ -228,17 +229,22 @@ echo "Done. Launch Security Assistant from /Applications and enter your License 
     } else if (os === 'Windows') {
       filename = `${baseFile}.bat`;
       mime = 'application/octet-stream';
+      // v0.4.0+ ships as an NSIS .exe installed per-user. The /S flag is
+      // NSIS's silent-install mode — no UAC, no UI, no user clicks. The
+      // installer writes to %LOCALAPPDATA%\Programs\Security Assistant\
+      // and registers HKCU\...\Run for auto-start.
       content = `@echo off
 setlocal
 set "APP_DATA=%APPDATA%\\SecurityAssistant"
 if not exist "%APP_DATA%" mkdir "%APP_DATA%"
 > "%APP_DATA%\\prefill.json" echo {"agent_name":"${safeName}"}
-set "URL=${RELEASES_BASE}/Security-Assistant-Windows-${BUILD_REF}.msi"
+set "URL=${RELEASES_BASE}/Security-Assistant-Windows-${BUILD_REF}.exe"
 echo Downloading Security Assistant...
-powershell -Command "Invoke-WebRequest -Uri '%URL%' -OutFile '%TEMP%\\security-assistant.msi'"
-echo Installing (UAC prompt may appear)...
-msiexec /i "%TEMP%\\security-assistant.msi" /qb
-echo Done. Launch Security Assistant and enter your License Key.
+powershell -Command "Invoke-WebRequest -Uri '%URL%' -OutFile '%TEMP%\\security-assistant.exe'"
+echo Installing silently...
+"%TEMP%\\security-assistant.exe" /S
+echo Done. Security Assistant is running in the system tray.
+echo Enter your License Key in the enrollment dialog when prompted.
 pause
 `;
     } else {
@@ -533,7 +539,7 @@ echo "Done. Launch Security Assistant and enter your License Key."
             {[
               {
                 title: 'Windows (GPO / Intune)',
-                desc: 'Push .msi via Group Policy or Microsoft Intune. Silent install with embedded license key.',
+                desc: 'Push the NSIS .exe via Group Policy or Microsoft Intune. Silent install (/S) per-user with embedded license key.',
                 icon: 'ri-windows-line',
                 color: 'text-blue-400',
                 bg: 'bg-blue-500/10',

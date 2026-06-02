@@ -24,18 +24,24 @@ interface Safe {
   teams_tenant_id: string | null;
   teams_team_id: string | null;
   teams_channel_id: string | null;
+  teams_enabled: boolean;
   google_chat_connected: boolean;
   google_chat_space_name: string | null;
+  google_chat_enabled: boolean;
   slack_connected: boolean;
   slack_channel_id: string | null;
+  slack_enabled: boolean;
   whatsapp_connected: boolean;
   whatsapp_provider: 'meta_cloud' | 'twilio' | null;
   whatsapp_phone_id: string | null;
   whatsapp_admin_numbers: string[];
   whatsapp_template_name: string | null;
+  whatsapp_enabled: boolean;
   magic_link_base_url: string | null;
   updated_at: string | null;
 }
+
+type ChannelKey = 'slack' | 'teams' | 'google_chat' | 'whatsapp';
 
 export default function OtpSettingsPage() {
   const [s, setS] = useState<Safe | null>(null);
@@ -98,10 +104,10 @@ export default function OtpSettingsPage() {
         ) : (
           <>
             <UniversalCard s={s} />
-            <SlackCard    s={s} saving={saving === 'slack'} onSave={(p) => save('slack', p)} />
-            <TeamsCard    s={s} saving={saving === 'teams'} onSave={(p) => save('teams', p)} />
-            <GChatCard    s={s} saving={saving === 'gchat'} onSave={(p) => save('gchat', p)} />
-            <WhatsappCard s={s} saving={saving === 'whatsapp'} onSave={(p) => save('whatsapp', p)} />
+            <SlackCard    s={s} saving={saving === 'slack'} onSave={(p) => save('slack', p)} onMutated={load} />
+            <TeamsCard    s={s} saving={saving === 'teams'} onSave={(p) => save('teams', p)} onMutated={load} />
+            <GChatCard    s={s} saving={saving === 'gchat'} onSave={(p) => save('gchat', p)} onMutated={load} />
+            <WhatsappCard s={s} saving={saving === 'whatsapp'} onSave={(p) => save('whatsapp', p)} onMutated={load} />
           </>
         )}
       </div>
@@ -111,24 +117,114 @@ export default function OtpSettingsPage() {
 
 // ── Cards ────────────────────────────────────────────────────────────────
 
-function Card({ title, connected, hint, children }: { title: string; connected: boolean; hint: string; children: React.ReactNode }) {
+function Card({
+  title, connected, enabled, hint, channelKey, onSave, onMutated, children,
+}: {
+  title: string;
+  connected: boolean;
+  // `true`/`false` when the channel is connected; `undefined` when the
+  // toggle should be hidden (still disconnected — no behaviour to toggle).
+  enabled?: boolean;
+  hint: string;
+  channelKey?: ChannelKey;
+  onSave?: (p: Record<string, unknown>) => void;
+  onMutated?: () => Promise<void> | void;
+  children: React.ReactNode;
+}) {
+  const status = !connected
+    ? { label: 'Not connected', cls: 'bg-gray-500/15 text-gray-400' }
+    : enabled === false
+      ? { label: 'Disabled',    cls: 'bg-amber-500/15 text-amber-300' }
+      : { label: 'Connected',   cls: 'bg-emerald-500/15 text-emerald-300' };
   return (
     <section className="bg-dark-800 border border-dark-700 rounded-xl p-5">
-      <div className="flex items-start justify-between mb-2">
-        <div>
+      <div className="flex items-start justify-between mb-2 gap-3 flex-wrap">
+        <div className="min-w-0">
           <h2 className="text-white font-medium">{title}</h2>
           <p className="text-xs text-gray-500 mt-0.5">{hint}</p>
         </div>
-        <span className={`text-[11px] px-2 py-0.5 rounded-full ${connected ? 'bg-emerald-500/15 text-emerald-300' : 'bg-gray-500/15 text-gray-400'}`}>
-          {connected ? 'Connected' : 'Not connected'}
+        <span className={`text-[11px] px-2 py-0.5 rounded-full ${status.cls}`}>
+          {status.label}
         </span>
       </div>
       <div className="mt-3 space-y-3">{children}</div>
+      {/* Connection controls (Enable / Disconnect) — only when actually connected. */}
+      {connected && channelKey && onSave && onMutated && (
+        <ConnectionControls
+          channelKey={channelKey}
+          enabled={enabled ?? true}
+          onSave={onSave}
+          onMutated={onMutated}
+        />
+      )}
     </section>
   );
 }
 
-function Row({ label, children, help }: { label: string; children: React.ReactNode; help?: string }) {
+// Toggle + Disconnect row at the bottom of each channel card. Lives here
+// (not inside each <ChannelCard>) so the wiring stays in one place and the
+// behaviour is identical across Slack / Teams / Google Chat / WhatsApp.
+function ConnectionControls({
+  channelKey, enabled, onSave, onMutated,
+}: {
+  channelKey: ChannelKey;
+  enabled: boolean;
+  onSave: (p: Record<string, unknown>) => void;
+  onMutated: () => Promise<void> | void;
+}) {
+  const [disconnecting, setDisconnecting] = useState(false);
+  const toggle = () => {
+    onSave({ [`${channelKey}_enabled`]: !enabled });
+  };
+  const disconnect = async () => {
+    if (!confirm(
+      `Disconnect ${channelLabel(channelKey)}? This wipes the stored token + IDs. ` +
+      `If you just want to pause delivery without losing the credentials, use the toggle instead.`,
+    )) return;
+    setDisconnecting(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const r = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/otp-channel-disconnect`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session?.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel: channelKey }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error ?? `${r.status}`);
+      await onMutated();
+    } catch (e) {
+      alert(`Disconnect failed: ${(e as Error).message}`);
+    } finally { setDisconnecting(false); }
+  };
+  return (
+    <div className="mt-4 pt-3 border-t border-dark-700 flex items-center justify-between gap-3 flex-wrap">
+      <label className="flex items-center gap-2 cursor-pointer select-none">
+        <span className="text-[11px] text-gray-400">
+          {enabled ? 'Active — will send OTPs' : 'Disabled — credentials kept, fan-out skips this channel'}
+        </span>
+        <span className={`relative inline-block w-9 h-5 rounded-full transition-colors ${enabled ? 'bg-emerald-500' : 'bg-dark-600'}`}>
+          <input type="checkbox" checked={enabled} onChange={toggle} className="sr-only" />
+          <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform ${enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
+        </span>
+      </label>
+      <button
+        onClick={disconnect}
+        disabled={disconnecting}
+        className="text-[11px] px-2.5 py-1 rounded-md bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 disabled:opacity-50"
+        title="Wipe stored credentials for this channel"
+      >
+        <i className="ri-link-unlink-m mr-1" />
+        {disconnecting ? 'Disconnecting…' : 'Disconnect'}
+      </button>
+    </div>
+  );
+}
+
+function channelLabel(k: ChannelKey): string {
+  return ({ slack: 'Slack', teams: 'Microsoft Teams', google_chat: 'Google Chat', whatsapp: 'WhatsApp' } as const)[k];
+}
+
+function Row({ label, children, help }: { label: string; children: React.ReactNode; help?: React.ReactNode }) {
   return (
     <label className="block">
       <span className="text-[11px] uppercase tracking-wider text-gray-500 mb-1 block">{label}</span>
@@ -149,7 +245,7 @@ function UniversalCard({ s }: { s: Safe | null }) {
     >
       <p className="text-xs text-gray-400">
         Magic link base URL:{' '}
-        <span className="text-emerald-300 font-mono">{s?.magic_link_base_url ?? 'https://app.rudrans.com'}</span>
+        <span className="text-emerald-300 font-mono">{s?.magic_link_base_url ?? 'https://ems.wellnessextract.com'}</span>
       </p>
       <p className="text-[11px] text-gray-500">
         Override only if you proxy Rudrans behind a custom domain. Per-credential OTP admins still get an email here even if external channels fail.
@@ -158,7 +254,7 @@ function UniversalCard({ s }: { s: Safe | null }) {
   );
 }
 
-function SlackCard({ s, saving, onSave }: { s: Safe | null; saving: boolean; onSave: (p: Record<string, unknown>) => void }) {
+function SlackCard({ s, saving, onSave, onMutated }: { s: Safe | null; saving: boolean; onSave: (p: Record<string, unknown>) => void; onMutated: () => Promise<void> | void }) {
   const [botToken, setBotToken] = useState('');
   const [channel, setChannel] = useState(s?.slack_channel_id ?? '');
   const [signing, setSigning] = useState('');
@@ -167,6 +263,10 @@ function SlackCard({ s, saving, onSave }: { s: Safe | null; saving: boolean; onS
     <Card
       title="Slack"
       connected={!!s?.slack_connected}
+      enabled={s?.slack_enabled}
+      channelKey="slack"
+      onSave={onSave}
+      onMutated={onMutated}
       hint="Bot posts to a channel; admins reply with the 6-digit code in-thread."
     >
       <Row label="Bot token (xoxb-…)" help={s?.slack_connected ? 'Leave blank to keep existing token.' : 'Slack App → OAuth & Permissions → Bot User OAuth Token. Needs chat:write.'}>
@@ -202,7 +302,7 @@ function SlackCard({ s, saving, onSave }: { s: Safe | null; saving: boolean; onS
   );
 }
 
-function TeamsCard({ s, saving, onSave }: { s: Safe | null; saving: boolean; onSave: (p: Record<string, unknown>) => void }) {
+function TeamsCard({ s, saving, onSave, onMutated }: { s: Safe | null; saving: boolean; onSave: (p: Record<string, unknown>) => void; onMutated: () => Promise<void> | void }) {
   const connected = !!s?.teams_delegated_set;
   const [busy, setBusy] = useState(false);
   const [teamId, setTeamId] = useState(s?.teams_team_id ?? '');
@@ -259,6 +359,10 @@ function TeamsCard({ s, saving, onSave }: { s: Safe | null; saving: boolean; onS
     <Card
       title="Microsoft Teams"
       connected={connected && !!s?.teams_team_id && !!s?.teams_channel_id}
+      enabled={s?.teams_enabled}
+      channelKey="teams"
+      onSave={onSave}
+      onMutated={onMutated}
       hint="An admin from your tenant signs in once with Microsoft; OTP messages then post as that admin into the team/channel you pick below."
     >
       {oauthErr && (
@@ -345,19 +449,35 @@ function TeamsCard({ s, saving, onSave }: { s: Safe | null; saving: boolean; onS
   );
 }
 
-function GChatCard({ s, saving, onSave }: { s: Safe | null; saving: boolean; onSave: (p: Record<string, unknown>) => void }) {
+function GChatCard({ s, saving, onSave, onMutated }: { s: Safe | null; saving: boolean; onSave: (p: Record<string, unknown>) => void; onMutated: () => Promise<void> | void }) {
   const [webhook, setWebhook] = useState('');
   const [space, setSpace] = useState(s?.google_chat_space_name ?? '');
   return (
     <Card
       title="Google Chat"
       connected={!!s?.google_chat_connected}
-      hint="Incoming-webhook URL posts a card to your 'Rudrans-OTP' space. Admin clicks the button to open the magic link."
+      enabled={s?.google_chat_enabled}
+      channelKey="google_chat"
+      onSave={onSave}
+      onMutated={onMutated}
+      hint="Rudrans posts OTP cards to your space, and admins reply with the code directly inside Google Chat — no magic-link round-trip."
     >
-      <Row label="Webhook URL" help={s?.google_chat_connected ? 'Leave blank to keep existing URL.' : 'Space → ⋯ menu → Apps & integrations → Manage webhooks.'}>
+      <Row
+        label="Outbound: webhook URL"
+        help={s?.google_chat_connected ? 'Leave blank to keep existing URL.' : 'Space → ⋯ menu → Apps & integrations → Manage webhooks → Add webhook.'}
+      >
         <input value={webhook} onChange={(e) => setWebhook(e.target.value)} placeholder="https://chat.googleapis.com/v1/spaces/…" className={inputCls} />
       </Row>
-      <Row label="Space name (optional)" help="e.g. spaces/AAAAxxxxx — labels the connection in this UI.">
+      <Row
+        label="Space ID (required for inbound replies)"
+        help={
+          <>
+            Open the space → click the space name at the top → scroll down → copy <code className="text-cyan-300">spaces/AAAAxxxxx</code>.
+            {' '}Add the Rudrans Chat App to this space so admins can reply to OTPs inline. See the {' '}
+            <a href="/docs/integrations#gchat" target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline">Integrations Guide</a> for the one-time setup.
+          </>
+        }
+      >
         <input value={space} onChange={(e) => setSpace(e.target.value)} placeholder="spaces/AAAA…" className={inputCls} />
       </Row>
       <div className="flex items-center gap-3 pt-1">
@@ -371,13 +491,15 @@ function GChatCard({ s, saving, onSave }: { s: Safe | null; saving: boolean; onS
         >
           {saving ? 'Saving…' : 'Save Google Chat'}
         </button>
-        <p className="text-[11px] text-gray-500">v1 = outbound only. Admin replies via magic-link button.</p>
+        <p className="text-[11px] text-gray-500">
+          Bidirectional: webhook = outbound · Chat App + Space ID = inbound replies.
+        </p>
       </div>
     </Card>
   );
 }
 
-function WhatsappCard({ s, saving, onSave }: { s: Safe | null; saving: boolean; onSave: (p: Record<string, unknown>) => void }) {
+function WhatsappCard({ s, saving, onSave, onMutated }: { s: Safe | null; saving: boolean; onSave: (p: Record<string, unknown>) => void; onMutated: () => Promise<void> | void }) {
   const [token, setToken] = useState('');
   const [phoneId, setPhoneId] = useState(s?.whatsapp_phone_id ?? '');
   const [numbers, setNumbers] = useState((s?.whatsapp_admin_numbers ?? []).join(', '));
@@ -393,6 +515,10 @@ function WhatsappCard({ s, saving, onSave }: { s: Safe | null; saving: boolean; 
     <Card
       title="WhatsApp"
       connected={!!s?.whatsapp_connected}
+      enabled={s?.whatsapp_enabled}
+      channelKey="whatsapp"
+      onSave={onSave}
+      onMutated={onMutated}
       hint="Meta Cloud API sends a template message to listed admin numbers. They reply with the code."
     >
       <Row label="Provider">

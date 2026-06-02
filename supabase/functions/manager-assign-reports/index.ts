@@ -14,10 +14,12 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.4";
 import { corsHeaders } from "../_shared/cors.ts";
+import { graphTokenFor } from "../_shared/graph.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
+const GRAPH_BASE = "https://graph.microsoft.com/v1.0";
 
 interface DirRow {
   id: string;
@@ -101,6 +103,12 @@ Deno.serve(async (req) => {
         detail: { manager_id: managerEmpId },
       });
 
+      // Mirror to Microsoft 365 — only when the report is linked to an
+      // M365 account. Fire-and-forget per-row so a single Graph failure
+      // doesn't block other reports' local assignments.
+      queueBackground(() => syncManagerToM365(admin, r.orgId, r.empId, managerEmpId)
+        .catch((e) => console.warn(`[manager-assign-reports] m365 mirror failed for ${r.empId}: ${(e as Error).message}`)));
+
       outcomes.push({ row_id: rid, ok: true, employee_id: r.empId });
     } catch (e) {
       outcomes.push({ row_id: rid, ok: false, error: (e as Error).message });
@@ -166,6 +174,49 @@ async function resolveRowToEmployee(
     return { empId: created.id as string, orgId: created.org_id as string };
   }
   throw new Error("row_id must start with 'emp:' or 'dir:'");
+}
+
+async function syncManagerToM365(
+  admin: ReturnType<typeof createClient>,
+  orgId: string,
+  reportEmpId: string,
+  managerEmpId: string | null,
+): Promise<void> {
+  // Only push when both the report and manager are linked to M365 accounts.
+  // The report needs its own m365_user_id (we PUT/DELETE on its $ref); the
+  // manager only matters when SETTING — clears just DELETE the ref.
+  const { data: rep } = await admin
+    .from("employees").select("m365_user_id").eq("id", reportEmpId).maybeSingle();
+  const reportExt = (rep as { m365_user_id: string | null } | null)?.m365_user_id;
+  if (!reportExt) return;
+
+  const { accessToken } = await graphTokenFor(orgId);
+
+  if (!managerEmpId) {
+    await fetch(`${GRAPH_BASE}/users/${reportExt}/manager/$ref`, {
+      method: "DELETE", headers: { Authorization: `Bearer ${accessToken}` },
+    }).catch(() => null);
+    return;
+  }
+  const { data: mgr } = await admin
+    .from("employees").select("m365_user_id").eq("id", managerEmpId).maybeSingle();
+  const managerExt = (mgr as { m365_user_id: string | null } | null)?.m365_user_id;
+  if (!managerExt) return;  // local-only manager — nothing to push to Graph
+
+  const r = await fetch(`${GRAPH_BASE}/users/${reportExt}/manager/$ref`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ "@odata.id": `${GRAPH_BASE}/users/${managerExt}` }),
+  });
+  if (!r.ok) throw new Error(`PUT manager/$ref: ${r.status} ${(await r.text()).slice(0, 300)}`);
+}
+
+function queueBackground(fn: () => Promise<unknown>): void {
+  const p = fn();
+  // deno-lint-ignore no-explicit-any
+  if (typeof (globalThis as any).EdgeRuntime !== "undefined" && (globalThis as any).EdgeRuntime?.waitUntil) {
+    (globalThis as any).EdgeRuntime.waitUntil(p);
+  }
 }
 
 function bearer(req: Request): string {

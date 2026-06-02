@@ -24,7 +24,7 @@
 //   - Supabase Studio → Auth → URL Configuration → Redirect URLs:
 //     add `com.rudrans.invoice://oauth-callback`
 //   - Google Cloud Console → OAuth client → Authorized redirect URIs:
-//     add `https://api.rudrans.com/auth/v1/callback` (Supabase's
+//     add `https://api-ems.wellnessextract.com/auth/v1/callback` (Supabase's
 //     intermediate) — the custom scheme isn't accepted by Google
 //     directly; Supabase brokers it.
 //   - Microsoft Entra → App registration → Redirect URIs:

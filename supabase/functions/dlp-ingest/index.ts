@@ -87,6 +87,38 @@ Deno.serve(async (req) => {
   }
   if (!agent.dlp_enabled) return json({ ok: true, skipped: "agent dlp disabled" });
 
+  // Add-on assignment gate (migration 0099): DLP events are processed ONLY
+  // for agents the customer has explicitly assigned a DLP seat to. An org
+  // can buy 5 DLP seats but have 50 agents — only the 5 chosen ones get
+  // their DLP traffic ingested.
+  const { data: dlpAssigned } = await admin
+    .from("agent_addon_view")
+    .select("agent_id")
+    .eq("org_id", agent.org_id)
+    .eq("agent_id", agent.id)
+    .eq("addon_code", "dlp-addon-m")
+    .maybeSingle();
+  // Yearly addon shares the same gate — also try the -y variant if -m miss.
+  if (!dlpAssigned) {
+    const { data: dlpYearly } = await admin
+      .from("agent_addon_view")
+      .select("agent_id")
+      .eq("org_id", agent.org_id)
+      .eq("agent_id", agent.id)
+      .eq("addon_code", "dlp-addon-y")
+      .maybeSingle();
+    if (!dlpYearly) {
+      // Backwards compat: orgs whose main plan ALREADY includes DLP (pro-m /
+      // pro-y / scale-100 etc) don't need add-on assignments — they're
+      // entitled at the org level. Honour that.
+      const { data: orgFeats } = await admin.rpc("org_effective_features", { p_org_id: agent.org_id });
+      const hasOrgDlp = Array.isArray(orgFeats) && (orgFeats as string[]).includes("dlp");
+      if (!hasOrgDlp) {
+        return json({ ok: true, skipped: "agent not assigned a DLP add-on seat" });
+      }
+    }
+  }
+
   // 2. Upload screenshot if provided
   let screenshot_url: string | null = null;
   if (body.screenshot_b64) {
@@ -128,7 +160,7 @@ Deno.serve(async (req) => {
   //
   // Earlier this ran via EdgeRuntime.waitUntil so the heavy Anthropic / OpenAI
   // call wouldn't block the HTTP response. Turned out self-hosted edge-runtime
-  // here (api.rudrans.com) doesn't honour waitUntil — the worker isolate is
+  // here (api-ems.wellnessextract.com) doesn't honour waitUntil — the worker isolate is
   // GC'd as soon as the response flushes, dropping the background promise on
   // the floor. So `ai_severity`/`ai_authorized` stayed NULL forever.
   //

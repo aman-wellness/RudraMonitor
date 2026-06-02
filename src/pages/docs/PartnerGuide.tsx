@@ -31,7 +31,7 @@ export default function PartnerGuide() {
       <Section id="apply" title="2. Apply to become a partner">
         <Sub title="2.1 Public application">
           <Steps items={[
-            <>Visit <code className="text-violet-300">https://rudrans.com/partner-signup</code>.</>,
+            <>Visit <code className="text-violet-300">https://ems.wellnessextract.com/partner-signup</code>.</>,
             <>Fill: legal entity, contact person, work email, phone, GST + PAN, address, expected customer volume, sales pitch.</>,
             <>Submit. Rudrans super-admin reviews within 1-2 business days.</>,
           ]} />
@@ -41,7 +41,7 @@ export default function PartnerGuide() {
           <Bullets items={[
             'You receive an email with a magic link to set your portal password.',
             'Land at /partner/dashboard with your channel-partner identity active.',
-            <>Login URL: <code className="text-violet-300">https://rudrans.com/partner/login</code></>,
+            <>Login URL: <code className="text-violet-300">https://ems.wellnessextract.com/partner/login</code></>,
           ]} />
         </Sub>
       </Section>

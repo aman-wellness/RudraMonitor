@@ -27,9 +27,13 @@ Deno.serve(async (req) => {
   const uid = userRes?.user?.id;
   if (!uid) return json({ error: "unauthenticated" }, 401);
 
-  let body: { reason?: string };
+  let body: { reason?: string; kind?: string; days_requested?: number };
   try { body = await req.json(); } catch { body = {}; }
   const reason = (body.reason ?? "").trim().slice(0, 1000);
+  const kind   = body.kind === "time_extension" ? "time_extension" : "feature_access";
+  const days   = kind === "time_extension"
+    ? Math.max(1, Math.min(90, Math.floor(Number(body.days_requested) || 15)))
+    : null;
 
   // Find the caller's org via owner role first, fall back to org_members.
   const { data: member } = await admin
@@ -41,43 +45,46 @@ Deno.serve(async (req) => {
   if (!member) return json({ error: "Only org admins or owners can request a full-features trial." }, 403);
   const orgId = member.org_id;
 
-  // Org must currently be on a plan-scoped trial. If already full_access
-  // or paid, refuse.
+  // Org must currently be on a plan-scoped trial (or in grace window).
   const { data: org } = await admin
     .from("organizations")
-    .select("id, subscription_status, trial_full_access")
+    .select("id, subscription_status, trial_full_access, trial_ends_at")
     .eq("id", orgId)
     .maybeSingle();
   if (!org) return json({ error: "Organization not found" }, 404);
   if (org.subscription_status !== "trial") {
-    return json({ error: "Full-feature trial requests only apply to trial accounts." }, 400);
+    return json({ error: "Trial requests only apply to trial accounts." }, 400);
   }
-  if (org.trial_full_access) {
+  if (kind === "feature_access" && org.trial_full_access) {
     return json({ error: "Your org already has full-features trial access." }, 400);
   }
 
-  // One pending request at a time.
+  // One pending request per kind at a time.
   const { data: existing } = await admin
     .from("trial_extension_requests")
-    .select("id")
+    .select("id, kind")
     .eq("org_id", orgId)
     .eq("status", "pending")
+    .eq("kind", kind)
     .maybeSingle();
   if (existing) {
-    return json({ error: "A request is already pending. Please wait for super-admin review." }, 409);
+    return json({ error: `A ${kind} request is already pending. Please wait for super-admin review.` }, 409);
   }
 
   const { data: row, error } = await admin
     .from("trial_extension_requests")
-    .insert({ org_id: orgId, requested_by: uid, reason: reason || null })
-    .select("id, requested_at, status")
+    .insert({
+      org_id: orgId, requested_by: uid, reason: reason || null,
+      kind, days_requested: days,
+    })
+    .select("id, requested_at, status, kind, days_requested")
     .single();
   if (error) return json({ error: `Could not file request: ${error.message}` }, 500);
 
   await admin.from("audit_log").insert({
     actor_user: uid, actor_role: "customer",
-    action: "trial.full_access.request", target_type: "organization", target_id: orgId,
-    metadata: { request_id: row.id, reason },
+    action: `trial.${kind}.request`, target_type: "organization", target_id: orgId,
+    metadata: { request_id: row.id, reason, kind, days_requested: days },
   });
 
   return json({ ok: true, request: row });

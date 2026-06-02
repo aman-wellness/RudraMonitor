@@ -28,7 +28,16 @@ Deno.serve(async (req) => {
   if (!u.user) return json({ error: "invalid token" }, 401);
   const callerId = u.user.id;
 
-  let body: { it_recipient_emails?: string[]; hr_recipient_emails?: string[]; accounts_recipient_emails?: string[] };
+  let body: {
+    it_recipient_emails?: string[];
+    hr_recipient_emails?: string[];
+    accounts_recipient_emails?: string[];
+    // Auto-Invoice daily digest (migration 0091)
+    invoice_digest_enabled?: boolean;
+    invoice_digest_time?: string;          // "HH:MM" 24h
+    invoice_digest_timezone?: string;      // IANA tz like "Asia/Kolkata"
+    invoice_digest_recipient_emails?: string[];
+  };
   try { body = await req.json(); } catch { return json({ error: "invalid json" }, 400); }
 
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
@@ -68,14 +77,42 @@ Deno.serve(async (req) => {
   if (hr !== undefined) patch.hr_recipient_emails = hr;
   if (ac !== undefined) patch.accounts_recipient_emails = ac;
 
+  // Daily digest config — independent of the accounts list.
+  if (typeof body.invoice_digest_enabled === "boolean") {
+    patch.invoice_digest_enabled = body.invoice_digest_enabled;
+  }
+  if (typeof body.invoice_digest_time === "string") {
+    // Accept "HH:MM" or "HH:MM:SS" — normalise to "HH:MM:00".
+    const m = body.invoice_digest_time.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+    if (m) {
+      const hh = String(Math.min(23, Math.max(0, parseInt(m[1], 10)))).padStart(2, "0");
+      const mm = String(Math.min(59, Math.max(0, parseInt(m[2], 10)))).padStart(2, "0");
+      patch.invoice_digest_time = `${hh}:${mm}:00`;
+    }
+  }
+  if (typeof body.invoice_digest_timezone === "string" && body.invoice_digest_timezone.trim()) {
+    patch.invoice_digest_timezone = body.invoice_digest_timezone.trim();
+  }
+  const digestEmails = clean(body.invoice_digest_recipient_emails);
+  if (digestEmails !== undefined) patch.invoice_digest_recipient_emails = digestEmails;
+
   if (Object.keys(patch).length === 0) {
     return json({ ok: true, message: "no fields to update" }, 200);
   }
 
-  const { error } = await admin.from("organizations").update(patch).eq("id", orgId);
+  // `.select(...).maybeSingle()` returns the persisted row so the FE can
+  // verify the values actually landed in the org it expected — guards
+  // against super-admin / RLS pitfalls where the displayed org and the
+  // saved org could drift apart.
+  const { data: updated, error } = await admin
+    .from("organizations")
+    .update(patch)
+    .eq("id", orgId)
+    .select("id, accounts_recipient_emails, invoice_digest_enabled, invoice_digest_recipient_emails")
+    .maybeSingle();
   if (error) return json({ error: error.message }, 500);
 
-  return json({ ok: true }, 200);
+  return json({ ok: true, row: updated }, 200);
 });
 
 function bearer(req: Request): string {

@@ -91,9 +91,9 @@ export default function LiveTab() {
         const noTrackTimer = setTimeout(() => {
           if (!cancelled && status !== 'live' && !trackRef.current) {
             setStatus('failed');
-            setErrorMsg('agent did not publish video within 45 s');
+            setErrorMsg('agent did not publish video within 90 s (Windows Defender first-run scan can take 30-60 s — try once more)');
           }
-        }, 45_000);
+        }, 90_000);
         // Cleanup also clears this timer.
         const _origLeave = handle.leave;
         handle.leave = async () => { clearTimeout(noTrackTimer); await _origLeave(); };
@@ -208,7 +208,13 @@ export default function LiveTab() {
             )}
             {status === 'connecting' && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <p className="text-sm text-amber-300">Connecting to agent…</p>
+                <div className="text-center px-6">
+                  <p className="text-sm text-amber-300">Connecting to agent…</p>
+                  <p className="text-[11px] text-gray-400 mt-2 max-w-md mx-auto">
+                    First Live View on a Windows machine after a fresh agent install can take 30-60 s
+                    while Windows Defender scans the bundled encoder. Subsequent sessions start within 2-3 s.
+                  </p>
+                </div>
               </div>
             )}
             {status === 'failed' && (

@@ -13,6 +13,8 @@ type Req = {
   decided_by: string | null;
   decided_at: string | null;
   decision_note: string | null;
+  kind: 'feature_access' | 'time_extension';
+  days_requested: number | null;
   org_name?: string;
   org_trial_plan_code?: string | null;
   org_trial_full_access?: boolean;
@@ -35,7 +37,7 @@ export default function TrialRequestsPage() {
       .from('trial_extension_requests')
       .select(`
         id, org_id, requested_by, requested_at, reason, status,
-        decided_by, decided_at, decision_note,
+        decided_by, decided_at, decision_note, kind, days_requested,
         organizations:org_id ( name, trial_plan_code, trial_full_access )
       `)
       .in('status', wantStatuses)
@@ -43,7 +45,9 @@ export default function TrialRequestsPage() {
 
     if (error) { setError(error.message); setLoading(false); return; }
 
-    type Joined = Omit<Req, 'org_name' | 'org_trial_plan_code' | 'org_trial_full_access'> & {
+    type Joined = Omit<Req, 'org_name' | 'org_trial_plan_code' | 'org_trial_full_access' | 'kind' | 'days_requested'> & {
+      kind?: Req['kind'];
+      days_requested?: number | null;
       organizations: { name: string; trial_plan_code: string | null; trial_full_access: boolean } |
                      { name: string; trial_plan_code: string | null; trial_full_access: boolean }[] | null;
     };
@@ -53,6 +57,8 @@ export default function TrialRequestsPage() {
         id: r.id, org_id: r.org_id, requested_by: r.requested_by, requested_at: r.requested_at,
         reason: r.reason, status: r.status, decided_by: r.decided_by, decided_at: r.decided_at,
         decision_note: r.decision_note,
+        kind: r.kind ?? 'feature_access',
+        days_requested: r.days_requested ?? null,
         org_name: o?.name, org_trial_plan_code: o?.trial_plan_code ?? null,
         org_trial_full_access: !!o?.trial_full_access,
       };
@@ -129,11 +135,22 @@ export default function TrialRequestsPage() {
                           className="text-base text-white font-semibold hover:text-emerald-300">
                       {r.org_name ?? r.org_id}
                     </Link>
-                    <p className="text-[11px] text-gray-500 mt-0.5">
-                      Trial plan: <span className="text-gray-300">{r.org_trial_plan_code ?? '—'}</span>
-                      {r.org_trial_full_access && (
-                        <span className="ml-2 text-emerald-400">• full access granted</span>
-                      )}
+                    <p className="text-[11px] mt-0.5">
+                      <span className={`px-2 py-0.5 rounded-full border text-[10px] ${
+                        r.kind === 'time_extension'
+                          ? 'bg-sky-500/15 text-sky-300 border-sky-500/40'
+                          : 'bg-purple-500/15 text-purple-300 border-purple-500/40'
+                      }`}>
+                        {r.kind === 'time_extension'
+                          ? `${r.days_requested ?? 15}-day time extension`
+                          : 'Full-features trial'}
+                      </span>
+                      <span className="text-gray-500 ml-2">
+                        Trial plan: <span className="text-gray-300">{r.org_trial_plan_code ?? '—'}</span>
+                        {r.org_trial_full_access && (
+                          <span className="ml-2 text-emerald-400">• full access granted</span>
+                        )}
+                      </span>
                     </p>
                     <p className="text-[11px] text-gray-500">
                       Requested {new Date(r.requested_at).toLocaleString()}

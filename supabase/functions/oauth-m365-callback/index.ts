@@ -99,8 +99,33 @@ Deno.serve(async (req) => {
     }, { onConflict: "org_id,provider" });
   if (upErr) return json({ error: `save: ${upErr.message}` }, 500);
 
+  // Fire-and-forget: subscribe to Graph Change Notifications so future
+  // directory edits stream in real-time instead of waiting for the next
+  // manual or cron-driven full sync. Failure here doesn't break the
+  // connect flow — the renewal cron will pick it up on its next pass.
+  queueBackground(async () => {
+    try {
+      const r = await fetch(`${SUPABASE_URL}/functions/v1/m365-subscribe`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${SERVICE_ROLE_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ org_id: orgId }),
+      });
+      if (!r.ok) console.warn(`[oauth-m365-callback] subscribe failed for org ${orgId}: ${r.status} ${(await r.text()).slice(0, 200)}`);
+    } catch (e) {
+      console.warn(`[oauth-m365-callback] subscribe call errored for org ${orgId}: ${(e as Error).message}`);
+    }
+  });
+
   return json({ ok: true, tenant_id: tenantId, primary_domain: resolvedDomain }, 200);
 });
+
+function queueBackground(fn: () => Promise<unknown>): void {
+  const p = fn();
+  // deno-lint-ignore no-explicit-any
+  if (typeof (globalThis as any).EdgeRuntime !== "undefined" && (globalThis as any).EdgeRuntime?.waitUntil) {
+    (globalThis as any).EdgeRuntime.waitUntil(p);
+  }
+}
 
 function bearer(req: Request): string {
   const a = req.headers.get("authorization") ?? "";

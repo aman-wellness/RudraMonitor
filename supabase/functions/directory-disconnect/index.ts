@@ -84,6 +84,34 @@ Deno.serve(async (req) => {
   await admin.from("directory_groups").delete().eq("org_id", orgId).eq("provider", provider);
   await admin.from("directory_users").delete().eq("org_id", orgId).eq("provider", provider);
 
+  // 2.5) Cancel any live Graph subscriptions before we forget their IDs.
+  //      Best-effort — even if Microsoft is unreachable or already 404'd
+  //      the subscription, the local row deletion below means future
+  //      notifications for these IDs will be ignored (no matching org row
+  //      → webhook logs "stale notification, skipping").
+  if (provider === "m365") {
+    const { data: subs } = await admin
+      .from("org_integrations")
+      .select("subscription_id_users, subscription_id_groups")
+      .eq("org_id", orgId).eq("provider", "m365")
+      .maybeSingle();
+    const subsRow = subs as { subscription_id_users: string | null; subscription_id_groups: string | null } | null;
+    const ids = [subsRow?.subscription_id_users, subsRow?.subscription_id_groups].filter(Boolean) as string[];
+    if (ids.length > 0) {
+      try {
+        const { graphTokenFor } = await import("../_shared/graph.ts");
+        const { accessToken } = await graphTokenFor(orgId);
+        for (const id of ids) {
+          await fetch(`https://graph.microsoft.com/v1.0/subscriptions/${id}`, {
+            method: "DELETE", headers: { Authorization: `Bearer ${accessToken}` },
+          }).catch(() => null);
+        }
+      } catch (e) {
+        console.warn(`[directory-disconnect] subscription cleanup failed for ${orgId}: ${(e as Error).message}`);
+      }
+    }
+  }
+
   // 3) Drop the integration row entirely. We previously just marked it
   //    status='disconnected', but the directory-sync background task races
   //    with disconnect — its final UPDATE would overwrite our status back to

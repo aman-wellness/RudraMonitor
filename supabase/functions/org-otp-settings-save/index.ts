@@ -47,6 +47,14 @@ interface Body {
 
   magic_link_base_url?: string | null;
 
+  // Per-channel enable toggles (migration 0099). When `false`, the channel
+  // is skipped during OTP fan-out without forgetting the stored credentials —
+  // flip back to `true` to resume without re-pasting tokens.
+  slack_enabled?: boolean;
+  teams_enabled?: boolean;
+  google_chat_enabled?: boolean;
+  whatsapp_enabled?: boolean;
+
   admin_links?: Array<{ provider: "teams" | "slack" | "google_chat" | "whatsapp"; external_id: string; display_name?: string }>;
 }
 
@@ -111,6 +119,11 @@ Deno.serve(async (req) => {
     if (body.whatsapp_template_name !== undefined)  row.whatsapp_template_name = body.whatsapp_template_name || null;
 
     if (body.magic_link_base_url !== undefined)     row.magic_link_base_url = body.magic_link_base_url || null;
+
+    if (typeof body.slack_enabled === "boolean")       row.slack_enabled       = body.slack_enabled;
+    if (typeof body.teams_enabled === "boolean")       row.teams_enabled       = body.teams_enabled;
+    if (typeof body.google_chat_enabled === "boolean") row.google_chat_enabled = body.google_chat_enabled;
+    if (typeof body.whatsapp_enabled === "boolean")    row.whatsapp_enabled    = body.whatsapp_enabled;
   } catch (e) {
     return json({ error: `encrypt: ${(e as Error).message}` }, 500);
   }

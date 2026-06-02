@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import { supabase } from '@/lib/supabase';
+import { useAuth } from '@/context/AuthContext';
 
 type Offboarding = {
   id: string;
@@ -194,13 +195,19 @@ function DefaultRecipientsCard() {
   const [saved, setSaved] = useState({ it: '', hr: '', acc: '' });
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  // Scope org read to the caller's actual org — super-admins see all orgs
+  // via RLS and would otherwise get arbitrary tenant defaults pre-filled.
+  // See feedback-super-admin-rls-limit-pitfall memory note.
+  const { organization } = useAuth();
+  const orgId = organization?.id ?? null;
 
   useEffect(() => {
+    if (!orgId) return;
     (async () => {
       const { data } = await supabase
         .from('organizations')
         .select('it_recipient_emails, hr_recipient_emails, accounts_recipient_emails')
-        .limit(1)
+        .eq('id', orgId)
         .maybeSingle();
       const row = data as {
         it_recipient_emails: string[];
@@ -214,7 +221,7 @@ function DefaultRecipientsCard() {
       setSaved({ it: itStr, hr: hrStr, acc: accStr });
       setLoading(false);
     })();
-  }, []);
+  }, [orgId]);
 
   const dirty = it !== saved.it || hr !== saved.hr || acc !== saved.acc;
 
@@ -375,7 +382,8 @@ function HistoryView({
           No offboarding records {year !== 'all' ? `for ${year}` : 'yet'}.
         </p>
       ) : (
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[720px]">
           <thead className="bg-dark-900/50 text-[10px] uppercase tracking-wider text-gray-500">
             <tr>
               <th className="px-4 py-3 text-left">Employee</th>
@@ -424,6 +432,7 @@ function HistoryView({
             })}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );
@@ -595,19 +604,23 @@ function StartModal({
   const [itEmails, setItEmails] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const { organization } = useAuth();
+  const orgId = organization?.id ?? null;
 
-  // Pre-fill IT recipients from the org-wide default (set in Credentials → Requests → IT Recipients).
+  // Pre-fill IT recipients from the org-wide default. Filter by orgId
+  // (not `.limit(1)`) so super-admins don't get another tenant's defaults.
   useEffect(() => {
+    if (!orgId) return;
     (async () => {
       const { data } = await supabase
         .from('organizations')
         .select('it_recipient_emails')
-        .limit(1)
+        .eq('id', orgId)
         .maybeSingle();
       const emails = ((data as { it_recipient_emails: string[] } | null)?.it_recipient_emails ?? []);
       if (emails.length > 0) setItEmails(emails.join(', '));
     })();
-  }, []);
+  }, [orgId]);
 
   const submit = async () => {
     setBusy(true); setErr(null);
@@ -670,6 +683,8 @@ function OffboardingDrawer({
 }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const { organization } = useAuth();
+  const drawerOrgId = organization?.id ?? null;
 
   const [laptopSerial, setLaptopSerial] = useState(off.laptop_serial ?? '');
   const [assetNotes, setAssetNotes] = useState(off.asset_notes ?? '');
@@ -743,19 +758,22 @@ function OffboardingDrawer({
   }, [employee?.id]);
 
   // Pre-fill HR + Accounts recipients from the org-wide defaults so the
-  // customer doesn't have to retype them on every offboarding.
+  // customer doesn't have to retype them on every offboarding. Filter by
+  // orgId — super-admins see all orgs via RLS otherwise. See
+  // feedback-super-admin-rls-limit-pitfall memory.
   useEffect(() => {
+    if (!drawerOrgId) return;
     (async () => {
       const { data } = await supabase
         .from('organizations')
         .select('hr_recipient_emails, accounts_recipient_emails')
-        .limit(1)
+        .eq('id', drawerOrgId)
         .maybeSingle();
       const row = data as { hr_recipient_emails: string[]; accounts_recipient_emails: string[] } | null;
       if (row?.hr_recipient_emails?.length) setHrEmails(row.hr_recipient_emails.join(', '));
       if (row?.accounts_recipient_emails?.length) setAccEmails(row.accounts_recipient_emails.join(', '));
     })();
-  }, []);
+  }, [drawerOrgId]);
 
   const call = async (body: Record<string, unknown>) => {
     setBusy(true); setErr(null);

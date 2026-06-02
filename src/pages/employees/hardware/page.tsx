@@ -445,7 +445,7 @@ function AssetModal({ row, onClose, onSaved }: { row: Partial<Asset>; onClose: (
           <Input value={f.device_tag ?? ''} onChange={(v) => setF({ ...f, device_tag: v })} placeholder="RUD-LT-042" />
         </Field>
       </div>
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         <DeviceTypeField value={f.device_type ?? 'laptop'} onChange={(v) => setF({ ...f, device_type: v as Asset['device_type'] })} />
         <Field label="Brand">
           <Input value={f.brand ?? ''} onChange={(v) => setF({ ...f, brand: v })} placeholder="Apple" />
@@ -465,7 +465,7 @@ function AssetModal({ row, onClose, onSaved }: { row: Partial<Asset>; onClose: (
           <Input type="number" value={String(f.disk_gb ?? '')} onChange={(v) => setF({ ...f, disk_gb: v === '' ? null : Number(v) })} placeholder="512" />
         </Field>
       </div>
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         <Field label="Purchase price">
           <Input type="number" value={String(f.purchase_price ?? '')} onChange={(v) => setF({ ...f, purchase_price: v === '' ? null : Number(v) })} placeholder="125000" />
         </Field>

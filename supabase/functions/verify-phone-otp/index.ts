@@ -18,6 +18,14 @@ async function sha256Hex(s: string): Promise<string> {
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+function clientIp(req: Request): string {
+  // Kong / nginx pass the real client IP via X-Forwarded-For. Take the first
+  // entry (the original client) and fall back to a sentinel.
+  const xff = req.headers.get("x-forwarded-for") ?? "";
+  const first = xff.split(",")[0]?.trim();
+  return first || req.headers.get("x-real-ip") || "0.0.0.0";
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
@@ -32,6 +40,19 @@ Deno.serve(async (req) => {
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
+
+  // SECURITY: brute-force protection. A 6-digit OTP has 10**6 possibilities,
+  // so without rate-limiting per (email, ip) an attacker could plausibly
+  // enumerate the space. The DB function enforces the same window across
+  // every Edge Function call.
+  const { data: rl } = await admin.rpc("check_and_record_otp_attempt", {
+    p_scope: "phone_otp",
+    p_channel_key: email,
+    p_ip: clientIp(req),
+  });
+  if (rl && (rl as { allowed?: boolean }).allowed === false) {
+    return json({ error: "too many attempts — try again in 15 minutes" }, 429);
+  }
 
   // Latest unused, unexpired code for this email.
   const { data: row } = await admin

@@ -22,7 +22,7 @@ import { corsHeaders } from "../_shared/cors.ts";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const TURN_SECRET = Deno.env.get("TURN_SHARED_SECRET") ?? "";
-const TURN_HOST = Deno.env.get("TURN_HOST") ?? "rudrans.com";
+const TURN_HOST = Deno.env.get("TURN_HOST") ?? "ems.wellnessextract.com";
 const TTL_SECONDS = 4 * 60 * 60; // 4 hours
 
 Deno.serve(async (req) => {

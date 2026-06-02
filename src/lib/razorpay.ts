@@ -30,6 +30,86 @@ declare global {
   interface Window { Razorpay?: RazorpayConstructor }
 }
 
+// Subscription handler returns these — Razorpay's signature is computed
+// over `payment_id + '|' + subscription_id` with HMAC-SHA256 keyed on the
+// merchant's KEY_SECRET. We forward all three to the verify endpoint so it
+// can validate without round-tripping the Razorpay API.
+export interface RazorpaySubscriptionResponse {
+  razorpay_payment_id: string;
+  razorpay_subscription_id: string;
+  razorpay_signature: string;
+}
+
+export async function startSubscriptionCheckout(opts: {
+  keyId: string;
+  subscriptionId: string;
+  customerName?: string;
+  customerEmail?: string;
+  customerPhone?: string | null;
+  amountLabel?: string;
+  onSuccess?: (resp: RazorpaySubscriptionResponse) => void;
+  onDismiss?: () => void;
+}): Promise<void> {
+  await loadScript();
+  if (!window.Razorpay) throw new Error('Razorpay not loaded');
+  const rzp = new window.Razorpay({
+    key: opts.keyId,
+    subscription_id: opts.subscriptionId,
+    name: 'TrackForce',
+    description: opts.amountLabel
+      ? `Card verification charge: ${opts.amountLabel} (held now, refunded after trial)`
+      : 'Card verification — refundable',
+    prefill: {
+      name: opts.customerName ?? '',
+      email: opts.customerEmail ?? '',
+      contact: opts.customerPhone ?? '',
+    },
+    theme: { color: '#10b981' },
+    handler: (resp: RazorpaySubscriptionResponse) => opts.onSuccess?.(resp),
+    modal: { ondismiss: () => opts.onDismiss?.() },
+  });
+  rzp.open();
+}
+
+export interface RazorpayOrderResponse {
+  razorpay_order_id: string;
+  razorpay_payment_id: string;
+  razorpay_signature: string;
+}
+
+export async function startOrderCheckout(opts: {
+  keyId: string;
+  orderId: string;
+  amount: number;          // paise
+  currency: string;        // "INR" or "USD"
+  description?: string;
+  customerName?: string;
+  customerEmail?: string;
+  customerPhone?: string | null;
+  onSuccess?: (resp: RazorpayOrderResponse) => void;
+  onDismiss?: () => void;
+}): Promise<void> {
+  await loadScript();
+  if (!window.Razorpay) throw new Error('Razorpay not loaded');
+  const rzp = new window.Razorpay({
+    key: opts.keyId,
+    order_id: opts.orderId,
+    amount: opts.amount,
+    currency: opts.currency,
+    name: 'TrackForce',
+    description: opts.description ?? 'One-time charge',
+    prefill: {
+      name: opts.customerName ?? '',
+      email: opts.customerEmail ?? '',
+      contact: opts.customerPhone ?? '',
+    },
+    theme: { color: '#10b981' },
+    handler: (resp: RazorpayOrderResponse) => opts.onSuccess?.(resp),
+    modal: { ondismiss: () => opts.onDismiss?.() },
+  });
+  rzp.open();
+}
+
 export async function payInvoice(opts: {
   invoiceId: string;
   customerEmail?: string;

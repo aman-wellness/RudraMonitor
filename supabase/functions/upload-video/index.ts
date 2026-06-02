@@ -45,6 +45,17 @@ Deno.serve(async (req) => {
   }
   if (bytes.byteLength > MAX_BYTES) return json({ error: "video too large" }, 413);
 
+  // MP4 container magic-byte check. The file MUST begin with an ISO Base
+  // Media File Format box header — bytes 4–7 are 'ftyp' ('f','t','y','p').
+  // We accept any brand at offset 8+ (mp42, isom, M4V, etc.). Without this
+  // guard, an agent compromise could upload arbitrary blobs (scripts, ZIPs)
+  // that downstream playback or AV scanning would treat as video.
+  if (bytes.byteLength < 12 ||
+      bytes[4] !== 0x66 || bytes[5] !== 0x74 ||
+      bytes[6] !== 0x79 || bytes[7] !== 0x70) {
+    return json({ error: "not a valid MP4 (missing ftyp box)" }, 400);
+  }
+
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
     auth: { autoRefreshToken: false, persistSession: false },
   });

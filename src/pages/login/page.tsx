@@ -1,12 +1,13 @@
-import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { supabase } from '../../lib/supabase';
 import LoginLayout, { loginInputClass } from '@/components/feature/LoginLayout';
 
 export default function Login() {
   const navigate = useNavigate();
-  const { signIn, signInWithGoogle, signInWithMicrosoft, signOut } = useAuth();
+  const [params] = useSearchParams();
+  const { signIn, signInWithGoogle, signInWithMicrosoft } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -15,35 +16,28 @@ export default function Login() {
   const [forgotBusy, setForgotBusy] = useState(false);
   const [forgotMsg, setForgotMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
+  // Surface friendly errors from auth-bounce-back URLs (e.g. post-login sends
+  // a Google-OAuth user back here when they tried to log in but had no
+  // account — instead of silently signing them up).
+  useEffect(() => {
+    const code = params.get('error');
+    if (code === 'no_account') {
+      setError("No account found for that email. Click 'Start Free Trial' below to sign up first.");
+    }
+  }, [params]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSubmitting(true);
     try {
       await signIn(email, password);
-      const { data: u } = await supabase.auth.getUser();
-      const userId = u.user?.id;
-      const { data: app } = await supabase
-        .from('app_users')
-        .select('app_role')
-        .eq('user_id', userId)
-        .maybeSingle();
-      const { count: orgMemberCount } = await supabase
-        .from('org_members')
-        .select('id', { count: 'exact', head: true })
-        .eq('user_id', userId);
-      const hasOrg = (orgMemberCount ?? 0) > 0;
-      if (!hasOrg && app?.app_role === 'partner') {
-        await signOut();
-        setError('Partners must sign in from the Partner Login page.');
-        return;
-      }
-      if (!hasOrg && app?.app_role === 'super_admin') {
-        await signOut();
-        setError('Super admins must sign in from /super.');
-        return;
-      }
-      navigate('/dashboard', { replace: true });
+      // Defer role / org routing to /post-login — it already handles partner
+      // / super-admin / customer / complete-signup branching. Doing those
+      // queries inline here meant 4 sequential round-trips on the critical
+      // login path, which combined with React state propagation lag caused
+      // ProtectedRoute to occasionally bounce users back to the landing page.
+      navigate('/post-login', { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {

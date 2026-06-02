@@ -76,18 +76,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw error;
+    // Set the session SYNCHRONOUSLY from the response rather than waiting
+    // for onAuthStateChange's microtask. Without this, ProtectedRoute can
+    // run with a stale `session: null` right after navigate(), bouncing
+    // the user back to the landing page on the first attempt.
+    if (data.session) {
+      setSession(data.session);
+      loadedForUser.current = null;
+      void loadOrg(data.session.user.id);
+    }
   };
 
   const signInWithGoogle = async () => {
     // After OAuth completes, land on /post-login — it resolves the role and
     // redirects to the right dashboard (super_admin / partner / customer).
     // First-time OAuth users with no org yet are routed to /complete-signup
-    // by that handler so they can name their org and start the trial.
+    // (only if they came from a signup page). Login-page OAuth that fails to
+    // find an org is bounced back with a "no account" message — post-login
+    // reads the sessionStorage flag below.
+    try {
+      sessionStorage.setItem(
+        'rudrans_oauth_intent',
+        window.location.pathname.includes('/login') ? 'login' : 'signup',
+      );
+    } catch { /* ignore */ }
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo: `${window.location.origin}/post-login` },
+      options: {
+        redirectTo: `${window.location.origin}/post-login`,
+        // Force Google to show the account chooser instead of silently
+        // re-using whichever Google account is already signed in to the
+        // browser. Lets a customer pick a different work / personal email
+        // each time.
+        queryParams: { prompt: 'select_account' },
+      },
     });
     if (error) throw error;
   };
@@ -100,6 +124,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     //      = https://login.microsoftonline.com/common
     // Don't pass `tenant` in queryParams — it can collide with whatever
     // Supabase already builds, producing a malformed authorize URL (404).
+    try {
+      sessionStorage.setItem(
+        'rudrans_oauth_intent',
+        window.location.pathname.includes('/login') ? 'login' : 'signup',
+      );
+    } catch { /* ignore */ }
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'azure',
       options: {

@@ -104,7 +104,7 @@ Deno.serve(async (req) => {
     // SITE_URL only points to the bare app origin — explicitly redirect to
     // /reset-password so the user actually lands on the new-password form
     // (the recovery hash params come along in the URL fragment).
-    const appUrl = (Deno.env.get("APP_URL") ?? Deno.env.get("SITE_URL") ?? "https://app.rudrans.com").replace(/\/+$/, "");
+    const appUrl = (Deno.env.get("APP_URL") ?? Deno.env.get("SITE_URL") ?? "https://ems.wellnessextract.com").replace(/\/+$/, "");
     const { error: rpErr } = await admin.auth.resetPasswordForEmail(target.user.email, {
       redirectTo: `${appUrl}/reset-password`,
     });

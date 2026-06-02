@@ -19,7 +19,7 @@ export default function Terms() {
 
       <Section title="2. The Service">
         <Bullets items={[
-          'A SaaS dashboard at rudrans.com / app.rudrans.com',
+          'A SaaS dashboard at ems.wellnessextract.com',
           'A desktop monitoring agent (Windows / macOS / Linux)',
           'Optional add-on modules: Employee Management, Data Loss Prevention (DLP)',
           'Email + chat support per your subscription tier',

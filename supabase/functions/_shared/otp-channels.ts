@@ -36,8 +36,10 @@ export interface ChannelResult {
 export async function sendTeams(o: ChannelOutbound): Promise<ChannelResult> {
   const admin = adminClient();
   const { data: s } = await admin.from("org_otp_settings")
-    .select("teams_tenant_id, teams_team_id, teams_channel_id, teams_bot_token_enc, teams_webhook_url_enc, teams_admin_refresh_token_enc")
+    .select("teams_tenant_id, teams_team_id, teams_channel_id, teams_bot_token_enc, teams_webhook_url_enc, teams_admin_refresh_token_enc, teams_enabled")
     .eq("org_id", o.orgId).maybeSingle();
+
+  if (s?.teams_enabled === false) return { ok: false, error: "teams disabled" };
 
   // ── Preferred path: delegated OAuth (refresh token from an admin who
   // signed in once). Works in every tenant that allows ChannelMessage.Send
@@ -132,10 +134,15 @@ export async function sendTeams(o: ChannelOutbound): Promise<ChannelResult> {
 export async function sendSlack(o: ChannelOutbound): Promise<ChannelResult> {
   const admin = adminClient();
   const { data: s } = await admin.from("org_otp_settings")
-    .select("slack_bot_token_enc, slack_channel_id")
+    .select("slack_bot_token_enc, slack_channel_id, slack_enabled")
     .eq("org_id", o.orgId).maybeSingle();
   if (!s?.slack_bot_token_enc || !s?.slack_channel_id) {
     return { ok: false, error: "slack not configured" };
+  }
+  // Disabled by the admin but credentials retained — skip fan-out, don't
+  // count as a real failure. Flipping the toggle back to true resumes.
+  if (s.slack_enabled === false) {
+    return { ok: false, error: "slack disabled" };
   }
   let token: string;
   try { token = await decrypt(s.slack_bot_token_enc, "CRED_VAULT_ENC_KEY"); }
@@ -180,9 +187,10 @@ export async function sendSlack(o: ChannelOutbound): Promise<ChannelResult> {
 export async function sendGChat(o: ChannelOutbound): Promise<ChannelResult> {
   const admin = adminClient();
   const { data: s } = await admin.from("org_otp_settings")
-    .select("google_chat_webhook_url_enc")
+    .select("google_chat_webhook_url_enc, google_chat_enabled")
     .eq("org_id", o.orgId).maybeSingle();
   if (!s?.google_chat_webhook_url_enc) return { ok: false, error: "google chat not configured" };
+  if (s.google_chat_enabled === false) return { ok: false, error: "google chat disabled" };
 
   let url: string;
   try { url = await decrypt(s.google_chat_webhook_url_enc, "CRED_VAULT_ENC_KEY"); }
@@ -228,11 +236,12 @@ export async function sendGChat(o: ChannelOutbound): Promise<ChannelResult> {
 export async function sendWhatsapp(o: ChannelOutbound): Promise<ChannelResult> {
   const admin = adminClient();
   const { data: s } = await admin.from("org_otp_settings")
-    .select("whatsapp_provider, whatsapp_phone_id, whatsapp_token_enc, whatsapp_admin_numbers, whatsapp_template_name")
+    .select("whatsapp_provider, whatsapp_phone_id, whatsapp_token_enc, whatsapp_admin_numbers, whatsapp_template_name, whatsapp_enabled")
     .eq("org_id", o.orgId).maybeSingle();
   if (!s?.whatsapp_token_enc || !s?.whatsapp_admin_numbers?.length) {
     return { ok: false, error: "whatsapp not configured (token + numbers required)" };
   }
+  if (s.whatsapp_enabled === false) return { ok: false, error: "whatsapp disabled" };
   if (s.whatsapp_provider !== "meta_cloud") {
     // Twilio path can be added later — Meta Cloud is the default we ship.
     return { ok: false, error: `whatsapp provider '${s.whatsapp_provider}' not implemented in Phase 3` };

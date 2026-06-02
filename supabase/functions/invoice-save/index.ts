@@ -35,18 +35,24 @@ Deno.serve(async (req) => {
 
   const id = (body.id as string | undefined) ?? null;
   const credId = (body.credential_id as string | undefined)?.trim();
-  if (!id && !credId) return json({ error: "credential_id required" }, 400);
-
-  // Verify the credential lives in caller's org.
+  // Either an existing-row id, or credential_id, or NEITHER (credential_id
+  // is now optional after migration 0091 — we'll fall back to the caller's
+  // org via org_members). Manual uploads without a vendor-credential match
+  // are stored as Unassigned invoices.
   let orgId: string | null = null;
   if (credId) {
     const { data: cred } = await admin.from("credentials").select("id, org_id").eq("id", credId).maybeSingle();
     if (!cred) return json({ error: "credential not found" }, 404);
     orgId = cred.org_id;
-  } else {
+  } else if (id) {
     const { data: existing } = await admin.from("credential_invoices").select("id, org_id").eq("id", id).maybeSingle();
     if (!existing) return json({ error: "invoice not found" }, 404);
     orgId = existing.org_id;
+  } else {
+    // No id, no credential — pick the caller's first org membership.
+    const { data: m } = await admin.from("org_members").select("org_id").eq("user_id", u.user.id).limit(1).maybeSingle();
+    if (!m) return json({ error: "no org for caller" }, 403);
+    orgId = m.org_id as string;
   }
   const { data: mem } = await admin.from("org_members").select("org_id").eq("user_id", u.user.id).eq("org_id", orgId!);
   if (!mem?.length) return json({ error: "not authorised for this org" }, 403);
@@ -96,7 +102,7 @@ Deno.serve(async (req) => {
     return json({ ok: true, id }, 200);
   } else {
     row.org_id = orgId;
-    row.credential_id = credId;
+    row.credential_id = credId ?? null;          // null = Unassigned (allowed since 0091)
     row.source = "manual";
     row.created_by = u.user.id;
     const { data, error } = await admin.from("credential_invoices").insert(row).select("id").single();

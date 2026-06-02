@@ -85,8 +85,9 @@ Deno.serve(async (req) => {
   //      Supabase actually delivers for an existing user; pure invite is a
   //      no-op silently and admin sees no email arrive).
   const appUrl = Deno.env.get("APP_URL") ?? "http://localhost:3000";
-  const { data: listed } = await admin.auth.admin.listUsers({ page: 1, perPage: 1 });
-  const existingUser = listed?.users?.find((u) => u.email?.toLowerCase() === email);
+  const { data: existingUserId } = await admin
+    .rpc("find_auth_user_id_by_email", { p_email: email });
+  const existingUser = existingUserId ? { id: existingUserId as string } : null;
   let mode: "invite" | "recovery" = "invite";
   let lastErr: string | null = null;
 

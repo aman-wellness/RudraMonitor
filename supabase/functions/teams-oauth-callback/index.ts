@@ -31,7 +31,7 @@ Deno.serve(async (req) => {
 
   // Where the browser ends up regardless of outcome.
   const appBase = await getIntegration("MAGIC_LINK_BASE_URL").catch(() => "");
-  const settingsUrl = (appBase || "https://app.rudrans.com") + "/employees/otp-settings";
+  const settingsUrl = (appBase || "https://ems.wellnessextract.com") + "/employees/otp-settings";
 
   if (errParam) return redirect(`${settingsUrl}?teams=error&msg=${encodeURIComponent(errParam + ": " + errDesc)}`);
   if (!code || !state) return redirect(`${settingsUrl}?teams=error&msg=missing+code+or+state`);
@@ -54,7 +54,7 @@ Deno.serve(async (req) => {
   }
   // Must match the redirect_uri the start step sent to Microsoft — i.e.
   // the public URL, not the internal Docker hostname.
-  const publicBase = (await getIntegration("PUBLIC_API_BASE_URL").catch(() => "")) || "https://api.rudrans.com";
+  const publicBase = (await getIntegration("PUBLIC_API_BASE_URL").catch(() => "")) || "https://api-ems.wellnessextract.com";
   const redirectUri = `${publicBase}/functions/v1/teams-oauth-callback`;
   void SUPABASE_URL;
   const tokResp = await fetch("https://login.microsoftonline.com/common/oauth2/v2.0/token", {

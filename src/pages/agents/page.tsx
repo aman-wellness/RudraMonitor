@@ -556,7 +556,7 @@ export default function AgentsPage() {
                   </div>
 
                   {/* Stats row */}
-                  <div className="grid grid-cols-3 gap-3 mb-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-4">
                     <div className="bg-dark-900 rounded-lg border border-dark-700 p-2.5 text-center">
                       <p className="text-xs font-bold text-white">{agent.productivity}%</p>
                       <p className="text-[10px] text-gray-500 mt-0.5">Productivity</p>

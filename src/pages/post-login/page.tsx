@@ -21,16 +21,54 @@ export default function PostLogin() {
     //      the "Super Admin" link in the sidebar.
     //   3. Super-admin (no org) → admin dashboard.
     //   4. No org, no role → complete-signup.
-    if (role === 'partner') { navigate('/partner/dashboard', { replace: true }); return; }
-
     (async () => {
+      // Real partner only — the app_users row must point at an ACTIVE
+      // partner. Orphan rows (partner role + NULL partner_id) used to send
+      // invited customers to /partner/dashboard. is_real_partner() is the
+      // single source of truth (migration 0105).
+      if (role === 'partner') {
+        const { data: isReal } = await supabase.rpc('is_real_partner', { p_user_id: user.id });
+        if (isReal === true) { navigate('/partner/dashboard', { replace: true }); return; }
+        // Fall through — they'll be routed by org ownership / membership below.
+      }
+
       const { data: ownsOrg } = await supabase
         .from('organizations').select('id').eq('owner_user_id', user.id).maybeSingle();
-      if (ownsOrg) { navigate('/dashboard', { replace: true }); return; }
+      if (ownsOrg) {
+        try { sessionStorage.removeItem('rudrans_oauth_intent'); } catch { /* ignore */ }
+        navigate('/dashboard', { replace: true }); return;
+      }
+
+      // Defensive: bind any pending invites whose email matches this user.
+      // The link_pending_org_member trigger handles this on user creation,
+      // but if it raced / skipped (eg OAuth INSERT ordering), this RPC
+      // recovers without a manual SQL fix.
+      try { await supabase.rpc('link_my_pending_invites'); } catch { /* ignore */ }
+
       const { data: member } = await supabase
         .from('org_members').select('org_id').eq('user_id', user.id).maybeSingle();
-      if (member) { navigate('/dashboard', { replace: true }); return; }
-      if (role === 'super_admin') { navigate('/admin/dashboard', { replace: true }); return; }
+      if (member) {
+        try { sessionStorage.removeItem('rudrans_oauth_intent'); } catch { /* ignore */ }
+        navigate('/dashboard', { replace: true }); return;
+      }
+      if (role === 'super_admin') {
+        try { sessionStorage.removeItem('rudrans_oauth_intent'); } catch { /* ignore */ }
+        navigate('/admin/dashboard', { replace: true }); return;
+      }
+
+      // No org, no membership, not a super-admin. If the user came via the
+      // /login page (intent='login') they expected to sign INTO an existing
+      // account — don't auto-create a trial; sign them out and surface a
+      // clear error. If they came from /signup, fall through to the
+      // ₹2-verify trial provisioning page.
+      let intent: string | null = null;
+      try { intent = sessionStorage.getItem('rudrans_oauth_intent'); } catch { /* ignore */ }
+      try { sessionStorage.removeItem('rudrans_oauth_intent'); } catch { /* ignore */ }
+      if (intent === 'login') {
+        await supabase.auth.signOut();
+        navigate('/login?error=no_account', { replace: true });
+        return;
+      }
       navigate('/complete-signup', { replace: true });
     })();
   }, [authLoading, roleLoading, user, role, navigate]);

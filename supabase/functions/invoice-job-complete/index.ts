@@ -116,6 +116,20 @@ Deno.serve(async (req) => {
 
   if (inv.pdf_base64) {
     const bytes = b64ToBytes(inv.pdf_base64);
+    // PDF magic bytes: file MUST start with "%PDF-". Without this check, a
+    // compromised invoice worker could upload arbitrary content under a
+    // .pdf path with application/pdf MIME, which downstream renderers
+    // would treat as a valid PDF.
+    if (bytes.byteLength < 5 ||
+        bytes[0] !== 0x25 || bytes[1] !== 0x50 ||
+        bytes[2] !== 0x44 || bytes[3] !== 0x46 || bytes[4] !== 0x2D) {
+      await admin.from("invoice_fetch_jobs").update({
+        status: "failed",
+        last_error: "pdf upload: not a PDF (missing %PDF- header)",
+        completed_at: new Date().toISOString(),
+      }).eq("id", jobId);
+      return json({ error: "not a valid PDF" }, 400);
+    }
     const filename = inv.pdf_filename || `${invoiceId}.pdf`;
     const path = `${job.org_id}/${job.credential_id}/${invoiceId}.pdf`;
     const { error: upErr } = await admin.storage.from("credential-invoices").upload(path, bytes, {

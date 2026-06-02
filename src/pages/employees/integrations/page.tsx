@@ -497,7 +497,7 @@ function ConnectedBlock({
 }) {
   return (
     <div className="space-y-3">
-      <dl className="text-xs grid grid-cols-3 gap-y-1.5 gap-x-3">
+      <dl className="text-xs grid grid-cols-2 sm:grid-cols-3 gap-y-1.5 gap-x-3">
         <dt className="text-gray-500">Tenant</dt>
         <dd className="col-span-2 text-gray-300 truncate">{row.tenant_id ?? '—'}</dd>
         <dt className="text-gray-500">Domain</dt>

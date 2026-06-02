@@ -82,10 +82,12 @@ Deno.serve(async (req) => {
   //    confirmed their account at some point.
   const appUrl = Deno.env.get("APP_URL") ?? "http://localhost:3000";
 
-  // Detect if user already exists.
-  const { data: existingUser } = await admin.auth.admin.listUsers({
-    page: 1, perPage: 1,
-  }).then((r) => ({ data: r.data?.users?.find((u) => u.email?.toLowerCase() === email) }));
+  // Detect if user already exists. find_auth_user_id_by_email (migration
+  // 0104) does a single indexed lookup — the old listUsers({perPage:1})
+  // pattern only returned the first user in the table.
+  const { data: existingUserId } = await admin
+    .rpc("find_auth_user_id_by_email", { p_email: email });
+  const existingUser = existingUserId ? { id: existingUserId as string } : null;
 
   let mode: "invite" | "recovery" = "invite";
   let lastErr: string | null = null;

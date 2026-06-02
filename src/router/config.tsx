@@ -19,6 +19,7 @@ const Login = lazy(() => import("../pages/login/page"));
 const Signup = lazy(() => import("../pages/signup/page"));
 const SignupSuccess = lazy(() => import("../pages/signup-success/page"));
 const CompleteSignup = lazy(() => import("../pages/complete-signup/page"));
+const AcceptInvite = lazy(() => import("../pages/accept-invite/page"));
 const Dashboard = lazy(() => import("../pages/dashboard/page"));
 const Monitoring = lazy(() => import("../pages/monitoring/page"));
 const AgentDetail = lazy(() => import("../pages/agent-detail/page"));
@@ -33,6 +34,8 @@ const GroupsManager = lazy(() => import("../pages/employees/groups/page"));
 const ManagersPage = lazy(() => import("../pages/employees/managers/page"));
 const HardwareInventory = lazy(() => import("../pages/employees/hardware/page"));
 const SubscriptionPage = lazy(() => import("../pages/subscription/page"));
+const Checkout = lazy(() => import("../pages/checkout/page"));
+const AddonSeats = lazy(() => import("../pages/addon-seats/page"));
 const CredentialsVault = lazy(() => import("../pages/employees/credentials/page"));
 const PublicCredentialsRequest = lazy(() => import("../pages/employees/credentials-request-public/page"));
 const OtpRespond = lazy(() => import("../pages/otp/respond"));
@@ -63,10 +66,13 @@ const AdminMarketing = lazy(() => import("../pages/admin/marketing/page"));
 const AdminAudit = lazy(() => import("../pages/admin/audit/page"));
 const AdminDlp = lazy(() => import("../pages/admin/dlp/page"));
 const AdminIntegrations = lazy(() => import("../pages/admin/integrations/page"));
+const AdminBillingEntity = lazy(() => import("../pages/admin/billing-entity/page"));
+const InvoicePage = lazy(() => import("../pages/invoice/page"));
 const AdminStorage = lazy(() => import("../pages/admin/storage/page"));
 const AdminUsers = lazy(() => import("../pages/admin/users/page"));
 const DocsUserGuide = lazy(() => import("../pages/docs/UserGuide"));
 const DocsPartnerGuide = lazy(() => import("../pages/docs/PartnerGuide"));
+const DocsIntegrations = lazy(() => import("../pages/docs/IntegrationsGuide"));
 const DocsSuperAdmin = lazy(() => import("../pages/docs/SuperAdminGuide"));
 const DocsArchitecture = lazy(() => import("../pages/docs/Architecture"));
 const LegalPrivacy = lazy(() => import("../pages/legal/Privacy"));
@@ -107,6 +113,7 @@ const routes: RouteObject[] = [
   { path: "/signup", element: wrap(<Signup />) },
   { path: "/signup-success",  element: wrap(<SignupSuccess />) },
   { path: "/complete-signup", element: wrap(<CompleteSignup />) },
+  { path: "/accept-invite",   element: wrap(<AcceptInvite />) },
   { path: "/dashboard", element: protect(access("dashboard", <Dashboard />)) },
   // Monitoring family — require the basic monitoring feature. EM-only
   // customers (who haven't bought any monitoring tier) get the upgrade CTA.
@@ -136,6 +143,8 @@ const routes: RouteObject[] = [
 
   // Self-service subscription & add-on management (always available to org owner).
   { path: "/subscription",           element: protect(<SubscriptionPage />) },
+  { path: "/checkout",               element: protect(<Checkout />) },
+  { path: "/addon-seats",            element: protect(<AddonSeats />) },
 
   // Public credential-request form (unauthenticated; gated by HMAC-signed magic link from email)
   { path: "/r/credentials-request",  element: wrap(<PublicCredentialsRequest />) },
@@ -174,6 +183,8 @@ const routes: RouteObject[] = [
   { path: "/admin/dlp",       element: superAdmin(<AdminDlp />) },
   { path: "/admin/audit",     element: superAdmin(<AdminAudit />) },
   { path: "/admin/integrations", element: superAdmin(<AdminIntegrations />) },
+  { path: "/admin/billing-entity", element: superAdmin(<AdminBillingEntity />) },
+  { path: "/invoices/:id",           element: protect(<InvoicePage />) },
   { path: "/admin/storage",      element: superAdmin(<AdminStorage />) },
   { path: "/admin/users",        element: superAdmin(<AdminUsers />) },
   { path: "/admin/docs/super-admin",  element: superAdmin(<DocsSuperAdmin />) },
@@ -182,6 +193,7 @@ const routes: RouteObject[] = [
   // Public documentation
   { path: "/docs/user-guide",    element: wrap(<DocsUserGuide />) },
   { path: "/docs/partner-guide", element: wrap(<DocsPartnerGuide />) },
+  { path: "/docs/integrations",  element: wrap(<DocsIntegrations />) },
 
   // Public legal pages
   { path: "/legal/privacy", element: wrap(<LegalPrivacy />) },

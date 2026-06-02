@@ -4,6 +4,7 @@ import FeaturesGrid from './components/FeaturesGrid';
 import FeatureShowcase from './components/FeatureShowcase';
 import SystemHealthSection from './components/SystemHealthSection';
 import EmployeeManagementSection from './components/EmployeeManagementSection';
+import MobileAppSection from './components/MobileAppSection';
 import PricingSection from './components/PricingSection';
 import TestimonialsSection from './components/TestimonialsSection';
 import CTASection from './components/CTASection';
@@ -18,6 +19,7 @@ export default function Home() {
       <FeatureShowcase />
       <SystemHealthSection />
       <EmployeeManagementSection />
+      <MobileAppSection />
       <PricingSection />
       <TestimonialsSection />
       <CTASection />

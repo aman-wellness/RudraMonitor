@@ -41,11 +41,27 @@ Deno.serve(async (req) => {
   const { data: asset } = await admin.from("hardware_assets").select("*").eq("id", assetId).maybeSingle();
   if (!asset) return json({ error: "asset not found" }, 404);
 
-  // Org membership check (caller must be in org_members of this org or its owner).
-  const { data: mem } = await admin.from("org_members").select("org_id").eq("user_id", callerId).eq("org_id", asset.org_id);
-  const { data: ownerRow } = await admin.from("organizations").select("id").eq("id", asset.org_id).eq("owner_user_id", callerId);
-  if ((mem?.length ?? 0) === 0 && (ownerRow?.length ?? 0) === 0) {
+  // SECURITY: hardware (re)assignment is a write op — only org owner, admin,
+  // or manager may perform it. Regular `user` members get read-only access.
+  // Org owners (organizations.owner_user_id) are always treated as full
+  // writers regardless of any org_members row.
+  const { data: ownerRow } = await admin.from("organizations").select("id").eq("id", asset.org_id).eq("owner_user_id", callerId).maybeSingle();
+  const isOwner = !!ownerRow;
+
+  const { data: mem } = await admin
+    .from("org_members")
+    .select("role")
+    .eq("user_id", callerId)
+    .eq("org_id", asset.org_id)
+    .maybeSingle();
+  const memberRole = (mem?.role ?? "").toLowerCase();
+  const WRITER_ROLES = new Set(["owner", "admin", "manager"]);
+
+  if (!isOwner && !mem) {
     return json({ error: "not authorised for this org" }, 403);
+  }
+  if (!isOwner && !WRITER_ROLES.has(memberRole)) {
+    return json({ error: "your role does not allow hardware reassignment" }, 403);
   }
 
   // ---- Close prior open assignment, if any ----

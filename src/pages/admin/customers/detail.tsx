@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import AdminLayout from '../AdminLayout';
 import { supabase, type Organization } from '@/lib/supabase';
@@ -19,9 +19,9 @@ type LicenseRow = {
 type InvoiceRow = {
   id: string;
   invoice_number: string;
-  total_amount: number;
+  total_inr: number;
   status: string;
-  invoice_date: string;
+  issued_at: string;
 };
 
 type AgentRow = {
@@ -186,9 +186,9 @@ export default function CustomerDetail() {
           .eq('org_id', customerId)
           .order('created_at', { ascending: false }),
         supabase.from('invoices')
-          .select('id, invoice_number, total_amount, status, invoice_date')
+          .select('id, invoice_number, total_inr, status, issued_at')
           .eq('organization_id', customerId)
-          .order('invoice_date', { ascending: false })
+          .order('issued_at', { ascending: false })
           .limit(10),
       ]);
 
@@ -492,10 +492,10 @@ export default function CustomerDetail() {
             </thead>
             <tbody className="divide-y divide-dark-700">
               {invoices.map((i) => (
-                <tr key={i.id} className="hover:bg-dark-700/30">
+                <tr key={i.id} className="hover:bg-dark-700/30 cursor-pointer" onClick={() => navigate(`/invoices/${i.id}`)}>
                   <td className="px-4 py-2 font-mono text-cyan-400">{i.invoice_number}</td>
-                  <td className="px-4 py-2 text-gray-500">{new Date(i.invoice_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
-                  <td className="px-4 py-2 text-white">₹ {Number(i.total_amount).toLocaleString('en-IN')}</td>
+                  <td className="px-4 py-2 text-gray-500">{new Date(i.issued_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                  <td className="px-4 py-2 text-white">₹ {Number(i.total_inr).toLocaleString('en-IN')}</td>
                   <td className="px-4 py-2"><StatusPill status={i.status} /></td>
                 </tr>
               ))}
@@ -1024,6 +1024,116 @@ function SubscriptionControls({
           Trial customers get all add-ons automatically until trial expires. Toggling here bypasses Razorpay — useful for comped accounts.
         </p>
       </div>
+
+      <ManualAddonGrant orgId={org.id} />
+    </div>
+  );
+}
+
+// Super-admin manual addon grant / revoke. Bypasses Razorpay entirely —
+// inserts org_addons row via grant_addon_admin RPC + writes audit log.
+// Useful when a webhook silently failed or for comped customers.
+function ManualAddonGrant({ orgId }: { orgId: string }) {
+  const [addonCode, setAddonCode] = useState<'dlp-addon-m' | 'dlp-addon-y' | 'em-addon-m' | 'em-addon-y'>('dlp-addon-m');
+  const [seats, setSeats] = useState(1);
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState<'grant' | 'revoke' | null>(null);
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const [active, setActive] = useState<Array<{ id: string; code: string; name: string; seat_count: number }>>([]);
+
+  const loadActive = useCallback(async () => {
+    const { data } = await supabase
+      .from('org_addons')
+      .select('id, seat_count, plans!inner(code, name)')
+      .eq('org_id', orgId).eq('active', true);
+    type J = { id: string; seat_count: number; plans: { code: string; name: string } | { code: string; name: string }[] };
+    setActive(((data as J[]) ?? []).map((r) => {
+      const p = Array.isArray(r.plans) ? r.plans[0] : r.plans;
+      return { id: r.id, code: p.code, name: p.name, seat_count: r.seat_count };
+    }));
+  }, [orgId]);
+
+  useEffect(() => { void loadActive(); }, [loadActive]);
+
+  const grant = async () => {
+    setBusy('grant'); setMsg(null);
+    const { error } = await supabase.rpc('grant_addon_admin', {
+      p_org_id: orgId, p_addon_plan_code: addonCode,
+      p_seats: Math.max(1, seats), p_reason: reason.trim() || null,
+    });
+    setBusy(null);
+    if (error) setMsg({ kind: 'err', text: error.message });
+    else { setMsg({ kind: 'ok', text: `Granted ${addonCode} × ${seats}` }); await loadActive(); }
+  };
+  const revoke = async (code: string) => {
+    if (!confirm(`Revoke ${code}? This drops all agent assignments too.`)) return;
+    setBusy('revoke'); setMsg(null);
+    const { error } = await supabase.rpc('revoke_addon_admin', {
+      p_org_id: orgId, p_addon_plan_code: code, p_reason: reason.trim() || null,
+    });
+    setBusy(null);
+    if (error) setMsg({ kind: 'err', text: error.message });
+    else { setMsg({ kind: 'ok', text: `Revoked ${code}` }); await loadActive(); }
+  };
+
+  return (
+    <div className="mt-5 border-t border-dark-700 pt-4">
+      <p className="text-xs text-gray-400 uppercase tracking-wider mb-2">Manual addon grant / revoke (bypasses Razorpay)</p>
+
+      {active.length > 0 && (
+        <div className="mb-3 space-y-1.5">
+          {active.map((a) => (
+            <div key={a.id} className="flex items-center justify-between bg-dark-900/50 border border-dark-700 rounded-lg px-3 py-2 text-xs">
+              <span className="text-white">
+                <span className="font-medium">{a.name}</span>
+                <span className="text-gray-500 ml-2">{a.code} · {a.seat_count} seats</span>
+              </span>
+              <button onClick={() => revoke(a.code)} disabled={!!busy}
+                      className="px-2 py-1 rounded bg-rose-500/15 border border-rose-500/30 text-rose-300 hover:bg-rose-500/25 disabled:opacity-50">
+                Revoke
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-2 items-end bg-dark-900/50 rounded-lg p-3 border border-dark-700">
+        <div className="md:col-span-2">
+          <label className="block text-[10px] text-gray-500 uppercase mb-1">Add-on</label>
+          <select value={addonCode} onChange={(e) => setAddonCode(e.target.value as typeof addonCode)}
+                  className="w-full bg-dark-800 border border-dark-700 rounded px-2 py-1.5 text-xs text-white">
+            <option value="dlp-addon-m">DLP Add-on (monthly)</option>
+            <option value="dlp-addon-y">DLP Add-on (yearly)</option>
+            <option value="em-addon-m">Employee Management Add-on (monthly)</option>
+            <option value="em-addon-y">Employee Management Add-on (yearly)</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-[10px] text-gray-500 uppercase mb-1">Seats</label>
+          <input type="number" min={1} max={10000} value={seats}
+                 onChange={(e) => setSeats(Math.max(1, parseInt(e.target.value || '1', 10)))}
+                 className="w-full bg-dark-800 border border-dark-700 rounded px-2 py-1.5 text-xs text-white" />
+        </div>
+        <div>
+          <button onClick={grant} disabled={!!busy}
+                  className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-dark-950 font-medium text-xs px-3 py-1.5 rounded">
+            {busy === 'grant' ? 'Granting…' : 'Grant'}
+          </button>
+        </div>
+        <div className="md:col-span-4">
+          <label className="block text-[10px] text-gray-500 uppercase mb-1">Reason (audit log)</label>
+          <input value={reason} onChange={(e) => setReason(e.target.value)}
+                 placeholder="e.g. webhook failure, comped, support refund"
+                 className="w-full bg-dark-800 border border-dark-700 rounded px-2 py-1.5 text-xs text-white placeholder-gray-600" />
+        </div>
+      </div>
+
+      {msg && (
+        <p className={`mt-2 text-[11px] px-3 py-1.5 rounded border ${
+          msg.kind === 'ok' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                            : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+        }`}>{msg.text}</p>
+      )}
     </div>
   );
 }
