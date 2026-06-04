@@ -94,3 +94,31 @@ jobs:
             mobile/android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 30
+
+      # Publish the debug APK to the production downloads directory so the
+      # landing page link (ems.wellnessextract.com/downloads/wellness-extract-invoice.apk)
+      # always serves the latest build. Only runs on push to main — manual
+      # workflow_dispatch builds stay in artifacts only.
+      - name: Publish APK to production
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          if [ -z "$SSH_KEY" ] || [ -z "$EC2_HOST" ]; then
+            echo "⚠️  EC2_SSH_KEY or EC2_HOST secret not set — skipping auto-publish."
+            echo "Set both secrets to enable, or download the artifact and upload manually."
+            exit 0
+          fi
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/agent.pem
+          chmod 600 ~/.ssh/agent.pem
+          ssh-keyscan -H "${EC2_HOST#*@}" >> ~/.ssh/known_hosts 2>/dev/null
+          scp -i ~/.ssh/agent.pem mobile/android/app/build/outputs/apk/debug/app-debug.apk \
+              "$EC2_HOST:/tmp/wellness-extract-invoice.apk"
+          ssh -i ~/.ssh/agent.pem "$EC2_HOST" '
+            sudo mv /tmp/wellness-extract-invoice.apk /opt/rudrans-downloads/wellness-extract-invoice.apk
+            sudo chown www-data:www-data /opt/rudrans-downloads/wellness-extract-invoice.apk
+            sudo chmod 644 /opt/rudrans-downloads/wellness-extract-invoice.apk
+          '
+          echo "✓ APK published to https://ems.wellnessextract.com/downloads/wellness-extract-invoice.apk"
