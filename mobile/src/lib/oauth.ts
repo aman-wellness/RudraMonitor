@@ -52,7 +52,15 @@ import { supabase } from "./supabase";
 //   - Supabase Studio → Auth → URL Configuration → Redirect URLs must
 //     include `https://ems.wellnessextract.com/oauth-mobile-bridge`
 //     (alongside the existing custom-scheme entry).
-const NATIVE_REDIRECT = "https://ems.wellnessextract.com/oauth-mobile-bridge";
+// Static HTML bridge (NOT the SPA route). The previous /oauth-mobile-bridge
+// React route imported the dashboard's supabase-js client which has
+// `detectSessionInUrl: true` — meaning it auto-exchanged the one-shot
+// PKCE `code` the moment the page loaded, leaving the mobile app with
+// nothing to exchange. The plain HTML file at /oauth-bridge.html
+// imports no JS framework or auth library; it just forwards the query
+// string into the app's custom scheme so the app can finish PKCE on
+// its own.
+const NATIVE_REDIRECT = "https://ems.wellnessextract.com/oauth-bridge.html";
 
 export function isNative(): boolean {
   return Capacitor.isNativePlatform();
