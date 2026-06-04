@@ -32,7 +32,7 @@ pub fn capture_primary() -> Result<CapturedFrame> {
     use std::time::{Duration, Instant};
 
     let out = std::env::temp_dir().join(format!(
-        "rudrans_ss_{}.jpg",
+        "we_ss_{}.jpg",
         chrono::Utc::now().timestamp_millis()
     ));
     let out_str = out.to_string_lossy().to_string();

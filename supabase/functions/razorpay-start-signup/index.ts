@@ -190,7 +190,7 @@ Deno.serve(async (req) => {
     body: JSON.stringify({
       name: orgName, email, contact: phone ?? undefined,
       fail_existing: 0,
-      notes: { pending_signup_id: pendingRow.id, source: "rudrans-signup" },
+      notes: { pending_signup_id: pendingRow.id, source: "wellness-extract-signup" },
     }),
   });
   if (!custResp.ok) {

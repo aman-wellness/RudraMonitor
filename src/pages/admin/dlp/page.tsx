@@ -68,7 +68,7 @@ export default function AdminDlp() {
 
         <div className="bg-dark-800 border border-dark-700 rounded-xl p-5 space-y-3">
           <div>
-            <h2 className="text-sm font-semibold text-white">Global alert recipients (Rudrans ops)</h2>
+            <h2 className="text-sm font-semibold text-white">Global alert recipients (Wellness Extract ops)</h2>
             <p className="text-xs text-gray-400 mt-1">
               These addresses receive a copy of every DLP alert across <strong>all customer organizations</strong>.
               Use for your security team / CSM bcc. Customer-specific recipients are managed by each customer in their own DLP settings.

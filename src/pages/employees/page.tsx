@@ -4,7 +4,7 @@ import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import { supabase } from '@/lib/supabase';
 
 // Row shape from the v_org_users view. row_id is synthetic: 'dir:<uuid>' for
-// directory-sourced rows and 'emp:<uuid>' for Rudrans-only rows.
+// directory-sourced rows and 'emp:<uuid>' for Wellness Extract-only rows.
 type Employee = {
   row_id: string;
   org_id: string;
@@ -21,7 +21,7 @@ type Employee = {
   employee_id: string | null;
   m365_user_id: string | null;
   google_user_id: string | null;
-  has_rudrans_record: boolean;
+  has_we_record: boolean;
   created_at: string;
 };
 
@@ -147,8 +147,8 @@ export default function EmployeesList() {
                   <tr key={e.row_id} className="border-b border-dark-700/50 hover:bg-dark-700/30">
                     <td className="px-4 py-3 text-white">
                       {e.display_name}
-                      {!e.has_rudrans_record && (
-                        <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-gray-500/15 text-gray-400" title="Synced from M365/Google — not provisioned through Rudrans">synced</span>
+                      {!e.has_we_record && (
+                        <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-gray-500/15 text-gray-400" title="Synced from M365/Google — not provisioned through Wellness Extract">synced</span>
                       )}
                     </td>
                     <td className="px-4 py-3 text-gray-300">{e.work_email ?? '—'}</td>
@@ -247,7 +247,7 @@ export default function EmployeesList() {
                       method: 'POST',
                       headers: { Authorization: `Bearer ${session?.access_token}`, 'Content-Type': 'application/json' },
                       body: JSON.stringify({
-                        // Prefer employee_id when we have one (Rudrans record exists);
+                        // Prefer employee_id when we have one (Wellness Extract record exists);
                         // otherwise identify the user by their cloud directory id.
                         ...(confirmDelete.employee_id
                           ? { employee_id: confirmDelete.employee_id }
@@ -340,7 +340,7 @@ function AddEmployeeMenu() {
 
 // ============== Edit employee modal ==============
 //
-// Lets admins set HR-side fields on any user surfaced in /employees — Rudrans
+// Lets admins set HR-side fields on any user surfaced in /employees — Wellness Extract
 // or directory-synced. For directory-only rows the edge fn auto-creates an
 // employees row so the manager_id FK + future credential assignments have
 // something to reference. work_email is read-only (source-of-truth is the
@@ -390,7 +390,7 @@ function EditEmployeeModal({
   // Pull the long-form contact fields straight from `employees`. They're not
   // on v_org_users to keep the list query lean, but the edit modal needs
   // them so the customer can review + edit what's currently on the M365
-  // user's contact form. If the employee doesn't have a Rudrans row yet
+  // user's contact form. If the employee doesn't have a Wellness Extract row yet
   // (directory-only), seed from directory_users instead.
   useEffect(() => {
     let cancelled = false;
@@ -483,6 +483,14 @@ function EditEmployeeModal({
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error ?? `${r.status}`);
+      // Surface any non-fatal M365 sync issues from the edge function so
+      // the customer knows whether changes mirrored to Microsoft 365.
+      const m365 = j?.m365 as { ok?: boolean; warnings?: string[] } | undefined;
+      if (m365 && m365.ok === false && Array.isArray(m365.warnings) && m365.warnings.length > 0) {
+        setErr(`Saved locally, but Microsoft 365 sync had issues:\n• ${m365.warnings.join('\n• ')}`);
+        await onSaved();
+        return;  // keep modal open so the user can see + retry
+      }
       await onSaved();
     } catch (e) {
       setErr((e as Error).message);
@@ -541,12 +549,12 @@ function EditEmployeeModal({
               <option value="">— no manager —</option>
               {managerCandidates.map((m) => (
                 <option key={m.row_id} value={m.row_id}>
-                  {m.display_name}{m.work_email ? ` · ${m.work_email}` : ''}{!m.has_rudrans_record ? ' (synced)' : ''}
+                  {m.display_name}{m.work_email ? ` · ${m.work_email}` : ''}{!m.has_we_record ? ' (synced)' : ''}
                 </option>
               ))}
             </select>
             <p className="text-[11px] text-gray-500 mt-1">
-              Any directory user can be picked. We'll auto-create their Rudrans record on save.
+              Any directory user can be picked. We'll auto-create their Wellness Extract record on save.
               {employee.m365_user_id && <span className="text-sky-300"> Manager will also be set on this user in Microsoft 365.</span>}
             </p>
           </label>

@@ -25,7 +25,7 @@
             <!--
               OAuth deep-link return. After the user signs in through the
               Chrome Custom Tab, Supabase redirects to
-              com.rudrans.invoice://oauth-callback?code=... and Android
+              com.wellnessextract.invoice://oauth-callback?code=... and Android
               resolves the intent here. App.tsx's appUrlOpen listener
               picks up the URL and calls handleDeepLink() to exchange
               the code for a Supabase session.
@@ -34,7 +34,7 @@
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="com.rudrans.invoice" />
+                <data android:scheme="com.wellnessextract.invoice" />
             </intent-filter>
 
         </activity>

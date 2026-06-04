@@ -1,0 +1,96 @@
+name: Build Mobile APK
+
+# Builds an Android APK for the Wellness Extract Invoice mobile camera app.
+# Produces both a debug APK (auto-signed, installable for testing) and an
+# unsigned release APK (sign locally with your release keystore).
+#
+# Trigger paths:
+#   - manual: Actions tab → "Build Mobile APK" → Run workflow
+#   - push to main when mobile/ changes
+#
+# Output: GitHub Actions artifact "wellness-extract-invoice-apk" containing
+# both APKs. Download from the workflow run page.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/build-mobile-apk.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install npm deps
+        working-directory: mobile
+        run: npm ci
+
+      - name: Build web bundle (Vite)
+        working-directory: mobile
+        env:
+          # Production Supabase backend. If you need a different env for the
+          # CI build, override via repo secrets and reference here.
+          VITE_SUPABASE_URL: ${{ secrets.MOBILE_SUPABASE_URL || 'https://api-ems.wellnessextract.com' }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.MOBILE_SUPABASE_ANON_KEY }}
+        run: npm run build
+
+      - name: Sync Capacitor → Android
+        working-directory: mobile
+        run: npx cap sync android
+
+      - name: Make gradlew executable
+        working-directory: mobile/android
+        run: chmod +x ./gradlew
+
+      - name: Build debug APK (auto-signed, installable)
+        working-directory: mobile/android
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Build release APK (unsigned — sign locally)
+        working-directory: mobile/android
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+        continue-on-error: true
+
+      - name: Show APK locations + sizes
+        run: |
+          echo "=== Debug APK ==="
+          ls -la mobile/android/app/build/outputs/apk/debug/ || true
+          echo
+          echo "=== Release APK (unsigned) ==="
+          ls -la mobile/android/app/build/outputs/apk/release/ || true
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wellness-extract-invoice-apk
+          path: |
+            mobile/android/app/build/outputs/apk/debug/*.apk
+            mobile/android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 30

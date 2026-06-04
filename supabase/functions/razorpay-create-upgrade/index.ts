@@ -123,7 +123,7 @@ Deno.serve(async (req) => {
       body: JSON.stringify({
         name: org.name, email: user.email, contact: org.phone ?? undefined,
         fail_existing: 0,
-        notes: { org_id: org.id, source: "rudrans-upgrade" },
+        notes: { org_id: org.id, source: "wellness-extract-upgrade" },
       }),
     });
     if (!custResp.ok) {

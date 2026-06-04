@@ -1,10 +1,10 @@
 apply plugin: 'com.android.application'
 
 android {
-    namespace "com.rudrans.invoice"
+    namespace "com.wellnessextract.invoice"
     compileSdk rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "com.rudrans.invoice"
+        applicationId "com.wellnessextract.invoice"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

@@ -54,6 +54,7 @@ const sidebarLinks: SidebarLink[] = [
   { label: 'IT Hardware', href: '/employees/hardware', icon: 'ri-computer-line', requires: ['employee_management'], access: 'hardware' },
   { label: 'Offboarding', href: '/employees/offboarding', icon: 'ri-logout-box-line', requires: ['employee_management'], access: 'offboarding' },
   { label: 'Integrations', href: '/employees/integrations', icon: 'ri-plug-line', requires: ['employee_management'], access: 'integrations' },
+  { label: 'Governance', href: '/governance', icon: 'ri-organization-chart', requires: ['employee_management'], access: 'governance' },
   { label: 'Admin Portal', href: '/admin-portal', icon: 'ri-shield-user-line', access: 'admin_portal' },
 ];
 
@@ -139,11 +140,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <Link to="/" className="flex items-center gap-3">
             <img
               src="https://public.readdy.ai/ai/img_res/30434500-ce14-4d0b-944f-490cb4702e27.png"
-              alt="Rudrans"
+              alt="Wellness Extract"
               className="h-8 w-8 object-contain"
             />
             <span className="text-white font-poppins font-bold text-lg tracking-wide">
-              Rudrans
+              Wellness Extract
             </span>
           </Link>
         </div>
@@ -210,10 +211,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <Link to="/" className="flex items-center gap-3" onClick={() => setSidebarOpen(false)}>
             <img
               src="https://public.readdy.ai/ai/img_res/30434500-ce14-4d0b-944f-490cb4702e27.png"
-              alt="Rudrans"
+              alt="Wellness Extract"
               className="h-8 w-8 object-contain"
             />
-            <span className="text-white font-poppins font-bold text-lg">Rudrans</span>
+            <span className="text-white font-poppins font-bold text-lg">Wellness Extract</span>
           </Link>
           <button
             onClick={() => setSidebarOpen(false)}

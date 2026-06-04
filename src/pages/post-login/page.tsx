@@ -35,7 +35,7 @@ export default function PostLogin() {
       const { data: ownsOrg } = await supabase
         .from('organizations').select('id').eq('owner_user_id', user.id).maybeSingle();
       if (ownsOrg) {
-        try { sessionStorage.removeItem('rudrans_oauth_intent'); } catch { /* ignore */ }
+        try { sessionStorage.removeItem('we_oauth_intent'); } catch { /* ignore */ }
         navigate('/dashboard', { replace: true }); return;
       }
 
@@ -48,11 +48,11 @@ export default function PostLogin() {
       const { data: member } = await supabase
         .from('org_members').select('org_id').eq('user_id', user.id).maybeSingle();
       if (member) {
-        try { sessionStorage.removeItem('rudrans_oauth_intent'); } catch { /* ignore */ }
+        try { sessionStorage.removeItem('we_oauth_intent'); } catch { /* ignore */ }
         navigate('/dashboard', { replace: true }); return;
       }
       if (role === 'super_admin') {
-        try { sessionStorage.removeItem('rudrans_oauth_intent'); } catch { /* ignore */ }
+        try { sessionStorage.removeItem('we_oauth_intent'); } catch { /* ignore */ }
         navigate('/admin/dashboard', { replace: true }); return;
       }
 
@@ -62,8 +62,8 @@ export default function PostLogin() {
       // clear error. If they came from /signup, fall through to the
       // ₹2-verify trial provisioning page.
       let intent: string | null = null;
-      try { intent = sessionStorage.getItem('rudrans_oauth_intent'); } catch { /* ignore */ }
-      try { sessionStorage.removeItem('rudrans_oauth_intent'); } catch { /* ignore */ }
+      try { intent = sessionStorage.getItem('we_oauth_intent'); } catch { /* ignore */ }
+      try { sessionStorage.removeItem('we_oauth_intent'); } catch { /* ignore */ }
       if (intent === 'login') {
         await supabase.auth.signOut();
         navigate('/login?error=no_account', { replace: true });

@@ -1,6 +1,6 @@
 // Remote-control input injection for the WebRTC Remote tab.
 //
-// One dedicated OS thread (`"rudrans-input"`) owns the `enigo::Enigo` and
+// One dedicated OS thread (`"wellness-extract-input"`) owns the `enigo::Enigo` and
 // `arboard::Clipboard` instances; the rest of the agent talks to it via an
 // unbounded mpsc channel of `InputEvent`s. Two reasons:
 //
@@ -76,7 +76,7 @@ pub fn spawn() {
     }
 
     std::thread::Builder::new()
-        .name("rudrans-input".into())
+        .name("wellness-extract-input".into())
         .spawn(move || {
             let mut enigo = match Enigo::new(&Settings::default()) {
                 Ok(e) => e,
@@ -182,7 +182,7 @@ pub fn spawn() {
             }
             log::info!("input: thread exiting (channel closed)");
         })
-        .expect("spawn rudrans-input thread");
+        .expect("spawn wellness-extract-input thread");
 }
 
 /// Map a browser `KeyboardEvent.code` to `enigo::Key`. Layout-independent —

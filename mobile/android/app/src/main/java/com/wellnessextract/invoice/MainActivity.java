@@ -1,4 +1,4 @@
-package com.rudrans.invoice;
+package com.wellnessextract.invoice;
 
 import com.getcapacitor.BridgeActivity;
 

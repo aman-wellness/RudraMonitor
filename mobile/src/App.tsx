@@ -33,18 +33,36 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const { data } = await supabase.auth.getSession();
+      // getSession() can hang on broken navigator.locks (older Android
+      // WebViews). Race it against a short timer so the Splash screen
+      // never gets stuck on cold start, no matter the device.
+      const sessionRace = Promise.race([
+        supabase.auth.getSession(),
+        new Promise<{ data: { session: null } }>((resolve) =>
+          setTimeout(() => resolve({ data: { session: null } }), 8000),
+        ),
+      ]);
+      const { data } = await sessionRace;
       if (cancelled) return;
       if (data.session) {
         setSession(data.session);
         return;
       }
-      // No persisted session — try biometric.
-      const creds = await tryQuickUnlock();
-      if (creds && !cancelled) {
-        const r = await supabase.auth.signInWithPassword({ email: creds.email, password: creds.password });
-        if (!cancelled) setSession(r.data.session ?? null);
-        return;
+      // No persisted session — try biometric quick-unlock.
+      try {
+        const creds = await tryQuickUnlock();
+        if (creds && !cancelled) {
+          const r = await Promise.race([
+            supabase.auth.signInWithPassword({ email: creds.email, password: creds.password }),
+            new Promise<{ data: { session: null } }>((resolve) =>
+              setTimeout(() => resolve({ data: { session: null } }), 15000),
+            ),
+          ]);
+          if (!cancelled) setSession((r as { data: { session: Session | null } }).data.session ?? null);
+          return;
+        }
+      } catch (bioErr) {
+        console.warn("biometric quick-unlock failed:", bioErr);
       }
       if (!cancelled) setSession(null);
     })();
@@ -52,7 +70,7 @@ export default function App() {
 
     // Native OAuth deep-link bridge. When the user finishes signing in
     // through the Chrome Custom Tab, the provider redirects to
-    // com.rudrans.invoice://oauth-callback?code=... — Android resolves
+    // com.wellnessextract.invoice://oauth-callback?code=... — Android resolves
     // that intent to this app (intent-filter in AndroidManifest.xml),
     // Capacitor delivers it here as an `appUrlOpen` event, and we
     // exchange the code for a session. onAuthStateChange above then
@@ -117,7 +135,7 @@ function Splash() {
       background: "#0f1115", color: "#9ba3af", fontSize: 13,
     }}>
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontWeight: 600, fontSize: 18, color: "#fff", marginBottom: 4 }}>Rudrans Invoice</div>
+        <div style={{ fontWeight: 600, fontSize: 18, color: "#fff", marginBottom: 4 }}>Wellness Extract Invoice</div>
         <div>Loading…</div>
       </div>
     </div>

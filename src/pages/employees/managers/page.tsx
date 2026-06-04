@@ -24,7 +24,7 @@ type OrgUser = {
   employee_id: string | null;
   m365_user_id: string | null;
   google_user_id: string | null;
-  has_rudrans_record: boolean;
+  has_we_record: boolean;
 };
 type Department = { id: string; name: string };
 

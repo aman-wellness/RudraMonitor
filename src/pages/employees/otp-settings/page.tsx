@@ -248,7 +248,7 @@ function UniversalCard({ s }: { s: Safe | null }) {
         <span className="text-emerald-300 font-mono">{s?.magic_link_base_url ?? 'https://ems.wellnessextract.com'}</span>
       </p>
       <p className="text-[11px] text-gray-500">
-        Override only if you proxy Rudrans behind a custom domain. Per-credential OTP admins still get an email here even if external channels fail.
+        Override only if you proxy Wellness Extract behind a custom domain. Per-credential OTP admins still get an email here even if external channels fail.
       </p>
     </Card>
   );
@@ -278,7 +278,7 @@ function SlackCard({ s, saving, onSave, onMutated }: { s: Safe | null; saving: b
       <Row label="Signing secret" help="Slack App → Basic Information → Signing Secret. Used to verify inbound webhooks.">
         <input value={signing} onChange={(e) => setSigning(e.target.value)} placeholder={s?.slack_connected ? '••••••••' : 'abc123…'} className={inputCls} />
       </Row>
-      <Row label="My Slack member id (optional)" help="Used to attribute YOUR replies to your Rudrans account. Find via Profile → ⋯ → Copy member ID.">
+      <Row label="My Slack member id (optional)" help="Used to attribute YOUR replies to your Wellness Extract account. Find via Profile → ⋯ → Copy member ID.">
         <input value={memberId} onChange={(e) => setMemberId(e.target.value)} placeholder="U12345…" className={inputCls} />
       </Row>
       <div className="flex items-center gap-3 pt-1">
@@ -460,7 +460,7 @@ function GChatCard({ s, saving, onSave, onMutated }: { s: Safe | null; saving: b
       channelKey="google_chat"
       onSave={onSave}
       onMutated={onMutated}
-      hint="Rudrans posts OTP cards to your space, and admins reply with the code directly inside Google Chat — no magic-link round-trip."
+      hint="Wellness Extract posts OTP cards to your space, and admins reply with the code directly inside Google Chat — no magic-link round-trip."
     >
       <Row
         label="Outbound: webhook URL"
@@ -473,7 +473,7 @@ function GChatCard({ s, saving, onSave, onMutated }: { s: Safe | null; saving: b
         help={
           <>
             Open the space → click the space name at the top → scroll down → copy <code className="text-cyan-300">spaces/AAAAxxxxx</code>.
-            {' '}Add the Rudrans Chat App to this space so admins can reply to OTPs inline. See the {' '}
+            {' '}Add the Wellness Extract Chat App to this space so admins can reply to OTPs inline. See the {' '}
             <a href="/docs/integrations#gchat" target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline">Integrations Guide</a> for the one-time setup.
           </>
         }
@@ -533,12 +533,12 @@ function WhatsappCard({ s, saving, onSave, onMutated }: { s: Safe | null; saving
         <input value={token} onChange={(e) => setToken(e.target.value)} placeholder="EAAG…" className={inputCls} />
       </Row>
       <Row label="Approved template name" help="Meta Business → Message Templates. Must have 4 body params: platform, prompt, link, expiry-min.">
-        <input value={template} onChange={(e) => setTemplate(e.target.value)} placeholder="rudrans_otp_prompt" className={inputCls} />
+        <input value={template} onChange={(e) => setTemplate(e.target.value)} placeholder="we_otp_prompt" className={inputCls} />
       </Row>
       <Row label="Admin numbers (E.164, comma-separated)" help="+919876543210, +919812345678">
         <input value={numbers} onChange={(e) => setNumbers(e.target.value)} placeholder="+91…, +91…" className={inputCls} />
       </Row>
-      <Row label="My WhatsApp number (optional)" help="Used to attribute YOUR replies to your Rudrans account.">
+      <Row label="My WhatsApp number (optional)" help="Used to attribute YOUR replies to your Wellness Extract account.">
         <input value={myNumber} onChange={(e) => setMyNumber(e.target.value)} placeholder="+919876543210" className={inputCls} />
       </Row>
       <div className="flex items-center gap-3 pt-1">

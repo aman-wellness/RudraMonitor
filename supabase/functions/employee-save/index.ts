@@ -268,15 +268,31 @@ Deno.serve(async (req) => {
     detail: { patch: clean },
   });
 
-  // Mirror the patch up to Microsoft 365 — fire-and-forget so a Graph
-  // hiccup doesn't fail the local save. The Rudrans row is the source of
-  // truth; the next directory-sync (or change-notification) will repair
-  // any drift. We only attempt this when the employee is actually linked
-  // to an m365 account.
-  queueBackground(() => mirrorToGraph(admin, orgId!, empId, clean)
-    .catch((e) => console.warn(`[employee-save] m365 mirror for ${empId} failed: ${(e as Error).message}`)));
+  // Mirror the patch up to Microsoft 365 SYNCHRONOUSLY so the UI knows
+  // whether the M365 write succeeded. Previously this was fire-and-forget
+  // (queueBackground), which caused silent failures — the customer saw
+  // "saved" in our portal but M365 still showed the old data. Errors are
+  // surfaced as a non-fatal warning so the local save still sticks.
+  console.info(`[employee-save] starting M365 mirror for emp=${empId} fields=${Object.keys(clean).join(',')}`);
+  let m365Status: { ok: boolean; warnings?: string[]; debug?: unknown } = { ok: true };
+  try {
+    const warnings = await mirrorToGraph(admin, orgId!, empId, clean);
+    console.info(`[employee-save] M365 mirror complete for ${empId} — warnings=${warnings.length}`);
+    if (warnings.length > 0) {
+      for (const w of warnings) console.warn(`[employee-save] M365 warning: ${w}`);
+      m365Status = { ok: false, warnings };
+    }
+  } catch (e) {
+    const msg = (e as Error).message;
+    console.error(`[employee-save] m365 mirror for ${empId} threw: ${msg}\n${(e as Error).stack ?? ''}`);
+    m365Status = { ok: false, warnings: [msg] };
+  }
 
-  return json({ ok: true, id: empId }, 200);
+  return json({
+    ok: true,
+    id: empId,
+    m365: m365Status,
+  }, 200);
 });
 
 async function mirrorToGraph(
@@ -284,7 +300,10 @@ async function mirrorToGraph(
   orgId: string,
   empId: string,
   patch: Record<string, unknown>,
-): Promise<void> {
+): Promise<string[]> {
+  const warnings: string[] = [];
+  console.info(`[mirrorToGraph] called for empId=${empId} patch_keys=[${Object.keys(patch).join(',')}]`);
+
   // Need the m365_user_id to push anything. Also pull the (possibly-just-set)
   // manager_id so we can resolve the manager's m365_user_id for the $ref PUT.
   const { data: row } = await admin
@@ -292,7 +311,11 @@ async function mirrorToGraph(
     .select("m365_user_id, manager_id, department_id")
     .eq("id", empId).maybeSingle();
   const emp = row as { m365_user_id: string | null; manager_id: string | null; department_id: string | null } | null;
-  if (!emp?.m365_user_id) return;        // not an M365 user — nothing to push
+  console.info(`[mirrorToGraph] DB row: m365_user_id=${emp?.m365_user_id ?? 'NULL'} manager_id=${emp?.manager_id ?? 'NULL'}`);
+  if (!emp?.m365_user_id) {
+    warnings.push("Employee has no m365_user_id — not linked to M365, can't push");
+    return warnings;
+  }
 
   // Build the Graph PATCH body from the subset of patched columns Graph
   // actually accepts. department is special: locally we store department_id
@@ -319,41 +342,72 @@ async function mirrorToGraph(
     graphBody.businessPhones = p ? [p] : [];
   }
 
-  const { accessToken } = await graphTokenFor(orgId);
+  let accessToken: string;
+  try {
+    const tok = await graphTokenFor(orgId);
+    accessToken = tok.accessToken;
+  } catch (e) {
+    warnings.push(`M365 token: ${(e as Error).message}`);
+    return warnings;
+  }
 
+  // ── PATCH profile fields ──
   if (Object.keys(graphBody).length > 0) {
-    const r = await fetch(`${GRAPH_BASE}/users/${emp.m365_user_id}`, {
-      method: "PATCH",
-      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-      body: JSON.stringify(graphBody),
-    });
-    if (!r.ok) {
-      throw new Error(`PATCH /users/${emp.m365_user_id}: ${r.status} ${(await r.text()).slice(0, 300)}`);
+    try {
+      const r = await fetch(`${GRAPH_BASE}/users/${emp.m365_user_id}`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify(graphBody),
+      });
+      if (!r.ok) {
+        const body = await r.text();
+        warnings.push(`Profile PATCH failed: ${r.status} ${body.slice(0, 200)}`);
+      } else {
+        console.info(`[employee-save] M365 profile PATCHed for ${emp.m365_user_id}`);
+      }
+    } catch (e) {
+      warnings.push(`Profile PATCH network error: ${(e as Error).message}`);
     }
   }
 
-  // Manager push — only if manager_id is in the patch (caller explicitly
-  // changed it). emp.manager_id reflects the just-applied value.
+  // ── Manager $ref ──  separate endpoint, separate failure mode.
   if ("manager_id" in patch) {
     if (!emp.manager_id) {
       // Clear manager.
-      await fetch(`${GRAPH_BASE}/users/${emp.m365_user_id}/manager/$ref`, {
-        method: "DELETE", headers: { Authorization: `Bearer ${accessToken}` },
-      }).catch(() => null);
+      try {
+        const r = await fetch(`${GRAPH_BASE}/users/${emp.m365_user_id}/manager/$ref`, {
+          method: "DELETE", headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!r.ok && r.status !== 404) {
+          warnings.push(`Manager DELETE failed: ${r.status} ${(await r.text()).slice(0, 200)}`);
+        } else {
+          console.info(`[employee-save] M365 manager cleared for ${emp.m365_user_id}`);
+        }
+      } catch (e) {
+        warnings.push(`Manager DELETE network error: ${(e as Error).message}`);
+      }
     } else {
       const { data: mgrRow } = await admin
         .from("employees")
-        .select("m365_user_id")
+        .select("m365_user_id, full_name")
         .eq("id", emp.manager_id).maybeSingle();
-      const mgrExtId = (mgrRow as { m365_user_id: string | null } | null)?.m365_user_id;
-      if (mgrExtId) {
-        const r = await fetch(`${GRAPH_BASE}/users/${emp.m365_user_id}/manager/$ref`, {
-          method: "PUT",
-          headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ "@odata.id": `${GRAPH_BASE}/users/${mgrExtId}` }),
-        });
-        if (!r.ok) {
-          throw new Error(`PUT /users/${emp.m365_user_id}/manager/$ref: ${r.status} ${(await r.text()).slice(0, 300)}`);
+      const mgr = mgrRow as { m365_user_id: string | null; full_name: string } | null;
+      if (!mgr?.m365_user_id) {
+        warnings.push(`Manager "${mgr?.full_name ?? "(unknown)"}" has no M365 link — local-only assignment, not pushed to M365`);
+      } else {
+        try {
+          const r = await fetch(`${GRAPH_BASE}/users/${emp.m365_user_id}/manager/$ref`, {
+            method: "PUT",
+            headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ "@odata.id": `${GRAPH_BASE}/users/${mgr.m365_user_id}` }),
+          });
+          if (!r.ok) {
+            warnings.push(`Manager PUT failed: ${r.status} ${(await r.text()).slice(0, 200)}`);
+          } else {
+            console.info(`[employee-save] M365 manager set: ${emp.m365_user_id} → ${mgr.m365_user_id}`);
+          }
+        } catch (e) {
+          warnings.push(`Manager PUT network error: ${(e as Error).message}`);
         }
       }
       // If manager has no m365_user_id (manager is a local-only Rudrans
@@ -361,6 +415,8 @@ async function mirrorToGraph(
       // still useful for the Rudrans org chart, but it won't appear in M365.
     }
   }
+
+  return warnings;
 }
 
 function queueBackground(fn: () => Promise<unknown>): void {

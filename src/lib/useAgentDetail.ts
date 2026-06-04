@@ -130,15 +130,49 @@ export function useAgentDetail(agentId: string | undefined, range: DateRange = '
     }
 
     const { since, until } = rangeBounds(range);
-    const [{ data: actData }, { data: alertData }] = await Promise.all([
-      supabase
-        .from('activity_logs')
-        .select('activity_type, application_name, url, page_title, duration, screenshot_url, video_url, created_at')
+    // Split into per-type queries. The single combined query previously
+    // capped at 5000 rows and sorted ascending — for an agent with 15K+
+    // app/browser rows in a 7-day window, the limit was hit by app+browser
+    // alone and screenshots/videos (which are far rarer and timestamped
+    // later) never made it into the result set. Symptom: dashboard showed
+    // "0 screenshots / 0 videos" even though the DB had hundreds.
+    //
+    // Per-type queries with type-appropriate caps:
+    //   • app + browser + idle + session_start → big limit for the timeline
+    //   • screenshot → 1000 most recent (descending)
+    //   • video      → 500 most recent (descending)
+    // Build a FRESH PostgrestFilterBuilder per call — the supabase-js
+    // filter builder is stateful and chaining .in/.eq on a shared instance
+    // accumulates filters across all parallel branches, producing an empty
+    // result. Each query gets its own pipeline below.
+    const sinceISO = since.toISOString();
+    const untilISO = until.toISOString();
+    const cols = 'activity_type, application_name, url, page_title, duration, screenshot_url, video_url, created_at';
+
+    const [
+      { data: timelineData },
+      { data: screenshotData },
+      { data: videoData },
+      { data: alertData },
+    ] = await Promise.all([
+      supabase.from('activity_logs').select(cols)
         .eq('agent_id', agentId)
-        .gte('created_at', since.toISOString())
-        .lte('created_at', until.toISOString())
+        .gte('created_at', sinceISO).lte('created_at', untilISO)
+        .in('activity_type', ['app', 'browser', 'idle', 'session_start'])
         .order('created_at', { ascending: true })
-        .limit(5000),
+        .limit(20000),
+      supabase.from('activity_logs').select(cols)
+        .eq('agent_id', agentId)
+        .gte('created_at', sinceISO).lte('created_at', untilISO)
+        .eq('activity_type', 'screenshot')
+        .order('created_at', { ascending: false })
+        .limit(1000),
+      supabase.from('activity_logs').select(cols)
+        .eq('agent_id', agentId)
+        .gte('created_at', sinceISO).lte('created_at', untilISO)
+        .eq('activity_type', 'video')
+        .order('created_at', { ascending: false })
+        .limit(500),
       supabase
         .from('alerts')
         .select('*')
@@ -147,7 +181,12 @@ export function useAgentDetail(agentId: string | undefined, range: DateRange = '
         .limit(50),
     ]);
 
-    setActivity((actData ?? []) as ActivityRow[]);
+    const actData = [
+      ...(timelineData ?? []),
+      ...(screenshotData ?? []),
+      ...(videoData ?? []),
+    ];
+    setActivity(actData as ActivityRow[]);
     setAlerts(
       (alertData ?? []).map((r: Record<string, unknown>) => ({
         id: r.id as string,

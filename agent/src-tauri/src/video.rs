@@ -30,7 +30,7 @@ pub struct CapturedClip {
 fn temp_path() -> PathBuf {
     let mut p = std::env::temp_dir();
     let nonce = chrono::Utc::now().timestamp_millis();
-    p.push(format!("rudrans_{nonce}.mp4"));
+    p.push(format!("we_{nonce}.mp4"));
     p
 }
 

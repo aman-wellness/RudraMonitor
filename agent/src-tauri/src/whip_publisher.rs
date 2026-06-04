@@ -355,7 +355,7 @@ async fn run_session(
             ..Default::default()
         },
         "screen-video".to_string(),
-        format!("rudrans-{agent_id}"),
+        format!("we-{agent_id}"),
     ));
     let rtp_sender = pc
         .add_track(Arc::clone(&video_track) as Arc<dyn TrackLocal + Send + Sync>)

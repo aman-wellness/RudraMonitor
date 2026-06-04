@@ -283,7 +283,7 @@ async fn handle_session(
             ..Default::default()
         },
         "screen-video".to_string(),
-        format!("rudrans-{}", agent_id),
+        format!("we-{}", agent_id),
     ));
     let rtp_sender = pc
         .add_track(Arc::clone(&video_track) as Arc<dyn TrackLocal + Send + Sync>)
@@ -1188,7 +1188,7 @@ pub(crate) fn attach_control_channel(
 
     // Per-message router. Each callback is its own future so they don't block
     // the data-channel read loop. Heavy work (input injection, clipboard) is
-    // offloaded to the dedicated `rudrans-input` thread via input::sender().
+    // offloaded to the dedicated `wellness-extract-input` thread via input::sender().
     let dc_msg = Arc::clone(&dc);
     dc.on_message(Box::new(move |m: DataChannelMessage| {
         let dc = dc_msg.clone();

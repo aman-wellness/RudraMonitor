@@ -113,7 +113,7 @@ export default function Checkout() {
       await refreshOrganization();
       // Bust feature cache so sidebar reflects new entitlements immediately.
       if (organization?.id) {
-        try { window.localStorage.removeItem(`rudrans:features:v2:${organization.id}`); } catch { /* ignore */ }
+        try { window.localStorage.removeItem(`we:features:v2:${organization.id}`); } catch { /* ignore */ }
       }
 
       const next = currentIdx + 1;

@@ -49,7 +49,7 @@ type Credential = {
 };
 type Department = { id: string; name: string };
 type Employee = {
-  // From v_org_users — covers both Rudrans-created and directory-synced users.
+  // From v_org_users — covers both Wellness Extract-created and directory-synced users.
   row_id: string;
   display_name: string;
   work_email: string | null;
@@ -57,7 +57,7 @@ type Employee = {
   provider: 'm365' | 'google' | null;
   m365_user_id: string | null;
   google_user_id: string | null;
-  has_rudrans_record: boolean;
+  has_we_record: boolean;
 };
 
 const CURRENCIES = ['INR', 'USD', 'EUR', 'GBP', 'AUD', 'CAD', 'SGD'];
@@ -111,12 +111,12 @@ export default function CredentialsVault() {
     const [c, d, e] = await Promise.all([
       supabase.from('credentials_safe').select('*').order('platform_name').range(0, 9999),
       supabase.from('org_departments').select('id, name').order('name'),
-      // Show ALL org users — Rudrans-created + directory-synced — so admins
+      // Show ALL org users — Wellness Extract-created + directory-synced — so admins
       // can send creds to anyone in the tenant, not just employees provisioned
-      // through the wizard. The send-direct fn auto-creates a Rudrans row for
+      // through the wizard. The send-direct fn auto-creates a Wellness Extract row for
       // directory-only users at send-time so the assignment can be recorded.
       supabase.from('v_org_users')
-        .select('row_id, display_name, work_email, employee_id, provider, m365_user_id, google_user_id, has_rudrans_record')
+        .select('row_id, display_name, work_email, employee_id, provider, m365_user_id, google_user_id, has_we_record')
         .neq('status', 'offboarded')
         .order('display_name'),
     ]);
@@ -686,7 +686,7 @@ function CredentialModal({
               <div className="flex-1">
                 <p className="text-xs text-white font-medium">Auto-fetch monthly invoice</p>
                 <p className="text-[11px] text-gray-500 mt-0.5">
-                  Every billing cycle, Rudrans pulls the latest invoice from this platform and emails it to your accounts team.
+                  Every billing cycle, Wellness Extract pulls the latest invoice from this platform and emails it to your accounts team.
                   {!f.subscription_starts_at && (
                     <span className="block text-amber-400/80 mt-1">Set a "Starts on" date above to anchor the billing period.</span>
                   )}
@@ -859,9 +859,9 @@ function AssignModal({
     setBusy(true); setErr(null); setOutcomes(null);
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      // If the picked user has a Rudrans employees row, send by employee_id.
+      // If the picked user has a Wellness Extract employees row, send by employee_id.
       // Otherwise pass the directory identifier so the edge fn can lazily
-      // create the Rudrans row before inserting the assignment.
+      // create the Wellness Extract row before inserting the assignment.
       const target = picked.employee_id
         ? { employee_id: picked.employee_id }
         : { provider: picked.provider, external_id: picked.m365_user_id ?? picked.google_user_id };
@@ -899,7 +899,7 @@ function AssignModal({
                   <option value="">— pick user —</option>
                   {employees.map((e) => (
                     <option key={e.row_id} value={e.row_id}>
-                      {e.display_name}{e.work_email ? ` · ${e.work_email}` : ''}{!e.has_rudrans_record ? ' (synced)' : ''}
+                      {e.display_name}{e.work_email ? ` · ${e.work_email}` : ''}{!e.has_we_record ? ' (synced)' : ''}
                     </option>
                   ))}
                 </select>
@@ -1993,7 +1993,7 @@ function CsvImportModal({
     const blob = new Blob([`${header}\n${sample}\n`], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = 'rudrans-credentials-template.csv'; a.click();
+    a.href = url; a.download = 'wellness-extract-credentials-template.csv'; a.click();
     URL.revokeObjectURL(url);
   };
 
@@ -3186,7 +3186,7 @@ function InvoiceCsvModal({ credentials, onClose, onDone }: { credentials: Creden
     const blob = new Blob([`${header}\n${sample}\n`], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = 'rudrans-invoices-template.csv'; a.click();
+    a.href = url; a.download = 'wellness-extract-invoices-template.csv'; a.click();
     URL.revokeObjectURL(url);
   };
 
@@ -3499,7 +3499,7 @@ async function exportCredentialsCsv(rows: Credential[], depts: Department[]) {
     };
   });
   const stamp = new Date().toISOString().slice(0, 10);
-  downloadCsvCreds(`rudrans-credentials-${stamp}.csv`, headers, data);
+  downloadCsvCreds(`wellness-extract-credentials-.csv`, headers, data);
 }
 
 function downloadCsvCreds(filename: string, headers: string[], rows: Record<string, unknown>[]) {

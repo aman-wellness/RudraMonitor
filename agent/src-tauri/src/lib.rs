@@ -806,21 +806,21 @@ fn spawn_background_loop(state: AppState) {
                 if let Err(e) = screenshot_tick(&state).await {
                     log::warn!("screenshot tick failed: {e}");
                     *state.last_error.lock().await = Some(e.to_string());
-                    // On macOS any screenshot failure means TCC trouble — either
-                    // ffmpeg hung, screencapture got a "Deny" click, the parent
-                    // app's ad-hoc signature became distrusted on update, etc.
-                    // Disable for the rest of this process so we stop spawning
-                    // captures that pop up the OS permission dialog every cycle.
-                    // Agent restart clears the flag; Developer ID signing fixes
-                    // it properly.
-                    #[cfg(target_os = "macos")]
-                    {
-                        log::warn!(
-                            "screenshot capture disabled for this session ({}) — restart agent or wait for the Developer-ID-signed build to retry.",
-                            e
-                        );
-                        state.screenshot_capture_disabled.store(true, Ordering::SeqCst);
-                    }
+                    // We used to permanently disable screenshot capture on macOS
+                    // after a single failure to avoid a re-prompt loop. The
+                    // re-prompt loop is no longer a concern (we route through
+                    // /usr/sbin/screencapture which inherits the parent app's
+                    // TCC grant — no per-call dialog), and the permanent-kill
+                    // meant a single transient failure on auto-update (or any
+                    // brief TCC reset) silently broke screenshots until the user
+                    // happened to restart the agent. The customer now had no
+                    // working capture for 36+ hours with no signal in the UI.
+                    //
+                    // Instead, let the natural interval handle retry: if
+                    // permission is denied at TCC level, screencapture returns
+                    // an error each tick but does not pop a UI dialog, so the
+                    // cost is just one log line per interval. On re-grant the
+                    // next tick recovers automatically.
                 }
             }
         });
@@ -869,20 +869,11 @@ fn spawn_background_loop(state: AppState) {
                 if let Err(e) = video_tick(&state).await {
                     log::warn!("video tick failed: {e}");
                     *state.last_error.lock().await = Some(e.to_string());
-                    // On macOS ANY video tick failure means TCC trouble —
-                    // ffmpeg hung, permission got denied, signature mismatch,
-                    // etc. Freeze captures for the rest of this process so
-                    // customers stop seeing Screen Recording prompts every
-                    // minute. Agent restart clears the flag; the planned
-                    // Developer-ID-signed build will retry cleanly.
-                    #[cfg(target_os = "macos")]
-                    {
-                        log::warn!(
-                            "video capture disabled for this session ({}) — restart agent or wait for the Developer-ID-signed build.",
-                            e
-                        );
-                        state.video_capture_disabled.store(true, Ordering::SeqCst);
-                    }
+                    // Same change as screenshot poller above — no permanent
+                    // kill-switch on transient failure. Natural interval
+                    // (video_interval_secs, default 30 min) is already wide
+                    // enough that a re-try cost is negligible; on permission
+                    // re-grant the next attempt recovers automatically.
                 }
             }
         });
@@ -982,7 +973,7 @@ pub fn uninstall_self() -> Result<()> {
         if let Some(home) = dirs::home_dir() {
             let plist = home
                 .join("Library/LaunchAgents")
-                .join("com.rudrans.agent.plist");
+                .join("com.wellnessextract.agent.plist");
             let _ = std::fs::remove_file(&plist);
             // Tauri-plugin-autostart uses the bundle id as launchd label.
             let _ = std::process::Command::new("launchctl")
@@ -1006,7 +997,7 @@ pub fn uninstall_self() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         if let Some(home) = dirs::home_dir() {
-            let _ = std::fs::remove_file(home.join(".config/autostart/com.rudrans.agent.desktop"));
+            let _ = std::fs::remove_file(home.join(".config/autostart/com.wellnessextract.agent.desktop"));
         }
     }
 
@@ -1415,8 +1406,8 @@ fn spawn_updater_loop(handle: tauri::AppHandle) {
 
 async fn check_for_update(handle: &tauri::AppHandle) -> Result<()> {
     // Customers reported "agents not updating" — add structured logs at
-    // every step so we can read /tmp/rudrans-agent.log (mac) or
-    // %LOCALAPPDATA%\com.rudrans.agent\logs\… (win) to see which step
+    // every step so we can read /tmp/wellness-extract-agent.log (mac) or
+    // %LOCALAPPDATA%\com.wellnessextract.agent\logs\… (win) to see which step
     // failed without needing remote access.
     let current = env!("CARGO_PKG_VERSION");
     log::info!("updater: checking for update (current version {current})");

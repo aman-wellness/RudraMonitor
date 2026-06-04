@@ -40,7 +40,7 @@ type OrgUser = {
   provider: 'm365' | 'google' | null;
   m365_user_id: string | null;
   google_user_id: string | null;
-  has_rudrans_record: boolean;
+  has_we_record: boolean;
   doj?: string | null;
   lwd?: string | null;
 };
@@ -95,7 +95,7 @@ export default function HardwareInventory() {
       supabase.from('hardware_assets').select('*').order('created_at', { ascending: false }).range(0, 9999),
       // Include offboarded employees so we can still show last assignee + their lwd.
       supabase.from('v_org_users')
-        .select('row_id, display_name, work_email, employee_id, provider, m365_user_id, google_user_id, has_rudrans_record')
+        .select('row_id, display_name, work_email, employee_id, provider, m365_user_id, google_user_id, has_we_record')
         .order('display_name').range(0, 9999),
       supabase.from('employees').select('id, doj, lwd, status').range(0, 9999),
       supabase.from('hardware_assignments').select('asset_id').range(0, 9999),
@@ -603,7 +603,7 @@ function AssignModal({ asset, users, onClose, onDone }: { asset: Asset; users: O
           <option value="">— pick user —</option>
           {users.map((u) => (
             <option key={u.row_id} value={u.row_id}>
-              {u.display_name}{u.work_email ? ` · ${u.work_email}` : ''}{!u.has_rudrans_record ? ' (synced)' : ''}
+              {u.display_name}{u.work_email ? ` · ${u.work_email}` : ''}{!u.has_we_record ? ' (synced)' : ''}
             </option>
           ))}
         </select>
@@ -656,7 +656,7 @@ function CsvImportModal({ onClose, onDone }: { onClose: () => void; onDone: () =
     const blob = new Blob([`${header}\n${sample}\n`], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = 'rudrans-hardware-template.csv'; a.click();
+    a.href = url; a.download = 'wellness-extract-hardware-template.csv'; a.click();
     URL.revokeObjectURL(url);
   };
 
@@ -887,7 +887,7 @@ function exportHardwareCsv(rows: Asset[], userByEmpId: Map<string, OrgUser>) {
     };
   });
   const stamp = new Date().toISOString().slice(0, 10);
-  downloadCsv(`rudrans-hardware-${stamp}.csv`, headers, data);
+  downloadCsv(`wellness-extract-hardware-.csv`, headers, data);
 }
 
 function downloadCsv(filename: string, headers: string[], rows: Record<string, unknown>[]) {

@@ -39,7 +39,7 @@ fn cache_path() -> Result<PathBuf> {
 }
 
 /// Where Tauri drops `bundle.resources` per platform. The agent runs as
-/// `<bundle>/Contents/MacOS/rudrans-agent` on macOS, so resources sit one
+/// `<bundle>/Contents/MacOS/wellness-extract-agent` on macOS, so resources sit one
 /// dir up under Contents/Resources/. Windows and Linux Tauri builds keep
 /// the resources sibling to the executable.
 fn bundled_paths() -> Vec<PathBuf> {
@@ -48,7 +48,7 @@ fn bundled_paths() -> Vec<PathBuf> {
         if let Some(exe_dir) = exe.parent() {
             #[cfg(target_os = "macos")]
             {
-                // /Applications/Rudrans Agent.app/Contents/MacOS/rudrans-agent
+                // /Applications/Rudrans Agent.app/Contents/MacOS/wellness-extract-agent
                 //   → ../Resources/...
                 if let Some(contents) = exe_dir.parent() {
                     // Tauri 2 actually nests bundle.resources entries under
@@ -65,8 +65,8 @@ fn bundled_paths() -> Vec<PathBuf> {
             }
             #[cfg(not(target_os = "macos"))]
             {
-                // Windows MSI: <install>\rudrans-agent.exe   ←→ <install>\resources\ffmpeg.exe
-                // Linux deb:    /usr/bin/rudrans-agent       ←→ /usr/lib/.../resources/ffmpeg
+                // Windows MSI: <install>\wellness-extract-agent.exe   ←→ <install>\resources\ffmpeg.exe
+                // Linux deb:    /usr/bin/wellness-extract-agent       ←→ /usr/lib/.../resources/ffmpeg
                 // Tauri also drops a sibling resources/ dir.
                 out.push(exe_dir.join("resources").join(BIN_NAME));
                 out.push(exe_dir.join(BIN_NAME));

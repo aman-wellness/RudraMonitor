@@ -16,6 +16,14 @@ if (!URL || !ANON) {
   throw new Error("VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY missing — check mobile/.env");
 }
 
+// Bypass supabase-js's navigator.locks-based cross-tab coordination. The default
+// lock deadlocks on some Android WebView builds where navigator.locks is
+// present but broken (Android 7-9 in particular), causing
+// signInWithPassword() to hang forever — the symptom the user reported as
+// "Signing in… stuck on some Androids". A WebView never has multi-tab session
+// sharing requirements, so a no-op lock is the right answer here.
+const noopLock = async <R>(_name: string, _timeout: number, fn: () => Promise<R>): Promise<R> => fn();
+
 export const supabase = createClient(URL, ANON, {
   auth: {
     persistSession: true,
@@ -24,6 +32,7 @@ export const supabase = createClient(URL, ANON, {
     // auto-detects + persists. Capacitor file:// origin won't hit this code
     // path (no URL hash flow), so leaving this true is safe on both.
     detectSessionInUrl: true,
+    lock: noopLock,
   },
 });
 

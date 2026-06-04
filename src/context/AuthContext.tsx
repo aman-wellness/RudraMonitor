@@ -98,7 +98,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // reads the sessionStorage flag below.
     try {
       sessionStorage.setItem(
-        'rudrans_oauth_intent',
+        'we_oauth_intent',
         window.location.pathname.includes('/login') ? 'login' : 'signup',
       );
     } catch { /* ignore */ }
@@ -126,7 +126,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Supabase already builds, producing a malformed authorize URL (404).
     try {
       sessionStorage.setItem(
-        'rudrans_oauth_intent',
+        'we_oauth_intent',
         window.location.pathname.includes('/login') ? 'login' : 'signup',
       );
     } catch { /* ignore */ }

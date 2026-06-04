@@ -40,7 +40,7 @@ export default function CredentialsDecisionResult() {
           </p>
 
           <div className="pt-4 border-t border-dark-700 flex items-center justify-between">
-            <p className="text-xs text-gray-500">Rudrans</p>
+            <p className="text-xs text-gray-500">Wellness Extract</p>
             <button onClick={() => window.close()} className="text-xs text-emerald-400 hover:text-emerald-300">
               Close
             </button>

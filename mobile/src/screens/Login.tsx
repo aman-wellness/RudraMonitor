@@ -37,10 +37,19 @@ export default function Login() {
     setBusy(true);
     setErr(null);
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
-      if (error) throw error;
+      // Hard 20s timeout — on some Android WebViews fetch() can hang
+      // indefinitely on a flaky network or a broken navigator.locks
+      // implementation, leaving the user staring at "Signing in…" forever.
+      // Race against a timer so they always get either a session or a
+      // clear error within 20 seconds.
+      const signInPromise = supabase.auth.signInWithPassword({ email: email.trim(), password });
+      const timeoutPromise = new Promise<{ error: Error }>((resolve) =>
+        setTimeout(() => resolve({ error: new Error("Network timeout — check your internet connection and try again.") }), 20000),
+      );
+      const result = await Promise.race([signInPromise, timeoutPromise]) as { error: Error | null };
+      if (result.error) throw result.error;
     } catch (e) {
-      setErr((e as Error).message);
+      setErr((e as Error).message || "Login failed. Please try again.");
       setBusy(false);
       return;
     }
@@ -73,7 +82,7 @@ export default function Login() {
     try {
       // startOAuth picks PWA vs native flow. Native opens a Chrome
       // Custom Tab; the user signs in there and Android deep-links
-      // them back to the app via com.rudrans.invoice://oauth-callback,
+      // them back to the app via com.wellnessextract.invoice://oauth-callback,
       // which App.tsx's appUrlOpen listener exchanges for a session.
       await startOAuth(provider);
       // On native, control returns here immediately — the actual sign-in
@@ -101,9 +110,9 @@ export default function Login() {
             display: "flex", alignItems: "center", justifyContent: "center",
             fontSize: 32,
           }}>📷</div>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 600 }}>Rudrans Invoice</h1>
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 600 }}>Wellness Extract Invoice</h1>
           <p style={{ margin: "6px 0 0", fontSize: 13, color: "#9ba3af" }}>
-            Sign in with your Rudrans account
+            Sign in with your Wellness Extract account
           </p>
         </div>
 

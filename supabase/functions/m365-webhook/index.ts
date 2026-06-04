@@ -208,6 +208,48 @@ async function applyChange(
       country:         u.country ?? null,
       raw: u, synced_at: new Date().toISOString(),
     }, { onConflict: "org_id,provider,external_id" });
+
+    // Reverse sync — mirror Graph's manager onto employees.manager_id so the
+    // portal reflects M365 admin-portal edits in near-real-time. Errors here
+    // are non-fatal (directory_users upsert already succeeded).
+    try {
+      const mr = await fetch(`${GRAPH_BASE}/users/${extId}/manager?$select=id`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const { data: empRow } = await admin
+        .from("employees")
+        .select("id, manager_id")
+        .eq("org_id", orgId)
+        .eq("m365_user_id", extId)
+        .maybeSingle();
+      const emp = empRow as { id: string; manager_id: string | null } | null;
+      if (emp) {
+        let newManagerId: string | null = null;
+        if (mr.ok) {
+          const mgr = await mr.json() as { id?: string };
+          if (mgr?.id) {
+            const { data: mgrEmp } = await admin
+              .from("employees")
+              .select("id")
+              .eq("org_id", orgId)
+              .eq("m365_user_id", mgr.id)
+              .maybeSingle();
+            newManagerId = (mgrEmp as { id: string } | null)?.id ?? null;
+          }
+        } else if (mr.status !== 404) {
+          console.warn(`[m365-webhook] manager fetch for ${extId}: ${mr.status}`);
+        }
+        // 404 from Graph = no manager set → newManagerId stays null (clear).
+        if (newManagerId !== emp.manager_id) {
+          await admin.from("employees")
+            .update({ manager_id: newManagerId })
+            .eq("id", emp.id);
+          console.info(`[m365-webhook] reverse-sync manager: ${emp.id} → ${newManagerId ?? "(cleared)"}`);
+        }
+      }
+    } catch (e) {
+      console.warn(`[m365-webhook] reverse manager sync failed for ${extId}: ${(e as Error).message}`);
+    }
     return;
   }
 

@@ -5,14 +5,14 @@
 // `https://localhost/m/` (Capacitor's WebView origin) which the device
 // can't route back into the app. So the native path uses a Chrome
 // Custom Tab (Capacitor Browser) for the sign-in, and a custom URL
-// scheme (com.rudrans.invoice://oauth-callback) to bring the user back
+// scheme (com.wellnessextract.invoice://oauth-callback) to bring the user back
 // into the app with the auth code.
 //
 // Flow:
 //   1. Login screen calls startOAuth("google" | "azure")
 //   2. We ask Supabase for the OAuth URL with skipBrowserRedirect = true
 //   3. Browser.open() launches the URL in a Chrome Custom Tab
-//   4. User signs in; provider redirects to com.rudrans.invoice://oauth-callback?code=...
+//   4. User signs in; provider redirects to com.wellnessextract.invoice://oauth-callback?code=...
 //   5. Android resolves that intent to our app (intent-filter in
 //      AndroidManifest.xml)
 //   6. App.tsx's appUrlOpen listener calls handleDeepLink() below,
@@ -22,7 +22,7 @@
 //
 // External setup required (one-time, per Supabase project):
 //   - Supabase Studio → Auth → URL Configuration → Redirect URLs:
-//     add `com.rudrans.invoice://oauth-callback`
+//     add `com.wellnessextract.invoice://oauth-callback`
 //   - Google Cloud Console → OAuth client → Authorized redirect URIs:
 //     add `https://api-ems.wellnessextract.com/auth/v1/callback` (Supabase's
 //     intermediate) — the custom scheme isn't accepted by Google
@@ -34,7 +34,7 @@ import { Capacitor } from "@capacitor/core";
 import { Browser } from "@capacitor/browser";
 import { supabase } from "./supabase";
 
-const NATIVE_REDIRECT = "com.rudrans.invoice://oauth-callback";
+const NATIVE_REDIRECT = "com.wellnessextract.invoice://oauth-callback";
 
 export function isNative(): boolean {
   return Capacitor.isNativePlatform();
@@ -73,11 +73,11 @@ export async function startOAuth(provider: "google" | "azure"): Promise<void> {
   await Browser.open({ url: data.url, presentationStyle: "popover" });
 }
 
-/// Called by App.tsx when Android delivers a `com.rudrans.invoice://` deep
+/// Called by App.tsx when Android delivers a `com.wellnessextract.invoice://` deep
 /// link. Extracts the PKCE `code` from the URL and exchanges it with
 /// Supabase for a session. Returns true if a session was established.
 export async function handleDeepLink(url: string): Promise<boolean> {
-  // URL shape: com.rudrans.invoice://oauth-callback?code=XXX&state=YYY
+  // URL shape: com.wellnessextract.invoice://oauth-callback?code=XXX&state=YYY
   // (Implicit-flow URLs would have a #access_token=... fragment; PKCE
   // uses query params. supabase-js v2 defaults to PKCE.)
   try {

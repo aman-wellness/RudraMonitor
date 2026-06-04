@@ -38,6 +38,7 @@ export const APP_ACCESS_CODES = [
   { code: 'hardware',            label: 'IT Hardware',            hint: 'Asset inventory + assignments' },
   { code: 'offboarding',         label: 'Offboarding',            hint: 'Multi-stage exit workflow' },
   { code: 'integrations',        label: 'Integrations',           hint: 'M365 / Google Workspace sync' },
+  { code: 'governance',          label: 'Governance',             hint: 'Pillars, org chart, channels, access register, policies' },
   { code: 'admin_portal',        label: 'Admin Portal',           hint: 'Org settings, users, billing' },
 ] as const;
 

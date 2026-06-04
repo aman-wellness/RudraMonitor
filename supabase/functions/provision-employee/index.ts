@@ -202,7 +202,7 @@ Deno.serve(async (req) => {
       manager_id: body.manager_id ?? null,
       doj: body.doj ?? null,
       status: "active",
-      source: "rudrans_created",
+      source: "wellness_extract_created",
       m365_user_id: m365UserId,
       google_user_id: googleUserId,
       m365_license_skus: body.m365_license_skus ?? [],

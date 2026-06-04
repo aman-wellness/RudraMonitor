@@ -84,7 +84,7 @@ function expandFeatures(raw: string[] | null | undefined): Set<FeatureCode> {
 // The async RPC then revalidates and updates the state if anything changed.
 // Bump the version suffix any time we change the gating semantics — every
 // browser will then discard its stale cached set and refetch fresh.
-const CACHE_KEY = (orgId: string) => `rudrans:features:v2:${orgId}`;
+const CACHE_KEY = (orgId: string) => `we:features:v2:${orgId}`;
 type Cached = Omit<ReturnType<typeof emptyState>, 'refresh'>;
 function emptyState() {
   return {
