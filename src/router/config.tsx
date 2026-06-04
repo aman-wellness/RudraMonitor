@@ -19,6 +19,7 @@ const Login = lazy(() => import("../pages/login/page"));
 const Signup = lazy(() => import("../pages/signup/page"));
 const SignupSuccess = lazy(() => import("../pages/signup-success/page"));
 const CompleteSignup = lazy(() => import("../pages/complete-signup/page"));
+const OAuthMobileBridge = lazy(() => import("../pages/oauth-mobile-bridge/page"));
 const AcceptInvite = lazy(() => import("../pages/accept-invite/page"));
 const Dashboard = lazy(() => import("../pages/dashboard/page"));
 const Monitoring = lazy(() => import("../pages/monitoring/page"));
@@ -115,6 +116,11 @@ const routes: RouteObject[] = [
   { path: "/signup-success",  element: wrap(<SignupSuccess />) },
   { path: "/complete-signup", element: wrap(<CompleteSignup />) },
   { path: "/accept-invite",   element: wrap(<AcceptInvite />) },
+  // OAuth bridge for the Capacitor mobile app on phones whose default
+  // browser can't handle custom-scheme redirects (HeyTapBrowser, Samsung
+  // Internet, etc.). Public, no auth gate — the page just forwards to
+  // the app's custom URL scheme.
+  { path: "/oauth-mobile-bridge", element: wrap(<OAuthMobileBridge />) },
   { path: "/dashboard", element: protect(access("dashboard", <Dashboard />)) },
   // Monitoring family — require the basic monitoring feature. EM-only
   // customers (who haven't bought any monitoring tier) get the upgrade CTA.

@@ -34,7 +34,25 @@ import { Capacitor } from "@capacitor/core";
 import { Browser } from "@capacitor/browser";
 import { supabase } from "./supabase";
 
-const NATIVE_REDIRECT = "com.wellnessextract.invoice://oauth-callback";
+// Native redirect target. We could redirect directly to the custom URL
+// scheme (com.wellnessextract.invoice://oauth-callback) but on phones
+// whose default browser is not Chrome — OxygenOS / HeyTapBrowser,
+// Samsung Internet, MIUI Browser, etc. — that browser refuses to
+// follow a 302 to a custom scheme and the user ends up stranded on a
+// "page can't be loaded" screen.
+//
+// Instead we redirect to an HTTPS page hosted on our own domain. That
+// page (src/pages/oauth-mobile-bridge/page.tsx) immediately attempts
+// `window.location = "com.wellnessextract.invoice://oauth-callback?<query>"`
+// which DOES trigger Android's intent resolver from any browser, and
+// also renders a tap-to-open fallback button if the auto-redirect is
+// blocked. Browser-agnostic and works on every Android.
+//
+// IMPORTANT external setup:
+//   - Supabase Studio → Auth → URL Configuration → Redirect URLs must
+//     include `https://ems.wellnessextract.com/oauth-mobile-bridge`
+//     (alongside the existing custom-scheme entry).
+const NATIVE_REDIRECT = "https://ems.wellnessextract.com/oauth-mobile-bridge";
 
 export function isNative(): boolean {
   return Capacitor.isNativePlatform();
