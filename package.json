@@ -11,9 +11,17 @@
     "type-check": "tsc --noEmit --project tsconfig.app.json"
   },
   "dependencies": {
+    "@dicebear/collection": "^9.4.2",
+    "@dicebear/core": "^9.4.2",
     "@stripe/react-stripe-js": "4.0.2",
     "@supabase/supabase-js": "2.57.4",
+    "@tsparticles/engine": "^4.1.2",
+    "@tsparticles/react": "^4.1.2",
+    "@tsparticles/slim": "^4.1.2",
+    "@types/dagre": "^0.7.54",
+    "@xyflow/react": "^12.11.0",
     "country-state-city": "^3.2.1",
+    "dagre": "^0.8.5",
     "i18next": "^25.3.2",
     "i18next-browser-languagedetector": "^8.2.0",
     "livekit-client": "^2.19.0",
