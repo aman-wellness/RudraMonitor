@@ -86,9 +86,22 @@ export default function Login() {
       // which App.tsx's appUrlOpen listener exchanges for a session.
       await startOAuth(provider);
       // On native, control returns here immediately — the actual sign-in
-      // resolves later via the deep link. Keep `busy` true until the
-      // auth state subscriber sees a session OR the user backs out.
-      // For the PWA case the browser navigates away so this is moot.
+      // resolves later via the deep link. We can't reliably know when
+      // the user has either completed sign-in or backed out, so guard
+      // with a 90 s ceiling: if no session has arrived by then, unstick
+      // the button and surface the email-password alternative. Without
+      // this guard, browsers that block the custom-scheme deep link
+      // (HeyTapBrowser, Samsung Internet) leave the button frozen on
+      // "Signing in…" with no recovery short of force-quit.
+      window.setTimeout(() => {
+        setBusy((current) => {
+          if (current) {
+            setErr("Sign-in didn't return to the app. Try again, or use email + password below.");
+            return false;
+          }
+          return current;
+        });
+      }, 90000);
     } catch (e) {
       setErr((e as Error).message);
       setBusy(false);
