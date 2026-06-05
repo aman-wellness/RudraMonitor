@@ -82,6 +82,21 @@ export default function App() {
       });
     }).then((h) => { urlListenerHandle = h; });
 
+    // Cold-start case: when Android launches the app fresh via an intent
+    // (intent://oauth-callback... → scheme dispatcher), the OS delivers
+    // the launch URL via the Activity's getIntent() — NOT via
+    // appUrlOpen, because the listener is registered AFTER the activity
+    // is already running. Pull the launch URL explicitly so we don't
+    // miss the OAuth code when the app was killed before the user
+    // tapped Microsoft sign-in.
+    void CapacitorApp.getLaunchUrl().then((res) => {
+      if (res?.url) {
+        void handleDeepLink(res.url).catch((e) => {
+          console.error("cold-start deep link auth failed:", e);
+        });
+      }
+    }).catch(() => { /* getLaunchUrl rejects on older Capacitor; ignore */ });
+
     return () => {
       cancelled = true;
       sub.subscription.unsubscribe();

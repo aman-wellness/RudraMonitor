@@ -54,11 +54,15 @@
     // navigate to it as if it were a URL. The plain `custom-scheme://`
     // form fails on these browsers; `intent://...` does not.
     // Docs: https://developer.chrome.com/docs/multidevice/android/intents
+    // NO package=  — keeping the intent IMPLICIT lets Android route via
+    // the AndroidManifest intent-filter (which has the right data scheme
+    // and BROWSABLE category set). When we forced package= the launch
+    // worked but the data URI was dropped, so Capacitor's appUrlOpen
+    // listener never fired and the in-app handler had nothing to exchange.
     var intentUrl =
       "intent://oauth-callback" + (queryNoQ ? "?" + queryNoQ : "") +
       "#Intent;" +
       "scheme=com.wellnessextract.invoice;" +
-      "package=com.wellnessextract.invoice;" +
       "S.browser_fallback_url=" + encodeURIComponent("/downloads/wellness-extract-invoice.apk") + ";" +
       "end";
 
