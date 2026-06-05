@@ -44,27 +44,50 @@
 
   (function () {
     var query = window.location.search || "";
-    var target = "com.wellnessextract.invoice://oauth-callback" + query;
-    var cta = document.getElementById("cta");
-    cta.href = target;
+    // Strip leading "?" — Android intent URI format takes query separately.
+    var queryNoQ = query.replace(/^\?/, "");
 
-    // Strategy 1: location.assign immediately
+    // Android Intent URI — the standard documented way to launch a native
+    // app from any Chrome-based browser (Chrome, HeyTapBrowser, MIUI
+    // Browser, Samsung Internet). The browser sees `intent://` and asks
+    // Android's intent resolver to handle it, instead of trying to
+    // navigate to it as if it were a URL. The plain `custom-scheme://`
+    // form fails on these browsers; `intent://...` does not.
+    // Docs: https://developer.chrome.com/docs/multidevice/android/intents
+    var intentUrl =
+      "intent://oauth-callback" + (queryNoQ ? "?" + queryNoQ : "") +
+      "#Intent;" +
+      "scheme=com.wellnessextract.invoice;" +
+      "package=com.wellnessextract.invoice;" +
+      "S.browser_fallback_url=" + encodeURIComponent("/downloads/wellness-extract-invoice.apk") + ";" +
+      "end";
+
+    // Plain custom scheme — fallback for environments that ARE happy with
+    // it (older Android Chrome, in-app webviews that proxy to system,
+    // iOS Safari).
+    var schemeUrl = "com.wellnessextract.invoice://oauth-callback" + query;
+
+    var cta = document.getElementById("cta");
+    cta.href = intentUrl;
+
+    // Strategy 1: navigate to the intent:// URL — works on any Chrome-based
+    // Android browser.
     setTimeout(function () {
-      try { window.location.assign(target); } catch (e) {}
+      try { window.location.assign(intentUrl); } catch (e) {}
     }, 80);
 
-    // Strategy 2: synthetic anchor click (some browsers accept this
-    // even when they reject programmatic top-level navigation to
-    // non-http schemes — Safari, Samsung Internet historically).
+    // Strategy 2: synthetic anchor click on the same intent:// URL — some
+    // browsers treat user-clicks differently from location.assign.
     setTimeout(function () {
       try { cta.click(); } catch (e) {}
     }, 350);
 
-    // Strategy 3: hidden iframe (yet another browser quirk path).
+    // Strategy 3: fall back to the plain custom scheme via hidden iframe
+    // — covers iOS Safari and any browser that doesn't grok intent://.
     setTimeout(function () {
       try {
         var f = document.getElementById("bridgeframe");
-        if (f) f.src = target;
+        if (f) f.src = schemeUrl;
       } catch (e) {}
     }, 650);
   })();
