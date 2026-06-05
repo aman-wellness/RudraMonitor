@@ -359,7 +359,7 @@ create policy XXX_write on public.XXX
       <Section id="oauth-em" title="10. M365 / Google OAuth (Employee Management)">
         <Sub title="M365">
           <Bullets items={[
-            'Multi-tenant directory app registered in Entra (client_id 59337732-854c-4b7f-813f-c1e1ce8d90c6).',
+            'Multi-tenant directory app registered in Entra (client_id e0835d96-3fef-4c33-9ade-041bf9c9f01a).',
             'Customer admin clicks "Grant admin consent" → redirected to login.microsoftonline.com/common/adminconsent',
             'On accept, MS redirects back with ?tenant=...&admin_consent=True',
             'oauth-m365-callback persists tenant_id + scopes on org_integrations',
