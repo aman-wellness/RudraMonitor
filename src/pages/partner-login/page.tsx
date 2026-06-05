@@ -42,7 +42,7 @@ export default function PartnerLogin() {
   return (
     <LoginLayout
       accent="violet"
-      brandLabel="Wellness Extract Partners"
+      brandLabel="Rudrans Partners"
       brandIcon="ri-team-line"
       illustrationUrl="https://illustrations.popsy.co/violet/business-deal.svg"
       illustrationCaption="Grow your channel"

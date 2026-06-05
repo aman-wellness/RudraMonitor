@@ -353,7 +353,7 @@ export default function NewCustomerModal({ open, onClose, onCreated, showPartner
                         </select>
                         {!showPartnerPicker && partnerDiscount != null && (
                           <p className="text-[11px] text-violet-300/70 mt-1">
-                            Your wholesale rate = list × ({100 - partnerDiscount}% of list). Wellness Extract bills you this amount; you charge the customer whatever you like.
+                            Your wholesale rate = list × ({100 - partnerDiscount}% of list). Rudrans bills you this amount; you charge the customer whatever you like.
                           </p>
                         )}
                       </Field>

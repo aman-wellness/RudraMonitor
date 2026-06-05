@@ -88,7 +88,7 @@ export default function ResetPassword() {
   return (
     <LoginLayout
       accent={accent}
-      brandLabel={accent === 'violet' ? 'Wellness Extract Partners' : accent === 'purple' ? 'Super Admin' : 'Wellness Extract'}
+      brandLabel={accent === 'violet' ? 'Rudrans Partners' : accent === 'purple' ? 'Super Admin' : 'Rudrans'}
       brandIcon={accent === 'violet' ? 'ri-team-line' : accent === 'purple' ? 'ri-shield-keyhole-line' : 'ri-shield-check-line'}
       illustrationUrl={accent === 'violet'
         ? 'https://illustrations.popsy.co/violet/business-deal.svg'

@@ -3,7 +3,7 @@
 // Protocol reference: https://supabase.com/docs/guides/realtime/protocol
 //
 // Flow:
-//   1. Connect to wss://api-ems.wellnessextract.com/realtime/v1/websocket?apikey=<anon>
+//   1. Connect to wss://rudrans.com/realtime/v1/websocket?apikey=<anon>
 //   2. Send `phx_join` on topic "realtime:agent:<agent_id>" with the
 //      caller's user JWT (we use the agent's anon-equivalent: a custom
 //      claims JWT minted from the enroll token; for now we use the anon

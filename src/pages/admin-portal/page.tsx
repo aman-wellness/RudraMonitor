@@ -40,7 +40,7 @@ export default function AdminPortalPage() {
   const [inviteBusy, setInviteBusy] = useState(false);
 
   // If the org is partner-routed, fetch the partner's billing details so we show
-  // them (not Wellness Extract) as the "billed by" entity in the customer's portal.
+  // them (not Rudrans) as the "billed by" entity in the customer's portal.
   const [billingEntity, setBillingEntity] = useState<null | {
     name: string; gst_number: string | null; pan_number: string | null;
     address: string | null; city: string | null; state: string | null;
@@ -138,7 +138,7 @@ export default function AdminPortalPage() {
           setBillingEntity({ ...(data as never), is_partner: true });
         }
       } else {
-        // Direct customer — billed by Wellness Extract. Source of truth = billing_entity
+        // Direct customer — billed by Rudrans. Source of truth = billing_entity
         // singleton row (migration 0109). Super admin edits it via
         // /admin/billing-entity; this query reads the latest values.
         const { data: be } = await supabase
@@ -163,7 +163,7 @@ export default function AdminPortalPage() {
         }
       }
       // Real invoices, partner-routed orgs only see the bill_from='partner' invoices
-      // (the wholesale TF→partner leg is hidden — that's between Wellness Extract and the partner).
+      // (the wholesale TF→partner leg is hidden — that's between Rudrans and the partner).
       const { data: invs } = await supabase
         .from('invoices')
         .select('id, invoice_number, total_inr, status, issued_at, bill_from')
@@ -735,7 +735,7 @@ export default function AdminPortalPage() {
               </div>
             </div>
 
-            {/* Billed By — partner if partner-routed, Wellness Extract otherwise */}
+            {/* Billed By — partner if partner-routed, Rudrans otherwise */}
             {billingEntity && (
               <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
                 <div className="flex items-center justify-between mb-4">
@@ -744,7 +744,7 @@ export default function AdminPortalPage() {
                     <h3 className="text-sm font-semibold text-white">Billed By</h3>
                   </div>
                   <span className={`px-2 py-0.5 text-[10px] rounded-md border ${billingEntity.is_partner ? 'bg-violet-500/15 text-violet-400 border-violet-500/30' : 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30'}`}>
-                    {billingEntity.is_partner ? 'Channel Partner' : 'Direct (Wellness Extract)'}
+                    {billingEntity.is_partner ? 'Channel Partner' : 'Direct (Rudrans)'}
                   </span>
                 </div>
                 <div className="space-y-2 text-xs">
@@ -1542,11 +1542,11 @@ function SubscriptionTab({
   };
 
   // Bridge between PlanGrid's onSelect (plan code + cycle + seats + addons)
-  // and the existing email-Wellness Extract `plan_upgrade_requests` flow. Phase 7
+  // and the existing email-Rudrans `plan_upgrade_requests` flow. Phase 7
   // (Razorpay) will replace this with direct Razorpay checkout.
   const handlePlanSelect = (sel: { planCode: string; seats: number; addons: string[] }) => {
     if (sel.planCode === 'enterprise') {
-      window.open('mailto:hello@wellnessextract.com?subject=Enterprise%20plan%20enquiry', '_blank');
+      window.open('mailto:hello@rudrans.com?subject=Enterprise%20plan%20enquiry', '_blank');
       return;
     }
     const row = findPlanRowByCode(sel.planCode);
@@ -1805,7 +1805,7 @@ function DangerZone({ orgId }: { orgId: string | null }) {
       // supabase.functions.invoke would also work, but doing the fetch explicitly
       // here makes the failure modes (network, 4xx body) easier to surface to
       // the operator standing in front of the Danger Zone.
-      const url = `${import.meta.env.VITE_SUPABASE_URL || 'https://api-ems.wellnessextract.com'}/functions/v1/org-purge`;
+      const url = `${import.meta.env.VITE_SUPABASE_URL || 'https://api-ems.rudrans.com'}/functions/v1/org-purge`;
       const resp = await fetch(url, {
         method: 'POST',
         headers: {

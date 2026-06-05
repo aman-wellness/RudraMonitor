@@ -213,7 +213,7 @@ export default function CompleteSignup() {
             Retry
           </button>
           <p className="text-[11px] text-gray-600">
-            Still stuck? Email <a href="mailto:support@wellnessextract.com" className="text-emerald-400">support@wellnessextract.com</a> with the reference above — your payment is safe and refundable.
+            Still stuck? Email <a href="mailto:support@rudrans.com" className="text-emerald-400">support@rudrans.com</a> with the reference above — your payment is safe and refundable.
           </p>
         </div>
       </div>

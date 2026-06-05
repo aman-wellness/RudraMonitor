@@ -22,7 +22,7 @@ export default function Architecture() {
   return (
     <DocsLayout
       title="Backend / Frontend Architecture"
-      subtitle="Internal engineering reference for the Wellness Extract platform."
+      subtitle="Internal engineering reference for the Rudrans platform."
       sections={sections}
       accent="cyan"
     >
@@ -31,7 +31,7 @@ export default function Architecture() {
         <KV k="Backend" v="Supabase: Postgres 15 + PostgREST + GoTrue (Auth) + Edge Functions (Deno)" />
         <KV k="Desktop agent" v="Tauri 2 (Rust + WebView) with notify-rs filesystem watcher + uiautomation crate (Windows) / osascript (macOS)" />
         <KV k="AI" v="Anthropic Claude Haiku 4.5 (primary classifier), OpenAI GPT-4o-mini (fallback)" />
-        <KV k="Hosting" v="Two parallel stacks: Supabase Cloud (ttjazaxjhzvrzhptrpmd) AND self-hosted Supabase on EC2 (api-ems.wellnessextract.com)" />
+        <KV k="Hosting" v="Two parallel stacks: Supabase Cloud (ttjazaxjhzvrzhptrpmd) AND self-hosted Supabase on EC2 (api-ems.rudrans.com)" />
         <KV k="Reverse proxy" v="nginx 1.24 on Ubuntu 22.04" />
         <KV k="Builds" v="GitHub Actions for agent multi-platform releases (Windows, macOS arm/intel, Linux)" />
       </Section>
@@ -105,7 +105,7 @@ export default function Architecture() {
           <Code>{`agent/
 ├── src/                  # React UI for tray + onboarding flow
 ├── src-tauri/
-│   ├── Cargo.toml        # crate name: wellness-extract-agent
+│   ├── Cargo.toml        # crate name: rudrans-agent
 │   ├── src/
 │   │   ├── main.rs       # bootstraps watchdog + main loop
 │   │   ├── watchdog.rs   # sibling guardian process, respawns on kill
@@ -113,7 +113,7 @@ export default function Architecture() {
 │   │   ├── browser_url.rs# Chrome/Edge/Safari URL extraction (UIA on Win, osascript on Mac)
 │   │   ├── ingest.rs     # batches + uploads activity rows to /functions/v1/ingest
 │   │   └── ...
-│   ├── tauri.conf.json   # identifier: com.wellnessextract.agent
+│   ├── tauri.conf.json   # identifier: com.rudrans.agent
 │   └── gen/schemas/      # signed updater manifest
 └── ...`}</Code>
         </Sub>
@@ -245,7 +245,7 @@ export default function Architecture() {
             <><code>integrations.ts</code> — cached reads from public.integrations</>,
             <><code>graph.ts</code> — Microsoft Graph token mint + paged fetch (per-org)</>,
             <><code>google.ts</code> — Google OAuth refresh-token mint + Admin SDK helpers</>,
-            <><code>graph-email.ts</code> — sendGraphEmail with M365 → Gmail → Wellness Extract-fallback routing</>,
+            <><code>graph-email.ts</code> — sendGraphEmail with M365 → Gmail → Rudrans-fallback routing</>,
             <><code>hmac-token.ts</code> — HMAC-signed magic-link tokens (cred request flow)</>,
             <><code>auth-org.ts</code> — resolveWriterOrgId() helper (owner OR admin gating)</>,
           ]} />
@@ -339,7 +339,7 @@ create policy XXX_write on public.XXX
           <Bullets items={[
             'signInWithOAuth → redirect to provider consent screen',
             'Provider redirects back to /auth/v1/callback?code=...',
-            'GoTrue exchanges code for tokens, mints Wellness Extract session JWT, redirects to /post-login',
+            'GoTrue exchanges code for tokens, mints Rudrans session JWT, redirects to /post-login',
             'PostLogin route reads role and sends user to right dashboard',
           ]} />
         </Sub>
@@ -384,7 +384,7 @@ create policy XXX_write on public.XXX
           <Bullets items={[
             'Tier 1: per-org M365 mailbox (em_sender_email + org_integrations.tenant_id with Mail.Send scope)',
             'Tier 2: per-org Gmail (em_sender_email + Google OAuth gmail.send scope)',
-            'Tier 3: fallback to Wellness Extract mailbox (Microsoft tenant + AUTH_EMAIL_FROM)',
+            'Tier 3: fallback to Rudrans mailbox (Microsoft tenant + AUTH_EMAIL_FROM)',
           ]} />
         </Sub>
         <P>Customer-facing emails (cred delivery, offboarding NOC, manager approval) automatically use Tier 1 or 2 if configured. System emails (signup, password reset) use Tier 3.</P>
@@ -413,15 +413,15 @@ create policy XXX_write on public.XXX
           <Code>{`Project ref: ttjazaxjhzvrzhptrpmd
 URL:         https://ttjazaxjhzvrzhptrpmd.supabase.co
 Region:      West US (Oregon)
-Frontend:    https://ems.wellnessextract.com (Vercel or static via nginx ems.wellnessextract.com)
-Auth:        Cloud-managed, GOTRUE_SITE_URL=https://ems.wellnessextract.com`}</Code>
+Frontend:    https://ems.rudrans.com (Vercel or static via nginx ems.rudrans.com)
+Auth:        Cloud-managed, GOTRUE_SITE_URL=https://ems.rudrans.com`}</Code>
         </Sub>
         <Sub title="Self-hosted (EC2 + Docker) — parallel">
           <Code>{`EC2:         54.241.176.28 (Ubuntu 22.04)
 SSH:         ssh -i agent.pem ubuntu@54.241.176.28
-Stack:       /opt/wellness-extract/supabase/docker/docker-compose.yml
-API:         https://api-ems.wellnessextract.com (nginx → kong:8000 → auth/rest/realtime/functions)
-Frontend:    https://ems.wellnessextract.com (nginx serves /var/www/wellness-extract-app/)
+Stack:       /opt/rudrans/supabase/docker/docker-compose.yml
+API:         https://api-ems.rudrans.com (nginx → kong:8000 → auth/rest/realtime/functions)
+Frontend:    https://ems.rudrans.com (nginx serves /var/www/rudrans-app/)
 TLS:         Let's Encrypt via certbot`}</Code>
         </Sub>
         <Sub title="nginx hardening (migration 0057 + conf.d)">
@@ -430,7 +430,7 @@ TLS:         Let's Encrypt via certbot`}</Code>
             'Connection cap: 50 concurrent per IP',
             'HSTS preload: max-age=63072000',
             'X-Frame-Options DENY · X-Content-Type-Options nosniff · Referrer-Policy strict-origin',
-            'CSP on ems.wellnessextract.com whitelisting only Supabase + Razorpay + Google + Microsoft + readdy CDN',
+            'CSP on ems.rudrans.com whitelisting only Supabase + Razorpay + Google + Microsoft + readdy CDN',
             'gzip enabled with proper gzip_types (JS / CSS / JSON / SVG)',
             'proxy_buffer_size 128k for Supabase OAuth callback (long JWT in Set-Cookie)',
           ]} />

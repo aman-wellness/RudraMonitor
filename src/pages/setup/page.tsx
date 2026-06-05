@@ -5,7 +5,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useAgents } from '@/lib/dataHooks';
 import { supabase } from '@/lib/supabase';
 
-const RELEASES_BASE = 'https://api-ems.wellnessextract.com/storage/v1/object/public/releases';
+const RELEASES_BASE = 'https://api-ems.rudrans.com/storage/v1/object/public/releases';
 // Builds are produced by .github/workflows/build-agent.yml on every workflow_dispatch / tag push.
 // File names embed the git ref (`v0.2.0` for tag pushes, `main` for branch builds).
 // We default to the latest tagged release and fetch the actual current version

@@ -139,12 +139,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <div className="h-16 flex items-center px-5 border-b border-dark-700">
           <Link to="/" className="flex items-center gap-3">
             <img
-              src="https://public.readdy.ai/ai/img_res/30434500-ce14-4d0b-944f-490cb4702e27.png"
-              alt="Wellness Extract"
+              src="/logo.png"
+              alt="Rudrans"
               className="h-8 w-8 object-contain"
             />
             <span className="text-white font-poppins font-bold text-lg tracking-wide">
-              Wellness Extract
+              Rudrans
             </span>
           </Link>
         </div>
@@ -210,11 +210,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <div className="h-16 flex items-center justify-between px-5 border-b border-dark-700">
           <Link to="/" className="flex items-center gap-3" onClick={() => setSidebarOpen(false)}>
             <img
-              src="https://public.readdy.ai/ai/img_res/30434500-ce14-4d0b-944f-490cb4702e27.png"
-              alt="Wellness Extract"
+              src="/logo.png"
+              alt="Rudrans"
               className="h-8 w-8 object-contain"
             />
-            <span className="text-white font-poppins font-bold text-lg">Wellness Extract</span>
+            <span className="text-white font-poppins font-bold text-lg">Rudrans</span>
           </Link>
           <button
             onClick={() => setSidebarOpen(false)}

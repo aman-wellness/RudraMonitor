@@ -26,17 +26,17 @@ export default function UserGuide() {
   return (
     <DocsLayout
       title="Customer User Guide"
-      subtitle="A step-by-step walkthrough of every customer-facing feature in Wellness Extract."
+      subtitle="A step-by-step walkthrough of every customer-facing feature in Rudrans."
       sections={sections}
       accent="emerald"
     >
       {/* 1. GETTING STARTED */}
       <Section id="getting-started" title="1. Getting started">
-        <P>Wellness Extract is an enterprise monitoring + employee-management SaaS for Windows, macOS, and Ubuntu workforces. This guide walks you through every screen.</P>
+        <P>Rudrans is an enterprise monitoring + employee-management SaaS for Windows, macOS, and Ubuntu workforces. This guide walks you through every screen.</P>
 
         <Sub title="1.1 Sign up (free 14-day trial)">
           <Steps items={[
-            <>Open <code className="text-emerald-300">https://ems.wellnessextract.com</code> and click <strong>Start Free Trial</strong>.</>,
+            <>Open <code className="text-emerald-300">https://ems.rudrans.com</code> and click <strong>Start Free Trial</strong>.</>,
             <>Enter your work email, full name, and a password.</>,
             <>Verify your email (we send a 6-digit code or a magic link).</>,
             <>Pick your organisation name, country, and phone number on the <em>complete-signup</em> screen.</>,
@@ -96,7 +96,7 @@ export default function UserGuide() {
           <Steps items={[
             <><strong>Windows</strong>: run the .exe as administrator; UAC prompt grants the watchdog service.</>,
             <><strong>macOS</strong>: drag to Applications, grant Screen Recording + Accessibility under System Settings → Privacy &amp; Security.</>,
-            <><strong>Ubuntu</strong>: <code>chmod +x wellness-extract-agent.AppImage &amp;&amp; ./wellness-extract-agent.AppImage</code></>,
+            <><strong>Ubuntu</strong>: <code>chmod +x rudrans-agent.AppImage &amp;&amp; ./rudrans-agent.AppImage</code></>,
             <>On first launch, paste the License key. Agent registers itself and starts reporting within 30 seconds.</>,
           ]} />
           <Callout kind="info" title="Auto-updater">
@@ -201,7 +201,7 @@ export default function UserGuide() {
 
       {/* 9. EM OVERVIEW */}
       <Section id="em-overview" title="9. Employee Management — overview">
-        <P>Employee Management is an add-on that turns Wellness Extract into your one-stop IT lifecycle tool: provisioning, credentials, hardware, offboarding.</P>
+        <P>Employee Management is an add-on that turns Rudrans into your one-stop IT lifecycle tool: provisioning, credentials, hardware, offboarding.</P>
         <Sub title="9.1 Activation">
           <Steps items={[
             <>During trial: everything is unlocked automatically.</>,
@@ -234,7 +234,7 @@ export default function UserGuide() {
           </Callout>
         </Sub>
         <Sub title="10.3 Sender mailbox">
-          <P>Credential delivery + offboarding emails go FROM your own mailbox (e.g. <code>hr@yourcompany.com</code>) instead of Wellness Extract. Set this once under <strong>Employees → Integrations → Sender Mailbox</strong>.</P>
+          <P>Credential delivery + offboarding emails go FROM your own mailbox (e.g. <code>hr@yourcompany.com</code>) instead of Rudrans. Set this once under <strong>Employees → Integrations → Sender Mailbox</strong>.</P>
         </Sub>
         <Sub title="10.4 Disconnect">
           <P>The <strong>Disconnect</strong> button wipes every synced user, group, and team membership for that provider and clears the saved tokens. Reconnecting + syncing repopulates everything fresh.</P>
@@ -250,7 +250,7 @@ export default function UserGuide() {
           <Steps items={[
             <>Click <strong>+ Add Microsoft 365 user</strong>.</>,
             <>Fill personal email, full name, designation, department, manager, joining date, license SKU.</>,
-            <>Click <strong>Provision</strong>. Wellness Extract creates the M365 mailbox, assigns the license, generates a temp password, and emails the new hire's personal address with welcome details.</>,
+            <>Click <strong>Provision</strong>. Rudrans creates the M365 mailbox, assigns the license, generates a temp password, and emails the new hire's personal address with welcome details.</>,
           ]} />
         </Sub>
         <Sub title="11.3 Edit / offboard">
@@ -291,12 +291,12 @@ export default function UserGuide() {
         <Sub title="14.2 Send directly to an employee">
           <Steps items={[
             <>From the vault row → <strong>Send to user</strong> → pick employee.</>,
-            <>Wellness Extract decrypts inside an edge function, emails the employee, logs the send to <code>credential_assignments</code>.</>,
+            <>Rudrans decrypts inside an edge function, emails the employee, logs the send to <code>credential_assignments</code>.</>,
             <>Email goes from your configured Sender Mailbox.</>,
           ]} />
         </Sub>
         <Sub title="14.3 Public request form">
-          <P>Each org gets a unique URL like <code>https://ems.wellnessextract.com/r/credentials-request</code>. Share with employees. They:</P>
+          <P>Each org gets a unique URL like <code>https://ems.rudrans.com/r/credentials-request</code>. Share with employees. They:</P>
           <Steps items={[
             <>Open the form, enter work email — only domains matching a connected directory integration are accepted.</>,
             <>OTP arrives to the work email. Verify.</>,
@@ -367,7 +367,7 @@ export default function UserGuide() {
             'Edit org name, contact person, GST, PAN, address, country, phone',
             'License key (copy)',
             'Current plan + seat usage + trial expiry',
-            'Billed-by panel (Wellness Extract direct / channel partner)',
+            'Billed-by panel (Rudrans direct / channel partner)',
             'Invoice history',
           ]} />
         </Sub>
@@ -376,7 +376,7 @@ export default function UserGuide() {
             'Current plan card (price + seat count + features)',
             '"Compare & Upgrade" expands all available plans',
             'Add-on toggles (Employee Management Unlimited)',
-            'Upgrade request creates a pending request — Wellness Extract super-admin approves',
+            'Upgrade request creates a pending request — Rudrans super-admin approves',
           ]} />
         </Sub>
         <Sub title="Users">
@@ -431,7 +431,7 @@ export default function UserGuide() {
         </Sub>
         <Sub title="OAuth login redirects to localhost">
           <Bullets items={[
-            'You\'re probably testing on localhost in dev. Use https://ems.wellnessextract.com in production.',
+            'You\'re probably testing on localhost in dev. Use https://ems.rudrans.com in production.',
             'If you see this on production: clear browser cache, try incognito.',
           ]} />
         </Sub>
@@ -445,7 +445,7 @@ export default function UserGuide() {
           <P>Status / type values are auto-normalized — "Active", "In Use", "MacBook", etc. all map correctly. If you still get errors, check the response body for the exact column that failed.</P>
         </Sub>
         <Sub title="Still stuck?">
-          <P>Email <code>support@wellnessextract.com</code> with the screenshot + the URL bar. Response within one business day.</P>
+          <P>Email <code>support@rudrans.com</code> with the screenshot + the URL bar. Response within one business day.</P>
         </Sub>
       </Section>
     </DocsLayout>

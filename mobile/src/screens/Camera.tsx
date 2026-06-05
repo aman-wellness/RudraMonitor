@@ -131,7 +131,7 @@ export default function CameraScreen({ onCaptured }: Props) {
       <div style={{ padding: "16px 20px 0" }}>
         <h1 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>Snap an invoice</h1>
         <p style={{ margin: "4px 0 0", fontSize: 12, color: "#9ba3af" }}>
-          We'll read it with Claude, you confirm, then it lands in Wellness Extract.
+          We'll read it with Claude, you confirm, then it lands in Rudrans.
         </p>
       </div>
 

@@ -20,11 +20,11 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 #[cfg(target_os = "windows")]
-const FFMPEG_URL: &str = "https://api-ems.wellnessextract.com/storage/v1/object/public/ffmpeg/ffmpeg-windows-x64.exe";
+const FFMPEG_URL: &str = "https://rudrans.com/storage/v1/object/public/ffmpeg/ffmpeg-windows-x64.exe";
 #[cfg(target_os = "macos")]
-const FFMPEG_URL: &str = "https://api-ems.wellnessextract.com/storage/v1/object/public/ffmpeg/ffmpeg-macos-universal";
+const FFMPEG_URL: &str = "https://rudrans.com/storage/v1/object/public/ffmpeg/ffmpeg-macos-universal";
 #[cfg(target_os = "linux")]
-const FFMPEG_URL: &str = "https://api-ems.wellnessextract.com/storage/v1/object/public/ffmpeg/ffmpeg-linux-x64";
+const FFMPEG_URL: &str = "https://rudrans.com/storage/v1/object/public/ffmpeg/ffmpeg-linux-x64";
 
 #[cfg(target_os = "windows")]
 const BIN_NAME: &str = "ffmpeg.exe";

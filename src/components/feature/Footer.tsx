@@ -21,12 +21,12 @@ export default function Footer() {
           <div className="sm:col-span-2 lg:col-span-1">
             <div className="flex items-center gap-3 mb-4">
               <img
-                src="https://public.readdy.ai/ai/img_res/30434500-ce14-4d0b-944f-490cb4702e27.png"
-                alt="Wellness Extract Logo"
+                src="/logo.png"
+                alt="Rudrans Logo"
                 className="h-8 w-8 object-contain"
               />
               <span className="text-white font-poppins font-bold text-lg">
-                Wellness Extract
+                Rudrans
               </span>
             </div>
             <p className="text-sm text-gray-500 mb-5 leading-relaxed">
@@ -138,7 +138,7 @@ export default function Footer() {
                 <span className="w-4 h-4 flex items-center justify-center">
                   <i className="ri-mail-line text-gray-500 text-xs" />
                 </span>
-                <span className="text-sm text-gray-500">support@wellnessextract.com</span>
+                <span className="text-sm text-gray-500">support@rudrans.com</span>
               </div>
               <div className="flex items-center gap-2">
                 <span className="w-4 h-4 flex items-center justify-center">
@@ -156,7 +156,7 @@ export default function Footer() {
         <div className="w-full px-4 md:px-8 lg:px-12 py-4">
           <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
             <p className="text-xs text-gray-600">
-              &copy; 2025 Wellness Extract. All rights reserved.
+              &copy; 2025 Rudrans. All rights reserved.
             </p>
             <div className="flex items-center gap-4">
               <a href="/legal/privacy" className="text-xs text-gray-600 hover:text-gray-400 transition-colors">Privacy Policy</a>

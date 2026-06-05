@@ -16,7 +16,7 @@
 import { NativeBiometric, BiometryType } from "capacitor-native-biometric";
 import { Preferences } from "@capacitor/preferences";
 
-const SERVER = "com.wellnessextract.invoice";
+const SERVER = "com.rudrans.invoice";
 const PREF_KEY = "biometric_enabled";
 
 export async function isAvailable(): Promise<boolean> {
@@ -46,8 +46,8 @@ export async function tryQuickUnlock(): Promise<{ email: string; password: strin
   if (!(await isAvailable())) return null;
   try {
     await NativeBiometric.verifyIdentity({
-      reason: "Unlock Wellness Extract Invoice",
-      title: "Wellness Extract Invoice",
+      reason: "Unlock Rudrans Invoice",
+      title: "Rudrans Invoice",
       subtitle: "Sign in with biometrics",
       description: "Use Face ID / fingerprint to continue",
     });

@@ -150,7 +150,7 @@ export default function PlatformEditModal({ platform, pillars, defaultPillarId, 
           <input
             value={email ?? ''}
             onChange={(e) => setEmail(e.target.value)}
-            placeholder="amazon@wellnessextract.com"
+            placeholder="amazon@rudrans.com"
             className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-white font-mono"
           />
         </div>

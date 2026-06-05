@@ -1,5 +1,5 @@
 // Terms of Service. Customer-facing contract that governs every paid + trial
-// use of Wellness Extract. Plain English, India-law governing.
+// use of Rudrans. Plain English, India-law governing.
 
 import { Link } from 'react-router-dom';
 import LegalLayout from './LegalLayout';
@@ -9,17 +9,17 @@ export default function Terms() {
     <LegalLayout title="Terms of Service" lastUpdated="17 May 2026">
       <Section title="1. Acceptance">
         <P>
-          By signing up for or using Wellness Extract (the "Service"), you ("Customer") agree
+          By signing up for or using Rudrans (the "Service"), you ("Customer") agree
           to these Terms of Service ("Terms"). If you do not agree, do not use the
-          Service. The Service is operated by Wellness Extract India Private Limited
-          ("Wellness Extract", "we", "us"), with registered support at{' '}
-          <a className="text-emerald-300" href="mailto:support@wellnessextract.com">support@wellnessextract.com</a>.
+          Service. The Service is operated by Rudrans India Private Limited
+          ("Rudrans", "we", "us"), with registered support at{' '}
+          <a className="text-emerald-300" href="mailto:support@rudrans.com">support@rudrans.com</a>.
         </P>
       </Section>
 
       <Section title="2. The Service">
         <Bullets items={[
-          'A SaaS dashboard at ems.wellnessextract.com',
+          'A SaaS dashboard at ems.rudrans.com',
           'A desktop monitoring agent (Windows / macOS / Linux)',
           'Optional add-on modules: Employee Management, Data Loss Prevention (DLP)',
           'Email + chat support per your subscription tier',
@@ -40,7 +40,7 @@ export default function Terms() {
           'Indian customers are billed in INR via Razorpay. International customers are billed in USD via Stripe (rolling out).',
           'Subscriptions auto-renew monthly or yearly per the plan you select. You can cancel anytime from /admin-portal → Subscription.',
           'Cancellation takes effect at the end of the current paid period. No partial refunds for the unused remainder.',
-          <>Channel-partner customers are billed by their partner. Disputes route to the partner first; if unresolved within 30 days, escalate to <a className="text-emerald-300" href="mailto:accounts@wellnessextract.com">accounts@wellnessextract.com</a>.</>,
+          <>Channel-partner customers are billed by their partner. Disputes route to the partner first; if unresolved within 30 days, escalate to <a className="text-emerald-300" href="mailto:accounts@rudrans.com">accounts@rudrans.com</a>.</>,
         ]} />
       </Section>
 
@@ -76,13 +76,13 @@ export default function Terms() {
           You retain ownership of all customer data you upload. We act as a processor
           of that data; you are the controller. We sign a Data Processing Agreement on
           request — email{' '}
-          <a className="text-emerald-300" href="mailto:dpo@wellnessextract.com">dpo@wellnessextract.com</a>.
+          <a className="text-emerald-300" href="mailto:dpo@rudrans.com">dpo@rudrans.com</a>.
         </P>
       </Section>
 
       <Section title="8. Intellectual property">
         <Bullets items={[
-          'Wellness Extract, the agent, all source code, documentation, and brand assets remain our property.',
+          'Rudrans, the agent, all source code, documentation, and brand assets remain our property.',
           'You receive a non-exclusive, non-transferable licence to use the Service for the duration of your paid subscription.',
           'You may not remove copyright notices or attempt to obscure the origin of the Service.',
         ]} />
@@ -136,10 +136,10 @@ export default function Terms() {
 
       <Section title="14. Contact">
         <Bullets items={[
-          <>Sales: <a className="text-emerald-300" href="mailto:sales@wellnessextract.com">sales@wellnessextract.com</a></>,
-          <>Support: <a className="text-emerald-300" href="mailto:support@wellnessextract.com">support@wellnessextract.com</a></>,
-          <>Accounts / billing: <a className="text-emerald-300" href="mailto:accounts@wellnessextract.com">accounts@wellnessextract.com</a></>,
-          <>Legal notice: <a className="text-emerald-300" href="mailto:legal@wellnessextract.com">legal@wellnessextract.com</a></>,
+          <>Sales: <a className="text-emerald-300" href="mailto:sales@rudrans.com">sales@rudrans.com</a></>,
+          <>Support: <a className="text-emerald-300" href="mailto:support@rudrans.com">support@rudrans.com</a></>,
+          <>Accounts / billing: <a className="text-emerald-300" href="mailto:accounts@rudrans.com">accounts@rudrans.com</a></>,
+          <>Legal notice: <a className="text-emerald-300" href="mailto:legal@rudrans.com">legal@rudrans.com</a></>,
         ]} />
         <P className="mt-6">
           See also: <Link to="/legal/privacy" className="text-emerald-300 hover:underline">Privacy Policy</Link>

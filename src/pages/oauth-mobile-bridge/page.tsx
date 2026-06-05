@@ -24,7 +24,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const APP_SCHEME_URL_BASE = "com.wellnessextract.invoice://oauth-callback";
+const APP_SCHEME_URL_BASE = "com.rudrans.invoice://oauth-callback";
 
 export default function OAuthMobileBridge() {
   const search = typeof window !== "undefined" ? window.location.search : "";
@@ -94,8 +94,8 @@ export default function OAuthMobileBridge() {
       </h1>
       <p style={{ fontSize: 14, color: "#9ba3af", maxWidth: 320, margin: "0 0 28px", lineHeight: 1.5 }}>
         {isFallback
-          ? "Your browser didn’t auto-launch the app. Tap the button below to return to Wellness Extract Invoice."
-          : "Returning you to Wellness Extract Invoice…"}
+          ? "Your browser didn’t auto-launch the app. Tap the button below to return to Rudrans Invoice."
+          : "Returning you to Rudrans Invoice…"}
       </p>
 
       {/* Real anchor — strategy #2 above auto-clicks this ref. Stays
@@ -130,7 +130,7 @@ export default function OAuthMobileBridge() {
       <p style={{ fontSize: 11, color: "#6b7280", marginTop: 32, maxWidth: 320, lineHeight: 1.5 }}>
         Don&apos;t have the app installed yet?{" "}
         <a
-          href="/downloads/wellness-extract-invoice.apk"
+          href="/downloads/rudrans-invoice.apk"
           style={{ color: "#22d3a2" }}
         >
           Download the Android APK
