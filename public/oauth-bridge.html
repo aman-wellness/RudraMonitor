@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Returning to Wellness Extract Invoice…</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0f1115; color: #e5e7eb; font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; }
+  .wrap { min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px 24px; text-align: center; }
+  .icon { width: 72px; height: 72px; border-radius: 18px; background: #22d3a2; display: flex; align-items: center; justify-content: center; font-size: 36px; margin-bottom: 24px; }
+  h1 { font-size: 20px; font-weight: 600; color: #fff; margin: 0 0 6px; }
+  p { font-size: 14px; color: #9ba3af; max-width: 320px; margin: 0 0 28px; line-height: 1.5; }
+  .btn { display: inline-block; padding: 16px 32px; border-radius: 12px; background: #22d3a2; color: #0f1115; font-size: 16px; font-weight: 700; text-decoration: none; min-width: 240px; box-shadow: 0 0 0 4px rgba(34,211,162,0.25); animation: pulse 1.2s ease-in-out infinite; }
+  .small { font-size: 11px; color: #6b7280; margin-top: 32px; max-width: 320px; line-height: 1.5; }
+  .small a { color: #22d3a2; }
+  @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.04); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="icon">📷</div>
+  <h1>Tap to finish sign-in</h1>
+  <p>Returning you to <strong style="color:#fff;">Wellness Extract Invoice</strong>… If nothing happens automatically, tap the button below.</p>
+  <a id="cta" href="#" class="btn">Open in app →</a>
+  <iframe id="bridgeframe" style="display:none" title="bridge"></iframe>
+  <p class="small">Don't have the app installed yet? <a href="/downloads/wellness-extract-invoice.apk">Download the Android APK</a>.</p>
+</div>
+<script>
+  // CRITICAL: this file is intentionally STATIC HTML, lives in public/ so
+  // Vite copies it verbatim into the build output (and `rsync --delete`
+  // preserves it across deploys). It is NOT part of the dashboard SPA.
+  //
+  // The SPA bundle initialises supabase-js with detectSessionInUrl=true,
+  // which would auto-exchange the PKCE `code` query param the moment the
+  // page mounted — consuming the one-shot OAuth code in the browser's
+  // storage context before the mobile app could use it. Here we don't
+  // touch the code at all; we just forward the query string into the
+  // app's custom-scheme deep link so the mobile app finishes the PKCE
+  // exchange itself.
+  //
+  // Try multiple launch strategies in parallel because HeyTapBrowser /
+  // Samsung Internet / MIUI Browser each block a different subset of
+  // ways to navigate to a non-http scheme.
+
+  (function () {
+    var query = window.location.search || "";
+    var target = "com.wellnessextract.invoice://oauth-callback" + query;
+    var cta = document.getElementById("cta");
+    cta.href = target;
+
+    // Strategy 1: location.assign immediately
+    setTimeout(function () {
+      try { window.location.assign(target); } catch (e) {}
+    }, 80);
+
+    // Strategy 2: synthetic anchor click (some browsers accept this
+    // even when they reject programmatic top-level navigation to
+    // non-http schemes — Safari, Samsung Internet historically).
+    setTimeout(function () {
+      try { cta.click(); } catch (e) {}
+    }, 350);
+
+    // Strategy 3: hidden iframe (yet another browser quirk path).
+    setTimeout(function () {
+      try {
+        var f = document.getElementById("bridgeframe");
+        if (f) f.src = target;
+      } catch (e) {}
+    }, 650);
+  })();
+</script>
+</body>
+</html>
