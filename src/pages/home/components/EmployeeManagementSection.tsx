@@ -8,7 +8,7 @@ const pillars = [
   {
     icon: 'ri-plug-line',
     title: 'One-click directory connect',
-    blurb: 'Sign in to Microsoft 365 or Google Workspace once. Users, groups, Teams, and shared mailboxes sync into Rudrans automatically.',
+    blurb: 'Sign in to Microsoft 365 or Google Workspace once. Users, groups, Teams, and shared mailboxes sync into Wellness Extract automatically.',
     bullets: ['Multi-tenant Entra app', 'Google OAuth (refresh-token)', 'Read-only on-prem AD groups flagged', '5-min cron sync'],
   },
   {

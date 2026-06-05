@@ -9,15 +9,15 @@
 
 import { useMemo } from 'react';
 
-// Both assets live on the dashboard subdomain (ems.rudrans.com) — that's
+// Both assets live on the dashboard subdomain (ems.wellnessextract.com) — that's
 // the EC2 nginx where we rsync the APK + serve the PWA. The marketing
-// domain (ems.rudrans.com) is a different vhost / static site, so relative
+// domain (ems.wellnessextract.com) is a different vhost / static site, so relative
 // URLs from `window.location.origin` would 404 on the marketing pages.
 // Hard-code the dashboard host instead.
-const APP_HOST = 'https://ems.rudrans.com';
+const APP_HOST = 'https://ems.wellnessextract.com';
 
 export default function MobileAppSection() {
-  const apkUrl = `${APP_HOST}/downloads/rudrans-invoice.apk`;
+  const apkUrl = `${APP_HOST}/downloads/wellness-extract-invoice.apk`;
   const pwaUrl = `${APP_HOST}/m/`;
   const isIos = useMemo(() => /iPad|iPhone|iPod/.test(navigator.userAgent), []);
   const isAndroid = useMemo(() => /Android/i.test(navigator.userAgent), []);
@@ -60,7 +60,7 @@ export default function MobileAppSection() {
             <ol className="text-sm text-gray-300 space-y-2 mb-5 pl-4 list-decimal">
               <li>Tap the download button below — APK lands in your Downloads folder.</li>
               <li>Open the file → Android will ask "Allow install from this source?" → <span className="text-emerald-300">Allow</span>.</li>
-              <li>Install → open <strong>Rudrans Invoice</strong> → sign in with your dashboard email.</li>
+              <li>Install → open <strong>Wellness Extract Invoice</strong> → sign in with your dashboard email.</li>
             </ol>
 
             <a
@@ -101,7 +101,7 @@ export default function MobileAppSection() {
                 Tap <i className="ri-share-forward-line mx-1" /> Share → <strong>Add to Home Screen</strong>.
               </li>
               <li>
-                Home screen pe Rudrans Invoice icon aa jayega — full-screen, app jaisa.
+                Home screen pe Wellness Extract Invoice icon aa jayega — full-screen, app jaisa.
               </li>
             </ol>
 
@@ -120,7 +120,7 @@ export default function MobileAppSection() {
 
         <div className="text-center mt-10">
           <p className="text-xs text-gray-500 max-w-xl mx-auto">
-            Sign in with your existing Rudrans dashboard email + password.
+            Sign in with your existing Wellness Extract dashboard email + password.
             The mobile app uploads invoices to <strong className="text-gray-300">your organisation</strong>;
             you can switch orgs at any time from Account → Switch organisation.
           </p>

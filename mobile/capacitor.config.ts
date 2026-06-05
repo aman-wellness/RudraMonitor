@@ -4,8 +4,8 @@ import type { CapacitorConfig } from "@capacitor/cli";
 // Developer + Play Console. Don't change this without coordinating both
 // stores; new ids = new apps + lost user data.
 const config: CapacitorConfig = {
-  appId: "com.rudrans.invoice",
-  appName: "Rudrans Invoice",
+  appId: "com.wellnessextract.invoice",
+  appName: "Wellness Extract Invoice",
   webDir: "dist",
   ios: {
     contentInset: "always",

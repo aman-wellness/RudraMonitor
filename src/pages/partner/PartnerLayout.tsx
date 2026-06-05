@@ -25,7 +25,7 @@ export default function PartnerLayout({ children, title }: { children: ReactNode
   const SidebarBody = (
     <>
       <div className="px-5 py-5 border-b border-dark-800">
-        <p className="text-[10px] uppercase tracking-widest text-cyan-400 font-semibold">Rudrans</p>
+        <p className="text-[10px] uppercase tracking-widest text-cyan-400 font-semibold">Wellness Extract</p>
         <p className="text-sm text-white font-semibold mt-0.5">Partner Portal</p>
       </div>
       <nav className="flex-1 p-3 space-y-1 overflow-y-auto">

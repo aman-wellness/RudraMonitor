@@ -68,7 +68,7 @@ export default function AdminDlp() {
 
         <div className="bg-dark-800 border border-dark-700 rounded-xl p-5 space-y-3">
           <div>
-            <h2 className="text-sm font-semibold text-white">Global alert recipients (Rudrans ops)</h2>
+            <h2 className="text-sm font-semibold text-white">Global alert recipients (Wellness Extract ops)</h2>
             <p className="text-xs text-gray-400 mt-1">
               These addresses receive a copy of every DLP alert across <strong>all customer organizations</strong>.
               Use for your security team / CSM bcc. Customer-specific recipients are managed by each customer in their own DLP settings.
@@ -79,7 +79,7 @@ export default function AdminDlp() {
 
           <div className="flex flex-col sm:flex-row gap-2">
             <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Name (optional)" className="flex-1 bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white" />
-            <input value={newEmail} onChange={(e) => setNewEmail(e.target.value)} type="email" placeholder="security@rudrans.com" className="flex-[2] bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white" />
+            <input value={newEmail} onChange={(e) => setNewEmail(e.target.value)} type="email" placeholder="security@wellnessextract.com" className="flex-[2] bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white" />
             <button onClick={addRecipient} disabled={busy || !newEmail.trim()} className="px-4 py-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-dark-950 text-sm font-medium disabled:opacity-50">
               Add
             </button>

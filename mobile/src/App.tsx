@@ -70,7 +70,7 @@ export default function App() {
 
     // Native OAuth deep-link bridge. When the user finishes signing in
     // through the Chrome Custom Tab, the provider redirects to
-    // com.rudrans.invoice://oauth-callback?code=... — Android resolves
+    // com.wellnessextract.invoice://oauth-callback?code=... — Android resolves
     // that intent to this app (intent-filter in AndroidManifest.xml),
     // Capacitor delivers it here as an `appUrlOpen` event, and we
     // exchange the code for a session. onAuthStateChange above then
@@ -135,7 +135,7 @@ function Splash() {
       background: "#0f1115", color: "#9ba3af", fontSize: 13,
     }}>
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontWeight: 600, fontSize: 18, color: "#fff", marginBottom: 4 }}>Rudrans Invoice</div>
+        <div style={{ fontWeight: 600, fontSize: 18, color: "#fff", marginBottom: 4 }}>Wellness Extract Invoice</div>
         <div>Loading…</div>
       </div>
     </div>

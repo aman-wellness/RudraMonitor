@@ -23,7 +23,7 @@ export default function SuperAdminGuide() {
   return (
     <DocsLayout
       title="Super Admin Guide"
-      subtitle="Internal documentation for Rudrans platform operators — how every part of the super-admin portal works."
+      subtitle="Internal documentation for Wellness Extract platform operators — how every part of the super-admin portal works."
       sections={sections}
       accent="violet"
     >
@@ -109,7 +109,7 @@ export default function SuperAdminGuide() {
             'Edit profile (legal name, GST, PAN, address, support email)',
             'Set commission rate (default 20%, overridable per-partner)',
             'See their customers + MRR routed through them',
-            'Generate next monthly Rudrans-to-partner invoice',
+            'Generate next monthly Wellness Extract-to-partner invoice',
           ]} />
         </Sub>
       </Section>
@@ -128,7 +128,7 @@ export default function SuperAdminGuide() {
         <P>Path: <code className="text-violet-300">/admin/invoices</code>.</P>
         <Sub title="6.1 Invoice list">
           <Bullets items={[
-            'Customer invoices (raised by Rudrans or by partners on behalf of customers).',
+            'Customer invoices (raised by Wellness Extract or by partners on behalf of customers).',
             'Status: pending / paid / overdue / cancelled.',
             'Search by invoice number, org name, partner.',
           ]} />
@@ -164,7 +164,7 @@ export default function SuperAdminGuide() {
         <Sub title="Categories">
           <Bullets items={[
             <><strong>Auth & OAuth</strong> — Google + Microsoft OAuth client IDs and secrets, "Sync to Supabase Auth" button to push to Cloud Auth config.</>,
-            <><strong>Email</strong> — Microsoft tenant + client + secret for sending platform mail (Rudrans mailbox).</>,
+            <><strong>Email</strong> — Microsoft tenant + client + secret for sending platform mail (Wellness Extract mailbox).</>,
             <><strong>AI</strong> — Anthropic API key (Claude Haiku 4.5 primary), OpenAI key (GPT-4o-mini fallback).</>,
             <><strong>Billing</strong> — Razorpay key id + secret, GST lookup API key.</>,
             <><strong>Employee Management</strong> — Multi-tenant directory app client id + secret, Google service-account email + private key + client id.</>,
@@ -233,7 +233,7 @@ export default function SuperAdminGuide() {
         <Sub title="Cloud (production)">
           <Code>{`https://supabase.com/dashboard/project/ttjazaxjhzvrzhptrpmd/sql/new`}</Code>
         </Sub>
-        <Sub title="Self-hosted (api-ems.rudrans.com)">
+        <Sub title="Self-hosted (api-ems.wellnessextract.com)">
           <Code>{`ssh -i agent.pem ubuntu@54.241.176.28
 sudo docker exec -it supabase-db psql -U postgres -d postgres`}</Code>
         </Sub>
@@ -272,11 +272,11 @@ sudo docker exec -it supabase-db psql -U postgres -d postgres`}</Code>
           <Code>{`# Build
 npm run build         # outputs to ./out
 
-# Deploy to api-ems.rudrans.com (self-hosted)
-rsync -avz out/ ubuntu@54.241.176.28:/tmp/rudrans-app-deploy/
-ssh ubuntu@54.241.176.28 'sudo rsync -a --delete /tmp/rudrans-app-deploy/ /var/www/rudrans-app/'
+# Deploy to api-ems.wellnessextract.com (self-hosted)
+rsync -avz out/ ubuntu@54.241.176.28:/tmp/wellness-extract-app-deploy/
+ssh ubuntu@54.241.176.28 'sudo rsync -a --delete /tmp/wellness-extract-app-deploy/ /var/www/wellness-extract-app/'
 
-# Supabase Cloud frontend lives at ems.rudrans.com (same bundle, different .env)`}</Code>
+# Supabase Cloud frontend lives at ems.wellnessextract.com (same bundle, different .env)`}</Code>
         </Sub>
         <Sub title="Edge functions">
           <Code>{`# Cloud
@@ -284,8 +284,8 @@ SUPABASE_ACCESS_TOKEN=sbp_... npx supabase functions deploy <name>
 
 # Self-hosted (file-mode)
 scp supabase/functions/<name>/index.ts ubuntu@54.241.176.28:/tmp/
-ssh ubuntu@54.241.176.28 'sudo cp /tmp/index.ts /opt/rudrans/supabase/docker/volumes/functions/<name>/index.ts'
-ssh ubuntu@54.241.176.28 'sudo docker compose -f /opt/rudrans/supabase/docker/docker-compose.yml restart functions'`}</Code>
+ssh ubuntu@54.241.176.28 'sudo cp /tmp/index.ts /opt/wellness-extract/supabase/docker/volumes/functions/<name>/index.ts'
+ssh ubuntu@54.241.176.28 'sudo docker compose -f /opt/wellness-extract/supabase/docker/docker-compose.yml restart functions'`}</Code>
         </Sub>
         <Sub title="Migrations">
           <Code>{`# Cloud

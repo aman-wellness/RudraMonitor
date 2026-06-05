@@ -85,7 +85,7 @@ pub fn save(cfg: &AgentConfig) -> Result<()> {
 // To override per-build, set RUDRANS_SUPABASE_URL / _ANON_KEY at compile time.
 const EMBEDDED_SUPABASE_URL: &str = match option_env!("RUDRANS_SUPABASE_URL") {
     Some(v) => v,
-    None => "https://rudrans.com",
+    None => "https://api-ems.wellnessextract.com",
 };
 const EMBEDDED_SUPABASE_ANON_KEY: &str = match option_env!("RUDRANS_SUPABASE_ANON_KEY") {
     Some(v) => v,

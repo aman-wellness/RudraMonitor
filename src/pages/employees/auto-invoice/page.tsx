@@ -220,7 +220,7 @@ function DeliveryCard({ org, onChanged }: { org: OrgInfo | null; onChanged: () =
   // (shouldn't happen post-migration 0096 but the trigger could theoretically
   // race a fast follow-up insert).
   const inboundAddr = org
-    ? `inv-${org.invoice_inbound_slug || org.id}@invoices.rudrans.com`
+    ? `inv-${org.invoice_inbound_slug || org.id}@invoices.wellnessextract.com`
     : '';
   const initial = (org?.accounts_recipient_emails ?? []).join(', ');
   const [draft, setDraft] = useState(initial);

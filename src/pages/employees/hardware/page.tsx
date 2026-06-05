@@ -656,7 +656,7 @@ function CsvImportModal({ onClose, onDone }: { onClose: () => void; onDone: () =
     const blob = new Blob([`${header}\n${sample}\n`], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = 'rudrans-hardware-template.csv'; a.click();
+    a.href = url; a.download = 'wellness-extract-hardware-template.csv'; a.click();
     URL.revokeObjectURL(url);
   };
 
@@ -887,7 +887,7 @@ function exportHardwareCsv(rows: Asset[], userByEmpId: Map<string, OrgUser>) {
     };
   });
   const stamp = new Date().toISOString().slice(0, 10);
-  downloadCsv(`rudrans-hardware-.csv`, headers, data);
+  downloadCsv(`wellness-extract-hardware-.csv`, headers, data);
 }
 
 function downloadCsv(filename: string, headers: string[], rows: Record<string, unknown>[]) {

@@ -56,7 +56,7 @@ jobs:
         env:
           # Production Supabase backend. If you need a different env for the
           # CI build, override via repo secrets and reference here.
-          VITE_SUPABASE_URL: ${{ secrets.MOBILE_SUPABASE_URL || 'https://rudrans.com' }}
+          VITE_SUPABASE_URL: ${{ secrets.MOBILE_SUPABASE_URL || 'https://api-ems.wellnessextract.com' }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.MOBILE_SUPABASE_ANON_KEY }}
         run: npm run build
 
@@ -121,4 +121,4 @@ jobs:
             sudo chown www-data:www-data /opt/rudrans-downloads/wellness-extract-invoice.apk
             sudo chmod 644 /opt/rudrans-downloads/wellness-extract-invoice.apk
           '
-          echo "✓ APK published to https://rudrans.com/downloads/wellness-extract-invoice.apk"
+          echo "✓ APK published to https://ems.wellnessextract.com/downloads/wellness-extract-invoice.apk"

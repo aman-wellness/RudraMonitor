@@ -1,7 +1,7 @@
 [package]
-name = "rudrans-agent"
+name = "wellness-extract-agent"
 version = "0.5.6"
-description = "Rudrans employee monitoring agent"
+description = "Wellness Extract employee monitoring agent"
 edition = "2021"
 rust-version = "1.77"
 

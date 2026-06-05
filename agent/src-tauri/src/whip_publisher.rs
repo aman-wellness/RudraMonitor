@@ -12,7 +12,7 @@
 //        codec negotiation drama. ~1000 lines of plumbing.
 //
 //   new: POST our OFFER (we are the publisher / offerer in WHIP) to
-//        https://rudrans.com/whip/<room>. Get answer in the response
+//        https://api-ems.wellnessextract.com/whip/<room>. Get answer in the response
 //        body, get Location header pointing at the per-session ICE
 //        endpoint. Trickle local candidates by HTTP PATCH to that URL.
 //        ~250 lines, no custom signaling table.
@@ -20,7 +20,7 @@
 // LiveKit OSS handles all the hard parts (codec negotiation, TURN,
 // jitter buffer, congestion control, multi-subscriber fanout) for us.
 // The dashboard subscribes via the livekit-client JS SDK against
-// wss://rudrans.com/livekit/ — no shared signaling code needed.
+// wss://api-ems.wellnessextract.com/livekit/ — no shared signaling code needed.
 //
 // Trigger model (start/stop): the dashboard subscribes to the agent's
 // room first. LiveKit fires a `participant_joined` webhook to our

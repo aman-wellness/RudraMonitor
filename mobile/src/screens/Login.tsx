@@ -82,7 +82,7 @@ export default function Login() {
     try {
       // startOAuth picks PWA vs native flow. Native opens a Chrome
       // Custom Tab; the user signs in there and Android deep-links
-      // them back to the app via com.rudrans.invoice://oauth-callback,
+      // them back to the app via com.wellnessextract.invoice://oauth-callback,
       // which App.tsx's appUrlOpen listener exchanges for a session.
       await startOAuth(provider);
       // On native, control returns here immediately — the actual sign-in
@@ -123,9 +123,9 @@ export default function Login() {
             display: "flex", alignItems: "center", justifyContent: "center",
             fontSize: 32,
           }}>📷</div>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 600 }}>Rudrans Invoice</h1>
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 600 }}>Wellness Extract Invoice</h1>
           <p style={{ margin: "6px 0 0", fontSize: 13, color: "#9ba3af" }}>
-            Sign in with your Rudrans account
+            Sign in with your Wellness Extract account
           </p>
         </div>
 
@@ -213,7 +213,7 @@ export default function Login() {
         </form>
 
         <p style={{ marginTop: 32, fontSize: 11, color: "#6b7280", textAlign: "center" }}>
-          Same email + password as <span style={{ color: "#22d3a2" }}>ems.rudrans.com</span>.
+          Same email + password as <span style={{ color: "#22d3a2" }}>ems.wellnessextract.com</span>.
           <br />Forgot password? Reset it on the web dashboard.
         </p>
       </div>

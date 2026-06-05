@@ -10,14 +10,14 @@ export default function Privacy() {
     <LegalLayout title="Privacy Policy" lastUpdated="17 May 2026">
       <Section title="1. Who we are">
         <P>
-          Rudrans is a workplace monitoring and employee-management SaaS operated by
-          <strong> Rudrans India Private Limited</strong> ("we", "us", "Rudrans"),
+          Wellness Extract is a workplace monitoring and employee-management SaaS operated by
+          <strong> Wellness Extract India Private Limited</strong> ("we", "us", "Wellness Extract"),
           a company registered in India. Our registered support address is{' '}
-          <a className="text-emerald-300" href="mailto:support@rudrans.com">support@rudrans.com</a>.
+          <a className="text-emerald-300" href="mailto:support@wellnessextract.com">support@wellnessextract.com</a>.
         </P>
         <P>
           This policy explains what data we collect when you (the customer) and your
-          employees (the end users) use Rudrans, how we use that data, who we share
+          employees (the end users) use Wellness Extract, how we use that data, who we share
           it with, and the rights you have over it.
         </P>
       </Section>
@@ -66,7 +66,7 @@ export default function Privacy() {
         ]} />
         <P>
           Each sub-processor signs a Data Processing Agreement with us. The current
-          list can be re-issued on request to <a className="text-emerald-300" href="mailto:dpo@rudrans.com">dpo@rudrans.com</a>.
+          list can be re-issued on request to <a className="text-emerald-300" href="mailto:dpo@wellnessextract.com">dpo@wellnessextract.com</a>.
         </P>
       </Section>
 
@@ -98,14 +98,14 @@ export default function Privacy() {
         </P>
         <Bullets items={[
           'Be informed by your employer that monitoring is in place (we require this in our Terms)',
-          'Request a copy of the data Rudrans holds about you',
+          'Request a copy of the data Wellness Extract holds about you',
           'Request correction of inaccurate data',
           'Request deletion when you leave the employer',
         ]} />
         <P>
           Send any of these requests to your employer first; if they don't respond
           within 30 days, escalate to{' '}
-          <a className="text-emerald-300" href="mailto:dpo@rudrans.com">dpo@rudrans.com</a>.
+          <a className="text-emerald-300" href="mailto:dpo@wellnessextract.com">dpo@wellnessextract.com</a>.
         </P>
         <P>
           If you are in the EU, you have additional rights under GDPR (portability,
@@ -129,7 +129,7 @@ export default function Privacy() {
 
       <Section title="9. Children">
         <P>
-          Rudrans is a workplace tool. We do not knowingly process data of anyone
+          Wellness Extract is a workplace tool. We do not knowingly process data of anyone
           under 16.
         </P>
       </Section>
@@ -144,9 +144,9 @@ export default function Privacy() {
 
       <Section title="11. Contact">
         <Bullets items={[
-          <>General privacy: <a className="text-emerald-300" href="mailto:privacy@rudrans.com">privacy@rudrans.com</a></>,
-          <>Data Protection Officer: <a className="text-emerald-300" href="mailto:dpo@rudrans.com">dpo@rudrans.com</a></>,
-          <>Security disclosure: <a className="text-emerald-300" href="mailto:security@rudrans.com">security@rudrans.com</a></>,
+          <>General privacy: <a className="text-emerald-300" href="mailto:privacy@wellnessextract.com">privacy@wellnessextract.com</a></>,
+          <>Data Protection Officer: <a className="text-emerald-300" href="mailto:dpo@wellnessextract.com">dpo@wellnessextract.com</a></>,
+          <>Security disclosure: <a className="text-emerald-300" href="mailto:security@wellnessextract.com">security@wellnessextract.com</a></>,
         ]} />
         <P className="mt-6">
           See also: <Link to="/legal/terms" className="text-emerald-300 hover:underline">Terms of Service</Link>{' '}
