@@ -68,6 +68,51 @@ jobs:
         working-directory: mobile/android
         run: chmod +x ./gradlew
 
+      # Stable debug-signing keystore. Vanilla `assembleDebug` would
+      # generate a fresh debug.keystore per CI run, producing a different
+      # SHA-256 fingerprint each time — which breaks Android App Links
+      # because the OS verifies the running APK's fingerprint against
+      # /.well-known/assetlinks.json. Installing the secret keystore at
+      # the canonical debug path makes every build deterministic.
+      - name: Install stable debug keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "KEYSTORE_BASE64 not set — falling back to gradle default debug keystore"
+            exit 0
+          fi
+          mkdir -p ~/.android
+          echo "$KEYSTORE_BASE64" | base64 -d > ~/.android/debug.keystore
+          # Tell Gradle to use our alias + password
+          cat >> mobile/android/gradle.properties <<EOF
+
+          # Stable debug signing (App Links assetlinks.json depends on
+          # this fingerprint staying constant across CI builds).
+          RELEASE_STORE_FILE=${HOME}/.android/debug.keystore
+          RELEASE_KEY_ALIAS=${{ secrets.KEYSTORE_KEY_ALIAS }}
+          RELEASE_STORE_PASSWORD=${{ secrets.KEYSTORE_PASS }}
+          RELEASE_KEY_PASSWORD=${{ secrets.KEYSTORE_KEY_PASS }}
+          EOF
+          # Override the default debug signing config in the app gradle.
+          cat >> mobile/android/app/build.gradle <<EOF
+
+          android {
+              signingConfigs {
+                  debug {
+                      storeFile file("${HOME}/.android/debug.keystore")
+                      storePassword "${{ secrets.KEYSTORE_PASS }}"
+                      keyAlias "${{ secrets.KEYSTORE_KEY_ALIAS }}"
+                      keyPassword "${{ secrets.KEYSTORE_KEY_PASS }}"
+                  }
+              }
+          }
+          EOF
+          echo "Stable keystore installed; SHA-256:"
+          $JAVA_HOME/bin/keytool -list -v -keystore ~/.android/debug.keystore \
+            -alias "${{ secrets.KEYSTORE_KEY_ALIAS }}" \
+            -storepass "${{ secrets.KEYSTORE_PASS }}" 2>/dev/null | grep "SHA256:"
+
       - name: Build debug APK (auto-signed, installable)
         working-directory: mobile/android
         run: ./gradlew assembleDebug --no-daemon --stacktrace

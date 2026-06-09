@@ -156,9 +156,14 @@ function pollHandoff(state: string): void {
 /// link. Extracts the PKCE `code` from the URL and exchanges it with
 /// Supabase for a session. Returns true if a session was established.
 export async function handleDeepLink(url: string): Promise<boolean> {
-  // URL shape: com.wellnessextract.invoice://oauth-callback?code=XXX&state=YYY
-  // (Implicit-flow URLs would have a #access_token=... fragment; PKCE
-  // uses query params. supabase-js v2 defaults to PKCE.)
+  // URL shapes we accept:
+  //   1. com.wellnessextract.invoice://oauth-callback?code=…&state=…
+  //      (legacy custom-scheme deep link)
+  //   2. https://ems.wellnessextract.com/oauth-bridge.html?code=…&state=…
+  //      (Android App Link — Android intercepts the bridge URL and routes
+  //      it here directly, bypassing whatever browser would otherwise
+  //      strip the query params. Requires assetlinks.json + the
+  //      autoVerify intent-filter in AndroidManifest.)
   try {
     const parsed = new URL(url);
     const code = parsed.searchParams.get("code");

@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.wellnessextract.invoice",
+      "sha256_cert_fingerprints": [
+        "55:3E:B1:5C:7C:45:5C:6A:1B:F7:A0:DE:4D:9E:00:54:89:F1:7A:78:F7:7E:09:4F:21:AD:28:2E:CD:5E:EC:09"
+      ]
+    }
+  }
+]

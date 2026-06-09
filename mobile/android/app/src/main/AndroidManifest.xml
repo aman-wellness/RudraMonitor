@@ -37,6 +37,27 @@
                 <data android:scheme="com.wellnessextract.invoice" />
             </intent-filter>
 
+            <!--
+              Android App Link for the OAuth bridge. autoVerify=true tells
+              Android to fetch https://ems.wellnessextract.com/.well-known/assetlinks.json
+              and check our APK's signing-cert SHA-256 against the entry
+              there. When verified, Android intercepts ANY navigation to
+              https://ems.wellnessextract.com/oauth-bridge.html — from
+              ANY browser, any app — and routes it directly to this
+              activity with the full URL (incl. query string) intact.
+              This is the only way to bypass OEM browsers like
+              HeyTapBrowser that silently strip OAuth query params from
+              the bridge URL before the page can read them.
+            -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https"
+                      android:host="ems.wellnessextract.com"
+                      android:pathPrefix="/oauth-bridge.html" />
+            </intent-filter>
+
         </activity>
 
         <provider
