@@ -25,6 +25,7 @@
     "@capacitor/status-bar": "^7.0.0",
     "@supabase/supabase-js": "^2.57.4",
     "capacitor-native-biometric": "^4.2.2",
+    "cordova-plugin-inappbrowser": "^6.0.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.28.0"

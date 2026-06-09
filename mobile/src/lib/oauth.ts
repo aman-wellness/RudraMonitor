@@ -34,6 +34,24 @@ import { Capacitor } from "@capacitor/core";
 import { Browser } from "@capacitor/browser";
 import { supabase } from "./supabase";
 
+// cordova-plugin-inappbrowser exposes `window.cordova.InAppBrowser.open`
+// which, with the `_system` target, launches the URL via Android's
+// Intent.ACTION_VIEW — i.e. the default browser as a SEPARATE process.
+// This is the ONE path that lets Android's App Link intent-filter
+// intercept the OAuth bridge URL: Capacitor's Browser plugin uses
+// Chrome Custom Tabs, and Custom Tabs opened from app A do NOT break
+// out to app A's own App Links (verified via adb logs — HeyTapBrowser
+// loaded the bridge URL itself even though the App Link was verified).
+declare global {
+  interface Window {
+    cordova?: {
+      InAppBrowser?: {
+        open: (url: string, target: string, options?: string) => unknown;
+      };
+    };
+  }
+}
+
 // Native redirect target. We could redirect directly to the custom URL
 // scheme (com.wellnessextract.invoice://oauth-callback) but on phones
 // whose default browser is not Chrome — OxygenOS / HeyTapBrowser,
@@ -103,10 +121,26 @@ export async function startOAuth(provider: "google" | "azure"): Promise<void> {
   const oauthState = stateMatch ? decodeURIComponent(stateMatch[1]) : "";
 
   // Kick off polling BEFORE opening the browser so even fast OAuth
-  // round-trips don't race past the first poll.
+  // round-trips don't race past the first poll. (Belt-and-braces; with
+  // App Links the polling shouldn't be needed because Android routes
+  // the bridge URL straight to the app, but on iOS / older Androids
+  // the deposit/retrieve handoff is still the actual mechanism.)
   if (oauthState) pollHandoff(oauthState);
 
-  await Browser.open({ url: data.url, presentationStyle: "popover" });
+  // Prefer InAppBrowser's `_system` target — this fires Android's
+  // Intent.ACTION_VIEW which honors App Link verification, so the
+  // bridge URL on return gets intercepted directly into THIS app
+  // (verified via `adb shell am start`: that exact intent resolves
+  // to com.wellnessextract.invoice/.MainActivity). Capacitor's
+  // Browser.open uses Custom Tabs which silently swallow the App
+  // Link interception when the originating app is the target.
+  const win = window as Window;
+  if (win.cordova?.InAppBrowser?.open) {
+    win.cordova.InAppBrowser.open(data.url, "_system");
+  } else {
+    // Fallback (iOS, or if the plugin isn't bundled): Capacitor Browser.
+    await Browser.open({ url: data.url, presentationStyle: "popover" });
+  }
 }
 
 /// Poll the server-side handoff store for a deposited PKCE `code`.
