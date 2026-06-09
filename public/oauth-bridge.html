@@ -5,101 +5,162 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Returning to Wellness Extract Invoice…</title>
 <style>
-  html, body { margin: 0; padding: 0; height: 100%; background: #0f1115; color: #e5e7eb; font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; }
-  .wrap { min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px 24px; text-align: center; }
+  html, body { margin: 0; padding: 0; min-height: 100%; background: #0f1115; color: #e5e7eb; font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; }
+  .wrap { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; text-align: center; box-sizing: border-box; }
   .icon { width: 72px; height: 72px; border-radius: 18px; background: #22d3a2; display: flex; align-items: center; justify-content: center; font-size: 36px; margin-bottom: 24px; }
   h1 { font-size: 20px; font-weight: 600; color: #fff; margin: 0 0 6px; }
-  p { font-size: 14px; color: #9ba3af; max-width: 340px; margin: 0 0 28px; line-height: 1.5; }
+  p { font-size: 14px; color: #9ba3af; max-width: 340px; margin: 0 0 12px; line-height: 1.5; }
   .ok { color: #22d3a2; font-weight: 600; }
   .err { color: #fca5a5; font-weight: 500; }
-  .small { font-size: 11px; color: #6b7280; margin-top: 32px; max-width: 320px; line-height: 1.5; }
+  pre.log { margin-top: 16px; background: #1a1f27; border-radius: 10px; padding: 12px; font-size: 11px; color: #c0c5cf; max-width: 100%; width: 360px; text-align: left; white-space: pre-wrap; word-break: break-word; max-height: 60vh; overflow-y: auto; line-height: 1.45; }
+  pre.log .ok { color: #22d3a2; }
+  pre.log .err { color: #fca5a5; }
+  .small { font-size: 11px; color: #6b7280; margin-top: 16px; max-width: 320px; line-height: 1.5; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="icon">📷</div>
   <h1 id="hd">Finishing sign-in…</h1>
-  <p id="msg">Please wait. You can close this tab in a moment.</p>
-  <p class="small" id="dbg"></p>
+  <p id="msg">Please wait.</p>
+  <pre class="log" id="lg"></pre>
+  <p class="small">Don't close this tab until you see "All set". The Wellness Extract Invoice app will pick up the sign-in automatically.</p>
 </div>
 <script>
-  // Server-side handoff path — no custom-scheme redirect, no intent://.
-  // Browser POSTs the OAuth `state` + `code` to our edge function, then
-  // shows a "you can close this tab" message. The mobile app, which is
-  // already in the background having opened a Custom Tab to land us
-  // here, polls /oauth-mobile-retrieve?state=... on resume and finishes
-  // the PKCE exchange itself. Verified-fails for the deep-link path on
-  // HeyTapBrowser (and several other OEM browsers) — the URL data
-  // never reaches Capacitor's appUrlOpen listener. This handoff is
-  // bulletproof across every browser because the only thing the
-  // browser has to do is a single HTTPS POST.
+  // Verbose, screen-visible logging — when fetch/JS fails on a phone we
+  // have no devtools access, so the page itself becomes the diagnostic.
+  // User can screenshot the log to surface the exact failure point.
 
-  (function () {
-    var params = new URLSearchParams(window.location.search || "");
-    var code = params.get("code") || "";
-    var state = params.get("state") || "";
-    var err = params.get("error") || params.get("error_description");
+  var hd = document.getElementById("hd");
+  var msg = document.getElementById("msg");
+  var lg = document.getElementById("lg");
 
-    var hd = document.getElementById("hd");
-    var msg = document.getElementById("msg");
-    var dbg = document.getElementById("dbg");
+  function log(line, cls) {
+    var t = new Date().toLocaleTimeString();
+    var span = document.createElement("span");
+    if (cls) span.className = cls;
+    span.textContent = "[" + t + "] " + line + "\n";
+    lg.appendChild(span);
+  }
 
-    if (err) {
-      hd.textContent = "Sign-in error";
-      hd.className = "err";
-      msg.textContent = "The provider returned: " + err;
-      return;
+  function fail(headline, detail) {
+    hd.textContent = headline;
+    hd.className = "err";
+    if (detail) msg.textContent = detail;
+    log(headline + (detail ? " — " + detail : ""), "err");
+  }
+
+  function ok(headline, detail) {
+    hd.textContent = headline;
+    hd.className = "ok";
+    if (detail) msg.textContent = detail;
+    log(headline, "ok");
+  }
+
+  log("Bridge loaded");
+  log("UA: " + navigator.userAgent.slice(0, 80) + "…");
+
+  try {
+    // OAuth callback URL might use ? (query) OR # (fragment). Fragments
+    // are NEVER sent to the server — that's why nginx access logs show
+    // /oauth-bridge.html with no query string, but the params ARE
+    // present in the browser's window.location.hash and the JS CAN
+    // read them. Check BOTH places.
+    var rawSearch = window.location.search || "";
+    var rawHash = window.location.hash || "";
+    var rawHashNoBang = rawHash.startsWith("#") ? rawHash.slice(1) : rawHash;
+    log("URL search len: " + rawSearch.length + " | hash len: " + rawHashNoBang.length);
+    log("Full URL: " + window.location.href.slice(0, 140) + (window.location.href.length > 140 ? "…" : ""));
+
+    // Supabase auth on this self-hosted instance returns IMPLICIT-FLOW
+    // tokens in the URL fragment (not PKCE code in query). The hash
+    // contains: access_token + refresh_token + expires_at + token_type
+    // + provider_token + provider_refresh_token. We just pass the
+    // tokens through to the mobile app — no code exchange needed; the
+    // app calls supabase.auth.setSession() directly.
+    var paramsQ = new URLSearchParams(rawSearch);
+    var paramsH = new URLSearchParams(rawHashNoBang);
+    var code = paramsQ.get("code") || paramsH.get("code") || "";
+    var accessToken = paramsH.get("access_token") || paramsQ.get("access_token") || "";
+    var refreshToken = paramsH.get("refresh_token") || paramsQ.get("refresh_token") || "";
+    var providerToken = paramsH.get("provider_token") || paramsQ.get("provider_token") || "";
+    var expiresAt = paramsH.get("expires_at") || paramsQ.get("expires_at") || "";
+    var state = paramsQ.get("state") || paramsH.get("state") || "";
+    var err = paramsQ.get("error") || paramsQ.get("error_description") ||
+              paramsH.get("error") || paramsH.get("error_description");
+
+    log("code: " + (code ? "(" + code.length + " chars) " + code.slice(0, 12) + "…" : "—"));
+    log("access_token: " + (accessToken ? "(" + accessToken.length + " chars)" : "—"));
+    log("refresh_token: " + (refreshToken ? "(" + refreshToken.length + " chars)" : "—"));
+    log("state: " + (state || "—"));
+
+    if (err) { fail("Sign-in error", "Provider returned: " + err); throw new Error("provider error"); }
+    if (!code && !accessToken) { fail("Missing OAuth data", "no code or access_token in URL"); throw new Error("missing"); }
+
+    // Build deposit payload — implicit-flow path passes the full token
+    // set; PKCE path passes the code. Same endpoint accepts either via
+    // the `code` field (we just JSON-stringify the token bundle into
+    // `code` for the implicit path so the existing handoff schema
+    // doesn't need a migration). The mobile app's poll handler
+    // inspects the shape and calls either exchangeCodeForSession()
+    // (PKCE) or setSession() (implicit).
+    var depositCode;
+    var depositState = state || ("implicit-" + Date.now() + "-" + Math.random().toString(36).slice(2, 10));
+    if (accessToken) {
+      depositCode = "IMPLICIT:" + JSON.stringify({
+        access_token: accessToken,
+        refresh_token: refreshToken,
+        expires_at: expiresAt,
+        provider_token: providerToken,
+      });
+      log("Implicit-flow tokens — depositing under state " + depositState.slice(0, 16) + "…");
+    } else {
+      depositCode = code;
+      log("PKCE code — depositing under state " + state.slice(0, 16) + "…");
     }
-    if (!code || !state) {
-      hd.textContent = "Missing OAuth data";
-      hd.className = "err";
-      msg.textContent = "The callback URL didn't include a code or state. Try signing in again.";
-      return;
-    }
 
-    // POST to our edge function — single shot, with a small client-side
-    // retry in case the network blips.
-    function deposit(retriesLeft) {
-      fetch("https://api-ems.wellnessextract.com/functions/v1/oauth-mobile-deposit", {
+    var DEPOSIT_URL = "https://api-ems.wellnessextract.com/functions/v1/oauth-mobile-deposit";
+    log("Posting to deposit endpoint…");
+
+    function deposit(attempt) {
+      log("Attempt #" + attempt + " → fetch " + DEPOSIT_URL);
+      var t0 = Date.now();
+      fetch(DEPOSIT_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ state: state, code: code }),
+        body: JSON.stringify({ state: depositState, code: depositCode }),
       }).then(function (r) {
+        var dt = Date.now() - t0;
+        log("Response in " + dt + "ms, HTTP " + r.status);
         if (r.ok) {
-          hd.textContent = "All set ✓";
-          hd.className = "ok";
-          msg.textContent = "You can close this tab. The Wellness Extract Invoice app will finish signing you in.";
-          // Tiny convenience: also try the legacy custom-scheme. It does
-          // nothing on browsers that block it; on Chrome it'll cleanly
-          // close the tab via app launch.
+          ok("All set ✓", "You can close this tab. The app will finish signing you in.");
+          // Bonus deep-link attempt — harmless on browsers that block it.
           try {
             var f = document.createElement("iframe");
             f.style.display = "none";
             f.src = "com.wellnessextract.invoice://oauth-callback?code=" + encodeURIComponent(code) + "&state=" + encodeURIComponent(state);
             document.body.appendChild(f);
-          } catch (e) {}
+            log("Custom-scheme fallback fired");
+          } catch (e) { log("Custom-scheme fallback skipped: " + e.message); }
           return;
         }
-        if (retriesLeft > 0) {
-          setTimeout(function () { deposit(retriesLeft - 1); }, 800);
-        } else {
-          hd.textContent = "Couldn't finish sign-in";
-          hd.className = "err";
-          msg.textContent = "Network error talking to the backend. Open the app and try again.";
-        }
+        return r.text().then(function (body) {
+          log("Body: " + body.slice(0, 200), "err");
+          if (attempt < 3) setTimeout(function () { deposit(attempt + 1); }, 800);
+          else fail("Server rejected the deposit", "HTTP " + r.status);
+        });
       }).catch(function (e) {
-        if (retriesLeft > 0) {
-          setTimeout(function () { deposit(retriesLeft - 1); }, 800);
-        } else {
-          dbg.textContent = "Last error: " + (e && e.message ? e.message : String(e));
-          hd.textContent = "Couldn't reach backend";
-          hd.className = "err";
-          msg.textContent = "Check your connection and try again.";
-        }
+        var dt = Date.now() - t0;
+        log("Fetch error after " + dt + "ms: " + (e && e.message ? e.message : String(e)), "err");
+        if (attempt < 3) setTimeout(function () { deposit(attempt + 1); }, 800);
+        else fail("Couldn't reach backend", e && e.message ? e.message : "Network error");
       });
     }
-    deposit(3);
-  })();
+
+    deposit(1);
+  } catch (e) {
+    log("FATAL: " + (e && e.message ? e.message : String(e)), "err");
+  }
 </script>
 </body>
 </html>

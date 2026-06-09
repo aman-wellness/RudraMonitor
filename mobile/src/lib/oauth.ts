@@ -121,11 +121,10 @@ export async function startOAuth(provider: "google" | "azure"): Promise<void> {
   const oauthState = stateMatch ? decodeURIComponent(stateMatch[1]) : "";
 
   // Kick off polling BEFORE opening the browser so even fast OAuth
-  // round-trips don't race past the first poll. (Belt-and-braces; with
-  // App Links the polling shouldn't be needed because Android routes
-  // the bridge URL straight to the app, but on iOS / older Androids
-  // the deposit/retrieve handoff is still the actual mechanism.)
-  if (oauthState) pollHandoff(oauthState);
+  // round-trips don't race past the first poll. Implicit flow doesn't
+  // expose a client-side state, so the poll uses `latest=true` —
+  // oauthState here is only used for diagnostic logging.
+  pollHandoff(oauthState || "(implicit)");
 
   // Prefer InAppBrowser's `_system` target — this fires Android's
   // Intent.ACTION_VIEW which honors App Link verification, so the
@@ -143,36 +142,70 @@ export async function startOAuth(provider: "google" | "azure"): Promise<void> {
   }
 }
 
-/// Poll the server-side handoff store for a deposited PKCE `code`.
-/// Resolves silently once a code is exchanged into a session; gives up
-/// after ~2 minutes. Browser-cooperation independent — works on every
-/// OEM browser (HeyTapBrowser, Samsung Internet, MIUI Browser, ...)
-/// because the only thing the browser has to do is one HTTPS POST.
-function pollHandoff(state: string): void {
+/// Poll the server-side handoff store for the deposited credentials.
+/// Two payload shapes supported:
+///   - PKCE code: plain string starting with `1.AWE…` etc. — exchanged
+///     via supabase.auth.exchangeCodeForSession().
+///   - Implicit-flow tokens: prefixed `IMPLICIT:{...json}` containing
+///     access_token + refresh_token — applied via supabase.auth
+///     .setSession() (no exchange needed; the IdP already minted the
+///     session and Supabase echoed the tokens back in the URL fragment).
+///
+/// Self-hosted Supabase Auth returns implicit-flow tokens by default,
+/// so the IMPLICIT path is the one that actually fires in production.
+function pollHandoff(_unusedState: string): void {
   const RETRIEVE_URL =
     "https://api-ems.wellnessextract.com/functions/v1/oauth-mobile-retrieve";
   const startedAt = Date.now();
   const stopAfterMs = 120_000;
-  let exchanged = false;
+  let applied = false;
 
   const tick = async (): Promise<void> => {
-    if (exchanged) return;
+    if (applied) return;
     if (Date.now() - startedAt > stopAfterMs) {
-      console.warn("oauth.pollHandoff: timeout — no code deposited in 2 min");
+      console.warn("oauth.pollHandoff: timeout — no credentials deposited in 2 min");
       return;
     }
     try {
-      const r = await fetch(`${RETRIEVE_URL}?state=${encodeURIComponent(state)}`);
+      // `latest=true` returns whichever was deposited most recently
+      // within the last 60 s. The state value Supabase generates for
+      // implicit flow is server-side and we can't predict it, so we
+      // poll the freshest row instead. Single-device single-flow
+      // guarantees this resolves to the right session.
+      const r = await fetch(`${RETRIEVE_URL}?latest=true`);
       if (r.ok) {
         const body = (await r.json()) as { ready?: boolean; code?: string };
         if (body.ready && body.code) {
-          exchanged = true;
-          const { error } = await supabase.auth.exchangeCodeForSession(body.code);
-          if (error) {
-            console.error("oauth.pollHandoff: exchangeCodeForSession:", error.message);
-            return;
+          applied = true;
+          if (body.code.startsWith("IMPLICIT:")) {
+            // Implicit flow — tokens already minted by the IdP. Just
+            // set them on the local supabase client.
+            try {
+              const payload = JSON.parse(body.code.slice("IMPLICIT:".length)) as {
+                access_token: string;
+                refresh_token: string;
+              };
+              const { error } = await supabase.auth.setSession({
+                access_token: payload.access_token,
+                refresh_token: payload.refresh_token,
+              });
+              if (error) {
+                console.error("oauth.pollHandoff: setSession:", error.message);
+                return;
+              }
+            } catch (parseErr) {
+              console.error("oauth.pollHandoff: payload parse:", (parseErr as Error).message);
+              return;
+            }
+          } else {
+            // PKCE flow — server returned an exchange code.
+            const { error } = await supabase.auth.exchangeCodeForSession(body.code);
+            if (error) {
+              console.error("oauth.pollHandoff: exchangeCodeForSession:", error.message);
+              return;
+            }
           }
-          // Best-effort close any leftover custom tab.
+          // Best-effort close any leftover custom tab / external browser.
           try { await Browser.close(); } catch { /* ignore */ }
           return;
         }
