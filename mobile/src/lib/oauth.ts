@@ -96,7 +96,60 @@ export async function startOAuth(provider: "google" | "azure"): Promise<void> {
   if (error) throw error;
   if (!data?.url) throw new Error("Supabase returned no OAuth URL");
 
+  // Extract the OAuth `state` param from the URL — this is the key the
+  // bridge will use to deposit the auth `code` server-side. We need it
+  // here so we can poll the retrieve endpoint after the browser closes.
+  const stateMatch = /[?&]state=([^&]+)/.exec(data.url);
+  const oauthState = stateMatch ? decodeURIComponent(stateMatch[1]) : "";
+
+  // Kick off polling BEFORE opening the browser so even fast OAuth
+  // round-trips don't race past the first poll.
+  if (oauthState) pollHandoff(oauthState);
+
   await Browser.open({ url: data.url, presentationStyle: "popover" });
+}
+
+/// Poll the server-side handoff store for a deposited PKCE `code`.
+/// Resolves silently once a code is exchanged into a session; gives up
+/// after ~2 minutes. Browser-cooperation independent — works on every
+/// OEM browser (HeyTapBrowser, Samsung Internet, MIUI Browser, ...)
+/// because the only thing the browser has to do is one HTTPS POST.
+function pollHandoff(state: string): void {
+  const RETRIEVE_URL =
+    "https://api-ems.wellnessextract.com/functions/v1/oauth-mobile-retrieve";
+  const startedAt = Date.now();
+  const stopAfterMs = 120_000;
+  let exchanged = false;
+
+  const tick = async (): Promise<void> => {
+    if (exchanged) return;
+    if (Date.now() - startedAt > stopAfterMs) {
+      console.warn("oauth.pollHandoff: timeout — no code deposited in 2 min");
+      return;
+    }
+    try {
+      const r = await fetch(`${RETRIEVE_URL}?state=${encodeURIComponent(state)}`);
+      if (r.ok) {
+        const body = (await r.json()) as { ready?: boolean; code?: string };
+        if (body.ready && body.code) {
+          exchanged = true;
+          const { error } = await supabase.auth.exchangeCodeForSession(body.code);
+          if (error) {
+            console.error("oauth.pollHandoff: exchangeCodeForSession:", error.message);
+            return;
+          }
+          // Best-effort close any leftover custom tab.
+          try { await Browser.close(); } catch { /* ignore */ }
+          return;
+        }
+      }
+      // Either 404 (not ready yet) or transient error — try again.
+    } catch (e) {
+      console.warn("oauth.pollHandoff fetch:", (e as Error).message);
+    }
+    window.setTimeout(tick, 1000);
+  };
+  void tick();
 }
 
 /// Called by App.tsx when Android delivers a `com.wellnessextract.invoice://` deep

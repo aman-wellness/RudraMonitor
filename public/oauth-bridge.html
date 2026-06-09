@@ -9,91 +9,96 @@
   .wrap { min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px 24px; text-align: center; }
   .icon { width: 72px; height: 72px; border-radius: 18px; background: #22d3a2; display: flex; align-items: center; justify-content: center; font-size: 36px; margin-bottom: 24px; }
   h1 { font-size: 20px; font-weight: 600; color: #fff; margin: 0 0 6px; }
-  p { font-size: 14px; color: #9ba3af; max-width: 320px; margin: 0 0 28px; line-height: 1.5; }
-  .btn { display: inline-block; padding: 16px 32px; border-radius: 12px; background: #22d3a2; color: #0f1115; font-size: 16px; font-weight: 700; text-decoration: none; min-width: 240px; box-shadow: 0 0 0 4px rgba(34,211,162,0.25); animation: pulse 1.2s ease-in-out infinite; }
+  p { font-size: 14px; color: #9ba3af; max-width: 340px; margin: 0 0 28px; line-height: 1.5; }
+  .ok { color: #22d3a2; font-weight: 600; }
+  .err { color: #fca5a5; font-weight: 500; }
   .small { font-size: 11px; color: #6b7280; margin-top: 32px; max-width: 320px; line-height: 1.5; }
-  .small a { color: #22d3a2; }
-  @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.04); } }
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="icon">📷</div>
-  <h1>Tap to finish sign-in</h1>
-  <p>Returning you to <strong style="color:#fff;">Wellness Extract Invoice</strong>… If nothing happens automatically, tap the button below.</p>
-  <a id="cta" href="#" class="btn">Open in app →</a>
-  <iframe id="bridgeframe" style="display:none" title="bridge"></iframe>
-  <p class="small">Don't have the app installed yet? <a href="/downloads/wellness-extract-invoice.apk">Download the Android APK</a>.</p>
+  <h1 id="hd">Finishing sign-in…</h1>
+  <p id="msg">Please wait. You can close this tab in a moment.</p>
+  <p class="small" id="dbg"></p>
 </div>
 <script>
-  // CRITICAL: this file is intentionally STATIC HTML, lives in public/ so
-  // Vite copies it verbatim into the build output (and `rsync --delete`
-  // preserves it across deploys). It is NOT part of the dashboard SPA.
-  //
-  // The SPA bundle initialises supabase-js with detectSessionInUrl=true,
-  // which would auto-exchange the PKCE `code` query param the moment the
-  // page mounted — consuming the one-shot OAuth code in the browser's
-  // storage context before the mobile app could use it. Here we don't
-  // touch the code at all; we just forward the query string into the
-  // app's custom-scheme deep link so the mobile app finishes the PKCE
-  // exchange itself.
-  //
-  // Try multiple launch strategies in parallel because HeyTapBrowser /
-  // Samsung Internet / MIUI Browser each block a different subset of
-  // ways to navigate to a non-http scheme.
+  // Server-side handoff path — no custom-scheme redirect, no intent://.
+  // Browser POSTs the OAuth `state` + `code` to our edge function, then
+  // shows a "you can close this tab" message. The mobile app, which is
+  // already in the background having opened a Custom Tab to land us
+  // here, polls /oauth-mobile-retrieve?state=... on resume and finishes
+  // the PKCE exchange itself. Verified-fails for the deep-link path on
+  // HeyTapBrowser (and several other OEM browsers) — the URL data
+  // never reaches Capacitor's appUrlOpen listener. This handoff is
+  // bulletproof across every browser because the only thing the
+  // browser has to do is a single HTTPS POST.
 
   (function () {
-    var query = window.location.search || "";
-    // Strip leading "?" — Android intent URI format takes query separately.
-    var queryNoQ = query.replace(/^\?/, "");
+    var params = new URLSearchParams(window.location.search || "");
+    var code = params.get("code") || "";
+    var state = params.get("state") || "";
+    var err = params.get("error") || params.get("error_description");
 
-    // Android Intent URI — the standard documented way to launch a native
-    // app from any Chrome-based browser (Chrome, HeyTapBrowser, MIUI
-    // Browser, Samsung Internet). The browser sees `intent://` and asks
-    // Android's intent resolver to handle it, instead of trying to
-    // navigate to it as if it were a URL. The plain `custom-scheme://`
-    // form fails on these browsers; `intent://...` does not.
-    // Docs: https://developer.chrome.com/docs/multidevice/android/intents
-    // NO package=  — keeping the intent IMPLICIT lets Android route via
-    // the AndroidManifest intent-filter (which has the right data scheme
-    // and BROWSABLE category set). When we forced package= the launch
-    // worked but the data URI was dropped, so Capacitor's appUrlOpen
-    // listener never fired and the in-app handler had nothing to exchange.
-    var intentUrl =
-      "intent://oauth-callback" + (queryNoQ ? "?" + queryNoQ : "") +
-      "#Intent;" +
-      "scheme=com.wellnessextract.invoice;" +
-      "S.browser_fallback_url=" + encodeURIComponent("/downloads/wellness-extract-invoice.apk") + ";" +
-      "end";
+    var hd = document.getElementById("hd");
+    var msg = document.getElementById("msg");
+    var dbg = document.getElementById("dbg");
 
-    // Plain custom scheme — fallback for environments that ARE happy with
-    // it (older Android Chrome, in-app webviews that proxy to system,
-    // iOS Safari).
-    var schemeUrl = "com.wellnessextract.invoice://oauth-callback" + query;
+    if (err) {
+      hd.textContent = "Sign-in error";
+      hd.className = "err";
+      msg.textContent = "The provider returned: " + err;
+      return;
+    }
+    if (!code || !state) {
+      hd.textContent = "Missing OAuth data";
+      hd.className = "err";
+      msg.textContent = "The callback URL didn't include a code or state. Try signing in again.";
+      return;
+    }
 
-    var cta = document.getElementById("cta");
-    cta.href = intentUrl;
-
-    // Strategy 1: navigate to the intent:// URL — works on any Chrome-based
-    // Android browser.
-    setTimeout(function () {
-      try { window.location.assign(intentUrl); } catch (e) {}
-    }, 80);
-
-    // Strategy 2: synthetic anchor click on the same intent:// URL — some
-    // browsers treat user-clicks differently from location.assign.
-    setTimeout(function () {
-      try { cta.click(); } catch (e) {}
-    }, 350);
-
-    // Strategy 3: fall back to the plain custom scheme via hidden iframe
-    // — covers iOS Safari and any browser that doesn't grok intent://.
-    setTimeout(function () {
-      try {
-        var f = document.getElementById("bridgeframe");
-        if (f) f.src = schemeUrl;
-      } catch (e) {}
-    }, 650);
+    // POST to our edge function — single shot, with a small client-side
+    // retry in case the network blips.
+    function deposit(retriesLeft) {
+      fetch("https://api-ems.wellnessextract.com/functions/v1/oauth-mobile-deposit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state: state, code: code }),
+      }).then(function (r) {
+        if (r.ok) {
+          hd.textContent = "All set ✓";
+          hd.className = "ok";
+          msg.textContent = "You can close this tab. The Wellness Extract Invoice app will finish signing you in.";
+          // Tiny convenience: also try the legacy custom-scheme. It does
+          // nothing on browsers that block it; on Chrome it'll cleanly
+          // close the tab via app launch.
+          try {
+            var f = document.createElement("iframe");
+            f.style.display = "none";
+            f.src = "com.wellnessextract.invoice://oauth-callback?code=" + encodeURIComponent(code) + "&state=" + encodeURIComponent(state);
+            document.body.appendChild(f);
+          } catch (e) {}
+          return;
+        }
+        if (retriesLeft > 0) {
+          setTimeout(function () { deposit(retriesLeft - 1); }, 800);
+        } else {
+          hd.textContent = "Couldn't finish sign-in";
+          hd.className = "err";
+          msg.textContent = "Network error talking to the backend. Open the app and try again.";
+        }
+      }).catch(function (e) {
+        if (retriesLeft > 0) {
+          setTimeout(function () { deposit(retriesLeft - 1); }, 800);
+        } else {
+          dbg.textContent = "Last error: " + (e && e.message ? e.message : String(e));
+          hd.textContent = "Couldn't reach backend";
+          hd.className = "err";
+          msg.textContent = "Check your connection and try again.";
+        }
+      });
+    }
+    deposit(3);
   })();
 </script>
 </body>
