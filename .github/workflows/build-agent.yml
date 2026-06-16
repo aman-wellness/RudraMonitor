@@ -58,6 +58,16 @@ jobs:
             artifact_glob: agent/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
             remote_name: Security-Assistant-Windows-${{ github.ref_name }}.exe
             packager: passthrough
+          # Same Windows toolchain, but emit an MSI for MDM deployment
+          # (Intune / Workspace ONE / AppLocker — most enterprise installers
+          # ingest MSI more cleanly than NSIS). Tauri builds MSI via WiX 3,
+          # which is auto-installed by the official setup-tauri actions.
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundle: msi
+            artifact_glob: agent/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+            remote_name: Security-Assistant-Windows-${{ github.ref_name }}.msi
+            packager: passthrough
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             bundle: deb
