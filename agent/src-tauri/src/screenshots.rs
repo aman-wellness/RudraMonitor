@@ -74,6 +74,24 @@ pub fn capture_primary() -> Result<CapturedFrame> {
         let _ = std::fs::remove_file(&out);
         return Err(anyhow!("screencapture exited {}", status));
     }
+    // screencapture writes the FULL native-resolution JPEG (no resize/quality flag exists).
+    // On Retina/5K Macs that's 1-2 MB — exceeds the edge-runtime body limit (~1 MB) and
+    // hits HTTP 413. sips (also Apple-signed, on every Mac) re-encodes in place: -Z caps
+    // the longer dimension at 1280 px and -s formatOptions 50 drops JPEG quality to 50%.
+    // Result: ~80-200 KB, well under the cap, no extra dependency.
+    let resize = Command::new("/usr/bin/sips")
+        .args(["-Z", "1280", "-s", "formatOptions", "50", &out_str])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status();
+    if let Ok(s) = resize {
+        if !s.success() {
+            // Don't fail — sips occasionally errors on transient files; fall through and
+            // use the un-resized JPEG. The 413 may still happen but at least the agent
+            // keeps capturing.
+            eprintln!("sips resize returned non-zero status (continuing with raw JPEG)");
+        }
+    }
     let bytes = std::fs::read(&out).with_context(|| format!("reading {out_str}"))?;
     let _ = std::fs::remove_file(&out);
     if bytes.len() < 1000 {

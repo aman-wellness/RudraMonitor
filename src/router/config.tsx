@@ -29,6 +29,7 @@ const Setup = lazy(() => import("../pages/setup/page"));
 const AdminPortal = lazy(() => import("../pages/admin-portal/page"));
 const EmployeesIntegrations = lazy(() => import("../pages/employees/integrations/page"));
 const Governance = lazy(() => import("../pages/governance/page"));
+const OrgSettings = lazy(() => import("../pages/org-settings/page"));
 const EmployeesList = lazy(() => import("../pages/employees/page"));
 const NewEmployee = lazy(() => import("../pages/employees/new/page"));
 const NewM365User = lazy(() => import("../pages/employees/new/m365/page"));
@@ -151,6 +152,9 @@ const routes: RouteObject[] = [
   // Governance — pillars, org chart, channels, access register, policies.
   // Same EM subscription gate as the rest of /employees/* family.
   { path: "/governance",             element: em(<Governance />, "governance") },
+
+  // Org-wide settings — wallpaper push, org branding. Always available to writers.
+  { path: "/org-settings",           element: protect(<OrgSettings />) },
 
   // Self-service subscription & add-on management (always available to org owner).
   { path: "/subscription",           element: protect(<SubscriptionPage />) },

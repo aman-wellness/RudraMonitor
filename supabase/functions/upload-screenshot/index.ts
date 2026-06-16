@@ -13,7 +13,7 @@ import { corsHeaders } from "../_shared/cors.ts";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-const MAX_BYTES = 512 * 1024; // matches bucket file_size_limit
+const MAX_BYTES = 5 * 1024 * 1024; // matches bucket file_size_limit (5 MB — Retina-Mac screenshots can be ~1-2 MB even after sips downscale)
 
 type Body = {
   image_b64?: string;

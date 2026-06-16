@@ -4,6 +4,8 @@ interface Props {
   screenshotsEnabled: boolean;
   videosEnabled: boolean;
   dlpEnabled?: boolean;
+  removableDisksBlocked?: boolean;
+  wallpaperEnforced?: boolean;
   screenshotIntervalSecs: number;
   videoIntervalSecs: number;
   // undefined = plan check still loading (don't show "not available" yet);
@@ -16,6 +18,8 @@ interface Props {
     screenshots: boolean;
     videos: boolean;
     dlp?: boolean;
+    removableDisksBlocked?: boolean;
+    wallpaperEnforced?: boolean;
     screenshotIntervalSecs: number;
     videoIntervalSecs: number;
   }) => Promise<void> | void;
@@ -45,12 +49,15 @@ const VID_PRESETS = [
 
 export default function CaptureControls({
   screenshotsEnabled, videosEnabled, dlpEnabled = false,
+  removableDisksBlocked = true, wallpaperEnforced = true,
   screenshotIntervalSecs, videoIntervalSecs,
   dlpAddonPriceInr, isTrial = false, onUpdate,
 }: Props) {
   const [ss, setSs] = useState(screenshotsEnabled);
   const [vid, setVid] = useState(videosEnabled);
   const [dlp, setDlp] = useState(dlpEnabled);
+  const [usbBlock, setUsbBlock] = useState(removableDisksBlocked);
+  const [wallpaper, setWallpaper] = useState(wallpaperEnforced);
   const [ssEvery, setSsEvery] = useState(screenshotIntervalSecs);
   const [vidEvery, setVidEvery] = useState(videoIntervalSecs);
   const [saved, setSaved] = useState(false);
@@ -60,6 +67,8 @@ export default function CaptureControls({
   useEffect(() => { setSs(screenshotsEnabled); }, [screenshotsEnabled]);
   useEffect(() => { setVid(videosEnabled); }, [videosEnabled]);
   useEffect(() => { setDlp(dlpEnabled); }, [dlpEnabled]);
+  useEffect(() => { setUsbBlock(removableDisksBlocked); }, [removableDisksBlocked]);
+  useEffect(() => { setWallpaper(wallpaperEnforced); }, [wallpaperEnforced]);
   useEffect(() => { setSsEvery(screenshotIntervalSecs); }, [screenshotIntervalSecs]);
   useEffect(() => { setVidEvery(videoIntervalSecs); }, [videoIntervalSecs]);
 
@@ -71,6 +80,8 @@ export default function CaptureControls({
         screenshots: ss,
         videos: vid,
         dlp,
+        removableDisksBlocked: usbBlock,
+        wallpaperEnforced: wallpaper,
         screenshotIntervalSecs: ssEvery,
         videoIntervalSecs: vidEvery,
       });
@@ -85,6 +96,7 @@ export default function CaptureControls({
 
   const hasChanges =
     ss !== screenshotsEnabled || vid !== videosEnabled || dlp !== dlpEnabled ||
+    usbBlock !== removableDisksBlocked || wallpaper !== wallpaperEnforced ||
     ssEvery !== screenshotIntervalSecs || vidEvery !== videoIntervalSecs;
 
   // Three states: plan check is still loading, DLP is unavailable, or DLP is
@@ -209,6 +221,52 @@ export default function CaptureControls({
             className={`w-10 h-5 rounded-full transition-colors relative ${dlp && dlpAvailable && !dlpLoading ? 'bg-cyan-500' : 'bg-dark-700'} disabled:cursor-not-allowed`}
           >
             <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${dlp && dlpAvailable && !dlpLoading ? 'left-[22px]' : 'left-[2px]'}`} />
+          </button>
+        </div>
+
+        {/* Removable disk block */}
+        <div className="flex items-center justify-between bg-dark-900 rounded-lg border border-dark-700 p-3">
+          <div className="flex items-center gap-3">
+            <span className={`w-8 h-8 rounded-lg flex items-center justify-center ${usbBlock ? 'bg-rose-500/15' : 'bg-dark-700'}`}>
+              <i className={`ri-usb-line ${usbBlock ? 'text-rose-400' : 'text-gray-600'}`} />
+            </span>
+            <div>
+              <p className="text-xs text-white font-medium">Block removable disks</p>
+              <p className="text-[11px] text-gray-500">
+                {usbBlock
+                  ? 'USB sticks, external drives & SD cards are auto-ejected on connect'
+                  : 'This agent can read/write removable storage (allowlisted)'}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setUsbBlock(!usbBlock)}
+            className={`w-10 h-5 rounded-full transition-colors relative ${usbBlock ? 'bg-rose-500' : 'bg-dark-700'}`}
+          >
+            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${usbBlock ? 'left-[22px]' : 'left-[2px]'}`} />
+          </button>
+        </div>
+
+        {/* Wallpaper enforcement */}
+        <div className="flex items-center justify-between bg-dark-900 rounded-lg border border-dark-700 p-3">
+          <div className="flex items-center gap-3">
+            <span className={`w-8 h-8 rounded-lg flex items-center justify-center ${wallpaper ? 'bg-indigo-500/15' : 'bg-dark-700'}`}>
+              <i className={`ri-image-2-line ${wallpaper ? 'text-indigo-400' : 'text-gray-600'}`} />
+            </span>
+            <div>
+              <p className="text-xs text-white font-medium">Apply org wallpaper</p>
+              <p className="text-[11px] text-gray-500">
+                {wallpaper
+                  ? 'Desktop wallpaper is pushed from org Settings → Branding'
+                  : 'This agent keeps its current wallpaper (exempt from org push)'}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setWallpaper(!wallpaper)}
+            className={`w-10 h-5 rounded-full transition-colors relative ${wallpaper ? 'bg-indigo-500' : 'bg-dark-700'}`}
+          >
+            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${wallpaper ? 'left-[22px]' : 'left-[2px]'}`} />
           </button>
         </div>
       </div>

@@ -54,7 +54,25 @@ pub struct AgentSettings {
     /// kill DLP for a misbehaving agent without rebuilding the binary.
     #[serde(default)]
     pub dlp_enabled: bool,
+    /// Block any removable disk (USB stick, external HDD, SD card). Default ON
+    /// at the org level; admin can flip it OFF per-agent to allowlist a device.
+    #[serde(default = "default_true")]
+    pub removable_disks_blocked: bool,
+    /// If true, apply the org-wide wallpaper (see wallpaper_url) on this device.
+    /// Toggle OFF per-agent to exempt a specific agent.
+    #[serde(default = "default_true")]
+    pub wallpaper_enforced: bool,
+    /// Org-wide wallpaper image URL. None → no wallpaper push for this org.
+    #[serde(default)]
+    pub wallpaper_url: Option<String>,
+    /// Timestamp of the most recent wallpaper change. Agent compares this to its
+    /// locally cached last-applied stamp and re-applies only when newer, so a
+    /// reboot doesn't re-download/re-apply the same image.
+    #[serde(default)]
+    pub wallpaper_updated_at: Option<String>,
 }
+
+fn default_true() -> bool { true }
 
 fn default_video_interval() -> u32 { 1800 }
 

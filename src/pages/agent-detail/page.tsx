@@ -47,6 +47,8 @@ export default function AgentDetailPage() {
     screenshots: boolean;
     videos: boolean;
     dlp?: boolean;
+    removableDisksBlocked?: boolean;
+    wallpaperEnforced?: boolean;
     screenshotIntervalSecs: number;
     videoIntervalSecs: number;
   }) => {
@@ -58,6 +60,8 @@ export default function AgentDetailPage() {
       video_interval_secs: p.videoIntervalSecs,
     };
     if (p.dlp !== undefined) patch.dlp_enabled = p.dlp;
+    if (p.removableDisksBlocked !== undefined) patch.removable_disks_blocked = p.removableDisksBlocked;
+    if (p.wallpaperEnforced !== undefined) patch.wallpaper_enforced = p.wallpaperEnforced;
     const { error } = await supabase.from('agents').update(patch).eq('id', agentId);
     if (error) throw error;
     await refresh();
@@ -216,6 +220,8 @@ export default function AgentDetailPage() {
           screenshotsEnabled={agent.screenshotsEnabled}
           videosEnabled={agent.videosEnabled}
           dlpEnabled={agent.dlpEnabled}
+          removableDisksBlocked={agent.removableDisksBlocked}
+          wallpaperEnforced={agent.wallpaperEnforced}
           screenshotIntervalSecs={agent.screenshotIntervalSecs}
           videoIntervalSecs={agent.videoIntervalSecs}
           dlpAddonPriceInr={dlpAddonPriceInr}
@@ -661,6 +667,8 @@ export default function AgentDetailPage() {
             screenshotsEnabled={agent.screenshotsEnabled}
             videosEnabled={agent.videosEnabled}
             dlpEnabled={agent.dlpEnabled}
+            removableDisksBlocked={agent.removableDisksBlocked}
+            wallpaperEnforced={agent.wallpaperEnforced}
             screenshotIntervalSecs={agent.screenshotIntervalSecs}
             videoIntervalSecs={agent.videoIntervalSecs}
             dlpAddonPriceInr={dlpAddonPriceInr}

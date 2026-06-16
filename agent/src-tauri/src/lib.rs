@@ -32,6 +32,9 @@ mod remote;
 mod capture;
 // mod encode;  // landing in v0.3.1 alongside Windows + Linux capture.
 
+mod usb_block;
+mod wallpaper;
+
 use active_window::{FocusSession, WindowInfo};
 use anyhow::{anyhow, Result};
 use chrono::{Duration as ChronoDuration, Utc};
@@ -93,6 +96,13 @@ const DEFAULT_SETTINGS: api::AgentSettings = api::AgentSettings {
     videos_enabled: false,
     video_interval_secs: 1800,
     dlp_enabled: false,
+    // USB block default ON, wallpaper default enforced. Until first settings
+    // fetch lands, this means a fresh enrollment immediately blocks USBs. The
+    // toggle in the admin portal flips back within ~60 s of the first poll.
+    removable_disks_blocked: true,
+    wallpaper_enforced: true,
+    wallpaper_url: None,
+    wallpaper_updated_at: None,
 };
 
 // Threshold-based alerts: only fired once when crossing into elevated state, cleared when metric drops.
@@ -1236,6 +1246,14 @@ pub fn run() {
             // DLP watcher always starts but loops short-circuit when
             // settings.dlp_enabled is false — admin toggles from the dashboard.
             spawn_dlp_loop(state.clone());
+            // USB-block loop: enumerates removable volumes every 5s and unmounts
+            // any new ones unless the agent is allowlisted. Always starts; the
+            // loop itself reads settings.removable_disks_blocked each iteration.
+            spawn_usb_block_loop(state.clone());
+            // Wallpaper loop: polls every 60s for a server-side wallpaper URL
+            // change; downloads + applies when one appears. Settings-gated by
+            // wallpaper_enforced per-agent toggle.
+            spawn_wallpaper_loop(state.clone());
             // WebRTC live-monitoring loop. Idle until the dashboard sends an
             // offer through /webrtc-signal; from that point the agent owns
             // an RTCPeerConnection that streams ffmpeg's h264 stdout into a
@@ -1344,6 +1362,64 @@ fn spawn_dlp_loop(state: AppState) {
                 }
             }
             sleep(Duration::from_secs(5)).await;
+        }
+    });
+}
+
+/// USB-block enforcement loop. Independent of DLP — DLP watches files
+/// being copied; usb_block prevents the disk from being usable at all.
+/// Per-agent allowlist via `settings.removable_disks_blocked = false`.
+fn spawn_usb_block_loop(state: AppState) {
+    tauri::async_runtime::spawn(async move {
+        // Let enrollment + first settings_tick land before we start ejecting
+        // disks. Avoids a fresh install ejecting the customer's USB-installed
+        // license dongle before the admin has a chance to allowlist them.
+        sleep(Duration::from_secs(15)).await;
+        let mut blocker = usb_block::UsbBlocker::new();
+        loop {
+            let enabled = state.settings.lock().await.removable_disks_blocked;
+            let blocked = blocker.reconcile(enabled);
+            // Log each block event so the admin sees what was ejected. Best
+            // effort — if the post fails we don't retry; the local log line
+            // is still produced inside usb_block::reconcile.
+            for d in blocked {
+                let payload = serde_json::json!({
+                    "event_type": "usb_blocked",
+                    "device_name": d.label,
+                    "mount_point": d.mount_point.to_string_lossy(),
+                });
+                if let Err(e) = post_dlp_payload(&state, &payload).await {
+                    log::warn!("usb_block: log post failed: {e}");
+                }
+            }
+            sleep(Duration::from_secs(5)).await;
+        }
+    });
+}
+
+/// Wallpaper enforcement loop. Polls `state.settings` (refreshed every 60 s
+/// by settings_tick) for a server-side wallpaper URL change; downloads and
+/// applies the new image when seen. Per-agent exempt via `wallpaper_enforced`.
+fn spawn_wallpaper_loop(state: AppState) {
+    tauri::async_runtime::spawn(async move {
+        sleep(Duration::from_secs(20)).await;
+        let mut wm = wallpaper::WallpaperManager::new();
+        loop {
+            // Snapshot settings for this iteration to avoid holding the lock
+            // across the long download + apply step.
+            let snap = {
+                let s = state.settings.lock().await;
+                (
+                    s.wallpaper_enforced,
+                    s.wallpaper_url.clone(),
+                    s.wallpaper_updated_at.clone(),
+                )
+            };
+            let (enforced, url, updated_at) = snap;
+            if let Err(e) = wm.tick(enforced, url.as_deref(), updated_at.as_deref()).await {
+                log::warn!("wallpaper tick failed: {e}");
+            }
+            sleep(Duration::from_secs(60)).await;
         }
     });
 }

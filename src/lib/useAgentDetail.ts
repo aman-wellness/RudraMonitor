@@ -24,6 +24,8 @@ export type AgentDetail = {
   screenshotsEnabled: boolean;
   videosEnabled: boolean;
   dlpEnabled: boolean;
+  removableDisksBlocked: boolean;
+  wallpaperEnforced: boolean;
   screenshotIntervalSecs: number;
   videoIntervalSecs: number;
   totalActiveTime: string;
@@ -366,6 +368,8 @@ function buildDetail(
     screenshotsEnabled: (agentRow.screenshots_enabled as boolean | undefined) ?? true,
     videosEnabled: (agentRow.videos_enabled as boolean | undefined) ?? false,
     dlpEnabled: (agentRow.dlp_enabled as boolean | undefined) ?? false,
+    removableDisksBlocked: (agentRow.removable_disks_blocked as boolean | undefined) ?? true,
+    wallpaperEnforced: (agentRow.wallpaper_enforced as boolean | undefined) ?? true,
     screenshotIntervalSecs: (agentRow.screenshot_interval_secs as number | undefined) ?? 300,
     videoIntervalSecs: (agentRow.video_interval_secs as number | undefined) ?? 1800,
     totalActiveTime: formatHM(totalActiveSec),

@@ -35,7 +35,7 @@ Deno.serve(async (req) => {
 
   const { data, error } = await admin
     .from("agents")
-    .select("org_id, screenshots_enabled, active_window_enabled, screenshot_interval_secs, idle_threshold_secs, videos_enabled, video_interval_secs, dlp_enabled")
+    .select("org_id, screenshots_enabled, active_window_enabled, screenshot_interval_secs, idle_threshold_secs, videos_enabled, video_interval_secs, dlp_enabled, removable_disks_blocked, wallpaper_enforced")
     .eq("enroll_token", token)
     .maybeSingle();
   if (error) {
@@ -60,6 +60,15 @@ Deno.serve(async (req) => {
   const allowVideos = featureSet.has("videos");
   const allowDlp = featureSet.has("dlp");
 
+  // Org-wide wallpaper settings. NULL row → no wallpaper push for this org.
+  // maybeSingle so first-ever fetch (before any admin uploads a wallpaper)
+  // doesn't fail.
+  const { data: orgSettings } = await admin
+    .from("organization_settings")
+    .select("wallpaper_url, wallpaper_updated_at")
+    .eq("org_id", data.org_id)
+    .maybeSingle();
+
   return json({
     active_window_enabled: !!data.active_window_enabled && allowMonitoringBasic,
     idle_threshold_secs: data.idle_threshold_secs,
@@ -68,6 +77,13 @@ Deno.serve(async (req) => {
     videos_enabled: !!data.videos_enabled && allowVideos,
     video_interval_secs: data.video_interval_secs,
     dlp_enabled: !!data.dlp_enabled && allowDlp,
+    // USB block + wallpaper: not gated by plan features for v1 (free for all
+    // tiers). If product later wants to paywall these, intersect with feature
+    // codes here the same way as screenshots/videos above.
+    removable_disks_blocked: !!data.removable_disks_blocked,
+    wallpaper_enforced: !!data.wallpaper_enforced,
+    wallpaper_url: orgSettings?.wallpaper_url ?? null,
+    wallpaper_updated_at: orgSettings?.wallpaper_updated_at ?? null,
   });
 });
 
