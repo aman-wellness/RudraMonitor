@@ -9,86 +9,154 @@
 // already-debugged "is this volume actually removable?" heuristic
 // (diskutil-on-mac, GetDriveType-on-win, /sys/block/$dev/removable-on-linux).
 //
-// **Action**: spawn diskutil / mountvol as a child process. We don't try to
-// keep handles or watch for re-attach — every 5 s reconcile just enumerates
-// what's mounted now and unmounts whatever shouldn't be.
+// **Eject**: when policy is ON, spawn diskutil / mountvol to unmount any
+// newly-detected removable volume. Track its disk-ID so we can remount it
+// later.
+//
+// **Auto-remount on policy OFF**: persisted across agent restarts via a
+// tiny JSON file. The instant the admin toggles "block USB" OFF for this
+// agent, the next reconcile pass remounts every disk we previously ejected —
+// no manual user action needed. After a successful remount the disk-ID is
+// removed from the persisted set.
 //
 // Edge case — agent's own external boot/storage disk: we never unmount
-// `Macintosh HD` (the boot volume; dlp::macos_drives already filters it out)
-// and on Windows we leave `C:` alone (drive_type != DRIVE_REMOVABLE for fixed
-// disks). The user can still allowlist their laptop via the per-agent toggle
-// if they need to use external storage.
+// `Macintosh HD` (dlp::macos_drives filters it out) and on Windows we leave
+// `C:` alone (drive_type != DRIVE_REMOVABLE for fixed disks). The user can
+// still allowlist their laptop via the per-agent toggle if they need to
+// use external storage.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use crate::dlp::{list_removable, RemovableDrive};
 
-/// Set of mount points that have already been ejected this session. Prevents
-/// us from repeatedly trying to unmount a stuck/locked volume every 5 s — if
-/// the first unmount fails, the user probably has a file open and we'll just
-/// log it once. Reset on agent restart so the policy reapplies if needed.
-#[derive(Default)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+struct PersistedState {
+    /// Disk identifiers we ejected (mac: "disk4s2", win: "E:", linux: "/dev/sdb1").
+    /// Persisted to disk so an agent restart doesn't strand the user's USB.
+    ejected_ids: HashSet<String>,
+}
+
 pub struct UsbBlocker {
+    /// Set of mount points already ejected this session. Prevents repeated
+    /// unmount attempts on a stuck/locked volume every 5 s.
     seen: HashSet<PathBuf>,
+    /// Last value of `enabled` seen by reconcile — used to detect the
+    /// ON → OFF transition that triggers auto-remount.
+    last_enabled: Option<bool>,
+    persisted: PersistedState,
+    state_path: PathBuf,
 }
 
 impl UsbBlocker {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        let dir = state_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let state_path = dir.join("usb-block-state.json");
+        let persisted = std::fs::read_to_string(&state_path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<PersistedState>(&s).ok())
+            .unwrap_or_default();
+        Self {
+            seen: HashSet::new(),
+            last_enabled: None,
+            persisted,
+            state_path,
+        }
+    }
 
-    /// Single reconcile pass. Call every 5 s from the spawn_usb_block_loop
-    /// in lib.rs. `enabled` comes from `state.settings.removable_disks_blocked`.
-    /// Returns the list of newly-blocked mount points so the caller can log
-    /// activity_logs rows (one per block event).
-    pub fn reconcile(&mut self, enabled: bool) -> Vec<RemovableDrive> {
-        // Currently mounted removable volumes. dlp::list_removable already
-        // filters the boot volume and network mounts.
+    /// Single reconcile pass. Call every 5 s from spawn_usb_block_loop in
+    /// lib.rs. Returns (newly_blocked, newly_remounted).
+    pub fn reconcile(&mut self, enabled: bool) -> (Vec<RemovableDrive>, Vec<String>) {
+        // Currently mounted removable volumes.
         let drives = list_removable();
         let live: HashSet<PathBuf> = drives.iter().map(|d| d.mount_point.clone()).collect();
-
-        // Forget mount points that are no longer present (user pulled them
-        // out) so a re-insert of the same USB stick triggers another unmount.
         self.seen.retain(|p| live.contains(p));
 
-        if !enabled {
-            // Policy says: this agent is allowlisted. Don't touch anything,
-            // but clear any stale state so toggling the policy back ON
-            // re-ejects whatever's currently plugged in.
-            self.seen.clear();
-            return Vec::new();
+        let mut newly_blocked = Vec::new();
+        let mut newly_remounted = Vec::new();
+
+        // Auto-remount on policy=false: try every persisted disk id every
+        // tick. macOS / Windows / Linux all silently no-op when the disk
+        // either isn't physically attached or is already mounted, so the
+        // cost of retrying each tick is negligible. On success we drop the
+        // id from the persisted set.
+        if !enabled && !self.persisted.ejected_ids.is_empty() {
+            let ids: Vec<String> = self.persisted.ejected_ids.iter().cloned().collect();
+            for id in ids {
+                if try_mount(&id) {
+                    log::info!("usb_block: remounted {id} (policy off)");
+                    self.persisted.ejected_ids.remove(&id);
+                    newly_remounted.push(id);
+                }
+            }
+            self.persist();
         }
 
-        let mut newly_blocked = Vec::new();
+        // Track policy transitions for log clarity.
+        if self.last_enabled != Some(enabled) {
+            log::info!(
+                "usb_block: policy is now {} (was {:?})",
+                if enabled { "BLOCK" } else { "ALLOW" },
+                self.last_enabled
+            );
+            self.last_enabled = Some(enabled);
+            if !enabled {
+                // Don't carry "already-ejected this session" memory across a
+                // policy flip — admin might re-enable and expect the same
+                // volumes to be re-blocked.
+                self.seen.clear();
+            }
+        }
+
+        if !enabled {
+            return (newly_blocked, newly_remounted);
+        }
+
         for d in drives {
             if self.seen.contains(&d.mount_point) { continue; }
+            let disk_id = resolve_disk_id(&d.mount_point);
             if try_unmount(&d.mount_point) {
                 log::info!(
-                    "usb_block: ejected {} ({})",
+                    "usb_block: ejected {} ({}) id={}",
                     d.mount_point.display(),
-                    d.label
+                    d.label,
+                    disk_id.as_deref().unwrap_or("?"),
                 );
                 self.seen.insert(d.mount_point.clone());
+                if let Some(id) = disk_id {
+                    self.persisted.ejected_ids.insert(id);
+                }
                 newly_blocked.push(d);
             } else {
                 log::warn!(
                     "usb_block: unmount failed for {} ({}); will retry on next tick",
                     d.mount_point.display(),
-                    d.label
+                    d.label,
                 );
-                // Don't add to seen — retry next tick. Eventually either the
-                // user closes the file holding it open, or they pull the
-                // drive physically.
             }
         }
-        newly_blocked
+        if !newly_blocked.is_empty() {
+            self.persist();
+        }
+        (newly_blocked, newly_remounted)
+    }
+
+    fn persist(&self) {
+        if let Ok(s) = serde_json::to_string_pretty(&self.persisted) {
+            let _ = std::fs::write(&self.state_path, s);
+        }
     }
 }
 
+// ---------------------------------------------------------------------------
+// macOS
+// ---------------------------------------------------------------------------
+
 #[cfg(target_os = "macos")]
 fn try_unmount(mount_point: &std::path::Path) -> bool {
-    // `diskutil unmount force` — works even if a Finder window has the volume
-    // open. Safer than `diskutil eject` which can refuse on Time Machine
-    // disks; unmount is enough to make the volume disappear from Finder.
     let output = std::process::Command::new("/usr/sbin/diskutil")
         .args(["unmount", "force"])
         .arg(mount_point)
@@ -102,19 +170,45 @@ fn try_unmount(mount_point: &std::path::Path) -> bool {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn resolve_disk_id(mount_point: &std::path::Path) -> Option<String> {
+    // `diskutil info <mount>` includes a line like:
+    //     Device Identifier:         disk4s2
+    let out = std::process::Command::new("/usr/sbin/diskutil")
+        .arg("info")
+        .arg(mount_point)
+        .output()
+        .ok()?;
+    if !out.status.success() { return None; }
+    let s = String::from_utf8_lossy(&out.stdout);
+    for line in s.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("Device Identifier:") {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn try_mount(disk_id: &str) -> bool {
+    let out = std::process::Command::new("/usr/sbin/diskutil")
+        .arg("mount")
+        .arg(disk_id)
+        .output();
+    matches!(out, Ok(ref o) if o.status.success())
+}
+
+// ---------------------------------------------------------------------------
+// Windows
+// ---------------------------------------------------------------------------
+
 #[cfg(target_os = "windows")]
 fn try_unmount(mount_point: &std::path::Path) -> bool {
-    // Windows mount_point is the drive root like "E:\". `mountvol E: /D`
-    // removes the drive letter mapping, which dismounts the volume.
-    // Requires admin elevation on most systems — if the agent isn't elevated,
-    // fall back to the user-level PowerShell Shell.Application Eject verb,
-    // which works without admin but only on devices that advertise eject
-    // capability (most USB sticks do).
     let drive = mount_point.to_string_lossy().to_string();
     let drive_letter = drive.chars().next().map(|c| format!("{c}:")).unwrap_or_default();
     if drive_letter.is_empty() { return false; }
 
-    // First attempt: mountvol /D — clean unmount if we have admin.
     let mv = std::process::Command::new("mountvol")
         .arg(&drive_letter)
         .arg("/D")
@@ -122,9 +216,6 @@ fn try_unmount(mount_point: &std::path::Path) -> bool {
     if let Ok(o) = mv {
         if o.status.success() { return true; }
     }
-
-    // Fallback: PowerShell Shell.Application Eject (user-level, works for USB
-    // mass-storage class devices). Drive letter without trailing slash.
     let ps_cmd = format!(
         "$sh = New-Object -ComObject Shell.Application; \
          $vol = $sh.Namespace(17).ParseName('{}'); \
@@ -134,17 +225,36 @@ fn try_unmount(mount_point: &std::path::Path) -> bool {
     let ps = std::process::Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", &ps_cmd])
         .output();
-    match ps {
-        Ok(o) => o.status.success(),
-        Err(_) => false,
-    }
+    matches!(ps, Ok(ref o) if o.status.success())
 }
+
+#[cfg(target_os = "windows")]
+fn resolve_disk_id(mount_point: &std::path::Path) -> Option<String> {
+    // Use the drive letter itself as the id — Windows mountvol takes the
+    // letter and an arbitrary mount-point GUID for re-mount. Simpler: we
+    // remount by rescanning all volumes (handled inside try_mount).
+    let drive = mount_point.to_string_lossy().to_string();
+    drive.chars().next().map(|c| format!("{c}:"))
+}
+
+#[cfg(target_os = "windows")]
+fn try_mount(_drive_letter: &str) -> bool {
+    // On Windows, after `mountvol X: /D`, the volume is dismounted but the
+    // underlying disk is still attached. The cleanest "remount everything"
+    // is `mountvol /R` which rescans and re-mounts all volumes that lost
+    // their assignment. Cheap enough to run once per remount attempt.
+    let out = std::process::Command::new("mountvol")
+        .arg("/R")
+        .output();
+    matches!(out, Ok(ref o) if o.status.success())
+}
+
+// ---------------------------------------------------------------------------
+// Linux
+// ---------------------------------------------------------------------------
 
 #[cfg(target_os = "linux")]
 fn try_unmount(mount_point: &std::path::Path) -> bool {
-    // umount needs root on most distros, but `udisksctl unmount` works
-    // user-level if the volume was mounted via udisks (which is how all
-    // desktop environments do it). Try udisksctl first, fall back to umount.
     let uctl = std::process::Command::new("udisksctl")
         .args(["unmount", "-b"])
         .arg(mount_point)
@@ -155,8 +265,51 @@ fn try_unmount(mount_point: &std::path::Path) -> bool {
     let umount = std::process::Command::new("umount")
         .arg(mount_point)
         .output();
-    match umount {
-        Ok(o) => o.status.success(),
-        Err(_) => false,
-    }
+    matches!(umount, Ok(ref o) if o.status.success())
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_disk_id(mount_point: &std::path::Path) -> Option<String> {
+    // findmnt -no SOURCE <mount> → /dev/sdb1
+    let out = std::process::Command::new("findmnt")
+        .args(["-no", "SOURCE"])
+        .arg(mount_point)
+        .output()
+        .ok()?;
+    if !out.status.success() { return None; }
+    let dev = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if dev.is_empty() { None } else { Some(dev) }
+}
+
+#[cfg(target_os = "linux")]
+fn try_mount(device: &str) -> bool {
+    let out = std::process::Command::new("udisksctl")
+        .args(["mount", "-b", device])
+        .output();
+    matches!(out, Ok(ref o) if o.status.success())
+}
+
+// ---------------------------------------------------------------------------
+// State dir (mirrors wallpaper.rs)
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+fn state_dir() -> PathBuf {
+    dirs::cache_dir()
+        .map(|d| d.join("com.rudrans.agent"))
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+}
+
+#[cfg(target_os = "windows")]
+fn state_dir() -> PathBuf {
+    dirs::data_local_dir()
+        .map(|d| d.join("com.wellnessextract.agent"))
+        .unwrap_or_else(|| PathBuf::from("C:\\Temp"))
+}
+
+#[cfg(target_os = "linux")]
+fn state_dir() -> PathBuf {
+    dirs::cache_dir()
+        .map(|d| d.join("com.rudrans.agent"))
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
 }

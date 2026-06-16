@@ -1368,7 +1368,8 @@ fn spawn_dlp_loop(state: AppState) {
 
 /// USB-block enforcement loop. Independent of DLP — DLP watches files
 /// being copied; usb_block prevents the disk from being usable at all.
-/// Per-agent allowlist via `settings.removable_disks_blocked = false`.
+/// Per-agent allowlist via `settings.removable_disks_blocked = false`,
+/// which also triggers auto-remount of anything we previously ejected.
 fn spawn_usb_block_loop(state: AppState) {
     tauri::async_runtime::spawn(async move {
         // Let enrollment + first settings_tick land before we start ejecting
@@ -1378,10 +1379,10 @@ fn spawn_usb_block_loop(state: AppState) {
         let mut blocker = usb_block::UsbBlocker::new();
         loop {
             let enabled = state.settings.lock().await.removable_disks_blocked;
-            let blocked = blocker.reconcile(enabled);
-            // Log each block event so the admin sees what was ejected. Best
-            // effort — if the post fails we don't retry; the local log line
-            // is still produced inside usb_block::reconcile.
+            let (blocked, remounted) = blocker.reconcile(enabled);
+            // Log block + remount events so the admin sees the audit trail.
+            // Best effort — if the post fails we don't retry; the local log
+            // line is still produced inside usb_block::reconcile.
             for d in blocked {
                 let payload = serde_json::json!({
                     "event_type": "usb_blocked",
@@ -1389,7 +1390,17 @@ fn spawn_usb_block_loop(state: AppState) {
                     "mount_point": d.mount_point.to_string_lossy(),
                 });
                 if let Err(e) = post_dlp_payload(&state, &payload).await {
-                    log::warn!("usb_block: log post failed: {e}");
+                    log::warn!("usb_block: block post failed: {e}");
+                }
+            }
+            for id in remounted {
+                let payload = serde_json::json!({
+                    "event_type": "usb_remounted",
+                    "device_name": id.clone(),
+                    "mount_point": id,
+                });
+                if let Err(e) = post_dlp_payload(&state, &payload).await {
+                    log::warn!("usb_block: remount post failed: {e}");
                 }
             }
             sleep(Duration::from_secs(5)).await;
