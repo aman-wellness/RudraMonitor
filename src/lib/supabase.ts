@@ -25,6 +25,10 @@ export const supabase = createClient(url ?? '', anonKey ?? '', {
   },
 });
 
+// Re-export the base URL so other modules can build edge-function URLs
+// without re-reading the env var.
+export const SUPABASE_URL = url ?? '';
+
 export type Organization = {
   id: string;
   owner_user_id: string;

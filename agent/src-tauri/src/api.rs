@@ -70,6 +70,24 @@ pub struct AgentSettings {
     /// reboot doesn't re-download/re-apply the same image.
     #[serde(default)]
     pub wallpaper_updated_at: Option<String>,
+    /// Org-default or per-agent-override working-hours schedule. When true,
+    /// the agent pauses ALL capture (screenshots, video, USB block,
+    /// wallpaper, DLP, activity logging) OUTSIDE the configured hours.
+    /// false = 24/7 tracking (no schedule applied).
+    #[serde(default)]
+    pub tracking_schedule_enabled: bool,
+    /// JSON shape:
+    ///   {
+    ///     "tz": "Asia/Kolkata",
+    ///     "days": {
+    ///       "mon": [{"start":"09:00","end":"18:00"}],
+    ///       "tue": [...], ...
+    ///     }
+    ///   }
+    /// Empty array or missing key for a day = that day has no working
+    /// hours (agent pauses all day).
+    #[serde(default)]
+    pub tracking_schedule_json: Option<String>,
 }
 
 fn default_true() -> bool { true }

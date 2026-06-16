@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from './supabase';
 import type { AlertRow } from './dataHooks';
 
@@ -26,6 +26,7 @@ export type AgentDetail = {
   dlpEnabled: boolean;
   removableDisksBlocked: boolean;
   wallpaperEnforced: boolean;
+  trackingScheduleOverride: boolean;
   screenshotIntervalSecs: number;
   videoIntervalSecs: number;
   totalActiveTime: string;
@@ -112,6 +113,17 @@ export function useAgentDetail(agentId: string | undefined, range: DateRange = '
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+
+  // Suppress realtime-triggered refreshes for a short window after a save.
+  // The agent heartbeats every ~30s and fires an UPDATE notification on the
+  // `agents` row. Without this guard the heartbeat-driven refresh races with
+  // the save's own refresh — and whichever fetch RETURNS LAST wins. If the
+  // heartbeat fetch leaves PostgREST AFTER the save's UPDATE has committed,
+  // it returns the new value (fine). If it left BEFORE the save committed,
+  // it returns the stale OLD value and snaps the form back. Blocking
+  // realtime refreshes for 3 s after a save is enough to let the
+  // save's own refresh win deterministically.
+  const suppressRealtimeUntil = useRef(0);
 
   const refresh = useCallback(async () => {
     if (!agentId) return;
@@ -231,13 +243,24 @@ export function useAgentDetail(agentId: string | undefined, range: DateRange = '
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'agents', filter: `id=eq.${agentId}` },
-        () => { void refresh(); },
+        () => {
+          // Skip realtime refresh during the post-save guard window.
+          if (Date.now() < suppressRealtimeUntil.current) return;
+          void refresh();
+        },
       )
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
   }, [agentId, refresh]);
 
-  return { agent, activity, alerts, loading, notFound, refresh };
+  // Caller (the page) invokes this right before a save. It tells us:
+  // "ignore realtime UPDATE pings on the agents table for 3 s — my save's
+  // own refresh is authoritative."
+  const beginSaveWindow = useCallback(() => {
+    suppressRealtimeUntil.current = Date.now() + 3000;
+  }, []);
+
+  return { agent, activity, alerts, loading, notFound, refresh, beginSaveWindow };
 }
 
 function buildDetail(
@@ -370,6 +393,7 @@ function buildDetail(
     dlpEnabled: (agentRow.dlp_enabled as boolean | undefined) ?? false,
     removableDisksBlocked: (agentRow.removable_disks_blocked as boolean | undefined) ?? true,
     wallpaperEnforced: (agentRow.wallpaper_enforced as boolean | undefined) ?? true,
+    trackingScheduleOverride: (agentRow.tracking_schedule_override as boolean | undefined) ?? false,
     screenshotIntervalSecs: (agentRow.screenshot_interval_secs as number | undefined) ?? 300,
     videoIntervalSecs: (agentRow.video_interval_secs as number | undefined) ?? 1800,
     totalActiveTime: formatHM(totalActiveSec),

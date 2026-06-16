@@ -12,7 +12,7 @@ import CaptureControls from './components/CaptureControls';
 import { detailBottomTabs, type DetailTabId } from '@/mocks/agentDetail';
 import { useAgentDetail, type DateRange } from '@/lib/useAgentDetail';
 import { useSignedScreenshotUrls, useSignedVideoUrls } from '@/lib/dataHooks';
-import { supabase } from '@/lib/supabase';
+import { supabase, SUPABASE_URL } from '@/lib/supabase';
 
 void detailBottomTabs;
 
@@ -35,7 +35,7 @@ export default function AgentDetailPage() {
   const [activeTab, setActiveTab] = useState<DetailTabId>('applications');
   const [range, setRange] = useState<DateRange>('today');
   const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
-  const { agent, activity, alerts, loading, notFound, refresh } = useAgentDetail(agentId, range);
+  const { agent, activity, alerts, loading, notFound, refresh, beginSaveWindow } = useAgentDetail(agentId, range);
 
   // Live refresh every 30s so SYSTEM ON / IDLE / ACTIVE update without a manual reload.
   useEffect(() => {
@@ -49,10 +49,13 @@ export default function AgentDetailPage() {
     dlp?: boolean;
     removableDisksBlocked?: boolean;
     wallpaperEnforced?: boolean;
+    trackingScheduleOverride?: boolean;
     screenshotIntervalSecs: number;
     videoIntervalSecs: number;
   }) => {
-    if (!agentId) return;
+    if (!agentId) {
+      throw new Error('Missing agent ID — please reload the page.');
+    }
     const patch: Record<string, boolean | number> = {
       screenshots_enabled: p.screenshots,
       videos_enabled: p.videos,
@@ -62,9 +65,49 @@ export default function AgentDetailPage() {
     if (p.dlp !== undefined) patch.dlp_enabled = p.dlp;
     if (p.removableDisksBlocked !== undefined) patch.removable_disks_blocked = p.removableDisksBlocked;
     if (p.wallpaperEnforced !== undefined) patch.wallpaper_enforced = p.wallpaperEnforced;
-    const { error } = await supabase.from('agents').update(patch).eq('id', agentId);
-    if (error) throw error;
+    if (p.trackingScheduleOverride !== undefined) patch.tracking_schedule_override = p.trackingScheduleOverride;
+
+    // Route through the agent-update-settings edge function instead of a
+    // direct supabase.from('agents').update(). Direct RLS writes silently
+    // return 0 rows when permission is denied — looks like success in the
+    // UI but the DB never changes, and the toggle "reverts" on refresh.
+    // The edge function returns a real HTTP error in that case so the user
+    // sees what actually happened.
+    const { data: sess } = await supabase.auth.getSession();
+    const accessToken = sess?.session?.access_token;
+    if (!accessToken) {
+      throw new Error('Not signed in — please log in again.');
+    }
+    // Tell useAgentDetail to ignore realtime UPDATE pings on this agent's
+    // row for the next 3 seconds. Without this, the agent's ~30s heartbeat
+    // can fire a stale refresh that races with our save's refresh — last
+    // fetch to return wins, and if the stale one wins the form snaps back.
+    beginSaveWindow();
+    // === DIAGNOSTIC: log everything ===
+    console.log('[SAVE] agent_id=%s patch=%o', agentId, patch);
+    const r = await fetch(`${SUPABASE_URL}/functions/v1/agent-update-settings`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ agent_id: agentId, patch }),
+    });
+    const responseText = await r.text();
+    console.log('[SAVE] response HTTP=%d body=%s', r.status, responseText);
+    if (!r.ok) {
+      let detail: string;
+      try {
+        const body = JSON.parse(responseText) as { error?: string; detail?: string };
+        detail = body.detail ? `${body.error ?? 'error'}: ${body.detail}` : body.error ?? `HTTP ${r.status}`;
+      } catch {
+        detail = `HTTP ${r.status}: ${responseText.slice(0, 200)}`;
+      }
+      throw new Error(`Save failed — ${detail}`);
+    }
+    console.log('[SAVE] refresh() starting');
     await refresh();
+    console.log('[SAVE] refresh() done');
   };
 
   // Plan-level DLP add-on price.
@@ -222,6 +265,7 @@ export default function AgentDetailPage() {
           dlpEnabled={agent.dlpEnabled}
           removableDisksBlocked={agent.removableDisksBlocked}
           wallpaperEnforced={agent.wallpaperEnforced}
+          trackingScheduleOverride={agent.trackingScheduleOverride}
           screenshotIntervalSecs={agent.screenshotIntervalSecs}
           videoIntervalSecs={agent.videoIntervalSecs}
           dlpAddonPriceInr={dlpAddonPriceInr}
@@ -669,6 +713,7 @@ export default function AgentDetailPage() {
             dlpEnabled={agent.dlpEnabled}
             removableDisksBlocked={agent.removableDisksBlocked}
             wallpaperEnforced={agent.wallpaperEnforced}
+          trackingScheduleOverride={agent.trackingScheduleOverride}
             screenshotIntervalSecs={agent.screenshotIntervalSecs}
             videoIntervalSecs={agent.videoIntervalSecs}
             dlpAddonPriceInr={dlpAddonPriceInr}

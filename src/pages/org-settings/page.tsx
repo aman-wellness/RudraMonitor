@@ -1,5 +1,6 @@
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import WallpaperUploadCard from './components/WallpaperUploadCard';
+import TrackingScheduleCard from './components/TrackingScheduleCard';
 
 export default function OrgSettingsPage() {
   return (
@@ -13,6 +14,7 @@ export default function OrgSettingsPage() {
           </p>
         </div>
 
+        <TrackingScheduleCard />
         <WallpaperUploadCard />
       </div>
     </DashboardLayout>

@@ -6,6 +6,7 @@ interface Props {
   dlpEnabled?: boolean;
   removableDisksBlocked?: boolean;
   wallpaperEnforced?: boolean;
+  trackingScheduleOverride?: boolean;
   screenshotIntervalSecs: number;
   videoIntervalSecs: number;
   // undefined = plan check still loading (don't show "not available" yet);
@@ -20,6 +21,7 @@ interface Props {
     dlp?: boolean;
     removableDisksBlocked?: boolean;
     wallpaperEnforced?: boolean;
+    trackingScheduleOverride?: boolean;
     screenshotIntervalSecs: number;
     videoIntervalSecs: number;
   }) => Promise<void> | void;
@@ -50,6 +52,7 @@ const VID_PRESETS = [
 export default function CaptureControls({
   screenshotsEnabled, videosEnabled, dlpEnabled = false,
   removableDisksBlocked = true, wallpaperEnforced = true,
+  trackingScheduleOverride = false,
   screenshotIntervalSecs, videoIntervalSecs,
   dlpAddonPriceInr, isTrial = false, onUpdate,
 }: Props) {
@@ -58,19 +61,55 @@ export default function CaptureControls({
   const [dlp, setDlp] = useState(dlpEnabled);
   const [usbBlock, setUsbBlock] = useState(removableDisksBlocked);
   const [wallpaper, setWallpaper] = useState(wallpaperEnforced);
+  const [scheduleOverride, setScheduleOverride] = useState(trackingScheduleOverride);
   const [ssEvery, setSsEvery] = useState(screenshotIntervalSecs);
   const [vidEvery, setVidEvery] = useState(videoIntervalSecs);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => { setSs(screenshotsEnabled); }, [screenshotsEnabled]);
-  useEffect(() => { setVid(videosEnabled); }, [videosEnabled]);
-  useEffect(() => { setDlp(dlpEnabled); }, [dlpEnabled]);
-  useEffect(() => { setUsbBlock(removableDisksBlocked); }, [removableDisksBlocked]);
-  useEffect(() => { setWallpaper(wallpaperEnforced); }, [wallpaperEnforced]);
-  useEffect(() => { setSsEvery(screenshotIntervalSecs); }, [screenshotIntervalSecs]);
-  useEffect(() => { setVidEvery(videoIntervalSecs); }, [videoIntervalSecs]);
+  // The parent re-fetches the agent row every time the agent heartbeats
+  // (via realtime UPDATE subscription on `agents`). That heartbeat fires
+  // every 30 sec and updates only `last_active`, but it re-runs buildDetail
+  // and produces a brand-new agent object — props change identity every
+  // 30 sec.
+  //
+  // Old behaviour: each effect blindly mirrored the prop into local state.
+  // If the user toggled OFF but hadn't clicked Save yet, the next heartbeat
+  // snapped the toggle visually back to ON before they could save — and
+  // even after Save, the form would re-flash from a stale heartbeat that
+  // raced with the save's own refresh.
+  //
+  // New behaviour: a `touched` flag latches as soon as the user clicks any
+  // toggle. While touched, the prop-sync effects are skipped — local state
+  // is the source of truth. handleSave clears `touched` AFTER the save
+  // completes and the parent refresh has run, so the next heartbeat naturally
+  // resyncs from the now-correct DB row.
+  const [touched, setTouched] = useState(false);
+
+  useEffect(() => {
+    if (touched) return;
+    setSs(screenshotsEnabled);
+    setVid(videosEnabled);
+    setDlp(dlpEnabled);
+    setUsbBlock(removableDisksBlocked);
+    setWallpaper(wallpaperEnforced);
+    setScheduleOverride(trackingScheduleOverride);
+    setSsEvery(screenshotIntervalSecs);
+    setVidEvery(videoIntervalSecs);
+  }, [
+    touched,
+    screenshotsEnabled,
+    videosEnabled,
+    dlpEnabled,
+    removableDisksBlocked,
+    wallpaperEnforced,
+    trackingScheduleOverride,
+    screenshotIntervalSecs,
+    videoIntervalSecs,
+  ]);
+
+  const markTouched = () => setTouched(true);
 
   const handleSave = async () => {
     setError(null);
@@ -82,10 +121,16 @@ export default function CaptureControls({
         dlp,
         removableDisksBlocked: usbBlock,
         wallpaperEnforced: wallpaper,
+        trackingScheduleOverride: scheduleOverride,
         screenshotIntervalSecs: ssEvery,
         videoIntervalSecs: vidEvery,
       });
       setSaved(true);
+      // Clear the touched flag AFTER the parent's refresh has completed
+      // (await onUpdate finished both the edge-function call and the
+      // refresh). With touched=false the next prop change resyncs the
+      // form to the DB.
+      setTouched(false);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Save failed');
@@ -97,6 +142,7 @@ export default function CaptureControls({
   const hasChanges =
     ss !== screenshotsEnabled || vid !== videosEnabled || dlp !== dlpEnabled ||
     usbBlock !== removableDisksBlocked || wallpaper !== wallpaperEnforced ||
+    scheduleOverride !== trackingScheduleOverride ||
     ssEvery !== screenshotIntervalSecs || vidEvery !== videoIntervalSecs;
 
   // Three states: plan check is still loading, DLP is unavailable, or DLP is
@@ -132,7 +178,7 @@ export default function CaptureControls({
           <div className="flex items-center gap-3">
             <select
               value={SS_PRESETS.some((p) => p.secs === ssEvery) ? ssEvery : 0}
-              onChange={(e) => setSsEvery(Number(e.target.value))}
+              onChange={(e) => { setSsEvery(Number(e.target.value)); markTouched(); }}
               disabled={!ss}
               className={`${selectCls} ${!ss ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
@@ -144,7 +190,7 @@ export default function CaptureControls({
               ))}
             </select>
             <button
-              onClick={() => setSs(!ss)}
+              onClick={() => { setSs(!ss); markTouched(); }}
               className={`w-10 h-5 rounded-full transition-colors relative ${ss ? 'bg-emerald-500' : 'bg-dark-700'}`}
             >
               <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${ss ? 'left-[22px]' : 'left-[2px]'}`} />
@@ -166,7 +212,7 @@ export default function CaptureControls({
           <div className="flex items-center gap-3">
             <select
               value={VID_PRESETS.some((p) => p.secs === vidEvery) ? vidEvery : 0}
-              onChange={(e) => setVidEvery(Number(e.target.value))}
+              onChange={(e) => { setVidEvery(Number(e.target.value)); markTouched(); }}
               disabled={!vid}
               className={`${selectCls} ${!vid ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
@@ -178,7 +224,7 @@ export default function CaptureControls({
               ))}
             </select>
             <button
-              onClick={() => setVid(!vid)}
+              onClick={() => { setVid(!vid); markTouched(); }}
               className={`w-10 h-5 rounded-full transition-colors relative ${vid ? 'bg-emerald-500' : 'bg-dark-700'}`}
             >
               <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${vid ? 'left-[22px]' : 'left-[2px]'}`} />
@@ -240,7 +286,7 @@ export default function CaptureControls({
             </div>
           </div>
           <button
-            onClick={() => setUsbBlock(!usbBlock)}
+            onClick={() => { setUsbBlock(!usbBlock); markTouched(); }}
             className={`w-10 h-5 rounded-full transition-colors relative ${usbBlock ? 'bg-rose-500' : 'bg-dark-700'}`}
           >
             <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${usbBlock ? 'left-[22px]' : 'left-[2px]'}`} />
@@ -263,10 +309,35 @@ export default function CaptureControls({
             </div>
           </div>
           <button
-            onClick={() => setWallpaper(!wallpaper)}
+            onClick={() => { setWallpaper(!wallpaper); markTouched(); }}
             className={`w-10 h-5 rounded-full transition-colors relative ${wallpaper ? 'bg-indigo-500' : 'bg-dark-700'}`}
           >
             <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${wallpaper ? 'left-[22px]' : 'left-[2px]'}`} />
+          </button>
+        </div>
+
+        {/* Tracking schedule override — exempts this agent from the org-wide
+            working-hours policy so it tracks 24/7. Useful for CEO laptops,
+            security analysts, after-hours support staff, etc. */}
+        <div className="flex items-center justify-between bg-dark-900 rounded-lg border border-dark-700 p-3">
+          <div className="flex items-center gap-3">
+            <span className={`w-8 h-8 rounded-lg flex items-center justify-center ${scheduleOverride ? 'bg-amber-500/15' : 'bg-dark-700'}`}>
+              <i className={`ri-time-line ${scheduleOverride ? 'text-amber-400' : 'text-gray-600'}`} />
+            </span>
+            <div>
+              <p className="text-xs text-white font-medium">Override tracking schedule (24/7)</p>
+              <p className="text-[11px] text-gray-500">
+                {scheduleOverride
+                  ? 'This agent tracks 24/7 — ignores the org working-hours policy'
+                  : 'Follows the org-wide schedule from Settings → Org Settings'}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => { setScheduleOverride(!scheduleOverride); markTouched(); }}
+            className={`w-10 h-5 rounded-full transition-colors relative ${scheduleOverride ? 'bg-amber-500' : 'bg-dark-700'}`}
+          >
+            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${scheduleOverride ? 'left-[22px]' : 'left-[2px]'}`} />
           </button>
         </div>
       </div>

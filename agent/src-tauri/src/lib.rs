@@ -34,10 +34,11 @@ mod capture;
 
 mod usb_block;
 mod wallpaper;
+mod schedule;
 
 use active_window::{FocusSession, WindowInfo};
 use anyhow::{anyhow, Result};
-use chrono::{Duration as ChronoDuration, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use config::{AgentConfig, Enrollment};
 use idle::IdleSession;
 use serde::Serialize;
@@ -103,6 +104,8 @@ const DEFAULT_SETTINGS: api::AgentSettings = api::AgentSettings {
     wallpaper_enforced: true,
     wallpaper_url: None,
     wallpaper_updated_at: None,
+    tracking_schedule_enabled: false,
+    tracking_schedule_json: None,
 };
 
 // Threshold-based alerts: only fired once when crossing into elevated state, cleared when metric drops.
@@ -143,6 +146,14 @@ pub struct AppState {
     /// by AtomicU64 so we can update it without contending on a Mutex
     /// from every tick.
     last_ingest_unix: Arc<std::sync::atomic::AtomicU64>,
+    /// Unix-second timestamp of the previous idle_tick. Used to detect
+    /// system sleep: if the gap between two consecutive idle_tick calls
+    /// exceeds 3× the normal poll interval, the OS was almost certainly
+    /// asleep (the agent's tokio task is paused while the system sleeps,
+    /// so the next tick fires immediately after wake-up). We then close
+    /// any in-progress idle session at the timestamp BEFORE sleep — sleep
+    /// duration must not be counted as user-idle.
+    last_idle_tick_unix: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl AppState {
@@ -161,8 +172,21 @@ impl AppState {
             video_capture_disabled: Arc::new(AtomicBool::new(false)),
             screenshot_capture_disabled: Arc::new(AtomicBool::new(false)),
             last_ingest_unix: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            last_idle_tick_unix: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
+}
+
+/// Convenience wrapper around schedule::is_within_tracking_hours that
+/// fetches the cached settings from AppState. Capture loops call this
+/// before doing any work; if it returns false, the loop sleeps and tries
+/// again next tick.
+async fn within_hours(state: &AppState) -> bool {
+    let s = state.settings.lock().await;
+    if !s.tracking_schedule_enabled {
+        return true; // no schedule = always track
+    }
+    schedule::is_within_tracking_hours(s.tracking_schedule_json.as_deref(), Utc::now())
 }
 
 /// Threshold for the connection watchdog. If no ingest() has succeeded in
@@ -421,13 +445,59 @@ async fn push_activity(state: &AppState, payload: Value) -> Result<()> {
 }
 
 async fn idle_tick(state: &AppState) -> Result<()> {
+    // Don't gate idle_tick on within_hours() — we still need to record the
+    // "last tick" timestamp every cycle so sleep detection works. But we
+    // skip producing any idle activity_logs rows when outside hours.
+    let outside_schedule = !within_hours(state).await;
     let threshold = state.settings.lock().await.idle_threshold_secs as u64;
     let now = Utc::now();
+    let now_unix_s = now_unix();
     let idle_secs = idle::current_idle_secs().unwrap_or(0);
+
+    // Sleep detection. idle_tick is scheduled every IDLE_POLL_SECS (30 s).
+    // When the OS sleeps, the tokio task pauses; on wake-up the next tick
+    // fires immediately after a much-larger-than-30s gap. We treat any
+    // gap > 3× the poll interval (= 90 s) as "system was asleep" and:
+    //   1. Close any in-progress idle session at the timestamp of the
+    //      PREVIOUS tick — that's the last point we can confirm the
+    //      machine was actually running.
+    //   2. Drop the session reference so the post-wake idle counter
+    //      starts fresh.
+    //   3. Skip emitting an idle row for the sleep gap entirely — sleep
+    //      is NOT user-idle (the system was off), so it shouldn't count
+    //      toward idle time. The "offline" stretch is already visible
+    //      via the heartbeat gap.
+    const SLEEP_GAP_THRESHOLD_SECS: u64 = IDLE_POLL_SECS * 3;
+    let last_tick = state.last_idle_tick_unix.load(Ordering::SeqCst);
+    let gap = now_unix_s.saturating_sub(last_tick);
+    state.last_idle_tick_unix.store(now_unix_s, Ordering::SeqCst);
+
+    if last_tick > 0 && gap > SLEEP_GAP_THRESHOLD_SECS {
+        let mut current = state.current_idle.lock().await;
+        if let Some(s) = current.take() {
+            // Close the session at the LAST tick we saw — that's the
+            // last point we have evidence the system was running. Anything
+            // after that until now was sleep, which we discard.
+            drop(current);
+            let ended_at = DateTime::<Utc>::from(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(last_tick),
+            );
+            // Only emit if the session had a non-trivial duration; sleep
+            // happening 5 s into an idle session is just noise.
+            if (ended_at - s.started_at).num_seconds() >= threshold as i64 {
+                let payload = idle::to_payload(&s, ended_at);
+                let _ = push_activity(state, payload).await;
+            }
+        }
+        log::info!("idle_tick: detected sleep gap of {} s; idle session reset", gap);
+        // Don't start a new idle session on this tick — let the next
+        // tick re-evaluate from a clean slate.
+        return Ok(());
+    }
 
     let mut current = state.current_idle.lock().await;
     if idle_secs >= threshold {
-        if current.is_none() {
+        if current.is_none() && !outside_schedule {
             // Backdate started_at to the actual idle start (now − idle_secs).
             *current = Some(IdleSession {
                 started_at: now - ChronoDuration::seconds(idle_secs as i64),
@@ -437,12 +507,16 @@ async fn idle_tick(state: &AppState) -> Result<()> {
         return Ok(());
     }
 
-    // User is active. If we were tracking an idle session, emit it now.
+    // User is active. If we were tracking an idle session, emit it now —
+    // but only if we're inside tracking hours (or were when the session
+    // started). When outside hours, just discard the session silently.
     if let Some(s) = current.take() {
         // Drop lock before network call.
         drop(current);
-        let payload = idle::to_payload(&s, now);
-        push_activity(state, payload).await?;
+        if !outside_schedule {
+            let payload = idle::to_payload(&s, now);
+            push_activity(state, payload).await?;
+        }
     }
     Ok(())
 }
@@ -488,6 +562,7 @@ async fn maybe_emit_alerts(state: &AppState, sample: &metrics::MetricsSample) ->
 /// Polls the active window. Emits a row to activity_logs whenever the (app, title) changes,
 /// and also flushes a session that has been running for too long.
 async fn window_tick(state: &AppState) -> Result<()> {
+    if !within_hours(state).await { return Ok(()); }
     if !state.settings.lock().await.active_window_enabled {
         return Ok(());
     }
@@ -591,6 +666,7 @@ fn license_ok(state: &AppState) -> bool {
 
 async fn screenshot_tick(state: &AppState) -> Result<()> {
     if !license_ok(state) { return Ok(()); }
+    if !within_hours(state).await { return Ok(()); }
     if !state.settings.lock().await.screenshots_enabled {
         return Ok(());
     }
@@ -622,6 +698,10 @@ async fn screenshot_tick(state: &AppState) -> Result<()> {
 async fn video_tick(state: &AppState) -> Result<()> {
     if !license_ok(state) {
         log::info!("video_tick: skip — license blocked");
+        return Ok(());
+    }
+    if !within_hours(state).await {
+        log::info!("video_tick: skip — outside tracking schedule");
         return Ok(());
     }
     if !state.settings.lock().await.videos_enabled {
@@ -1316,7 +1396,8 @@ fn spawn_dlp_loop(state: AppState) {
             // Server-controlled gate. When admin disables DLP, we drop all
             // currently-watched filesystem watchers (releasing IO handles) and
             // sleep idle until the setting flips back on.
-            let enabled = reconcile_state.settings.lock().await.dlp_enabled;
+            let enabled = reconcile_state.settings.lock().await.dlp_enabled
+                && within_hours(&reconcile_state).await;
             if !enabled {
                 w_clone.clear();
                 sleep(Duration::from_secs(30)).await;
@@ -1346,7 +1427,8 @@ fn spawn_dlp_loop(state: AppState) {
         sleep(Duration::from_secs(20)).await;
         let mut tracker = dlp::EmailComposeTracker::default();
         loop {
-            let enabled = state.settings.lock().await.dlp_enabled;
+            let enabled = state.settings.lock().await.dlp_enabled
+                && within_hours(&state).await;
             if !enabled {
                 sleep(Duration::from_secs(30)).await;
                 continue;
@@ -1378,7 +1460,12 @@ fn spawn_usb_block_loop(state: AppState) {
         sleep(Duration::from_secs(15)).await;
         let mut blocker = usb_block::UsbBlocker::new();
         loop {
-            let enabled = state.settings.lock().await.removable_disks_blocked;
+            // Outside tracking schedule = treat policy as OFF (allow USBs).
+            // This way employees can use external storage on personal time
+            // without admin intervention. Drives auto-remount as soon as
+            // the schedule lapses, just like a manual toggle-off.
+            let in_hours = within_hours(&state).await;
+            let enabled = in_hours && state.settings.lock().await.removable_disks_blocked;
             let (blocked, remounted) = blocker.reconcile(enabled);
             // Log block + remount events so the admin sees the audit trail.
             // Best effort — if the post fails we don't retry; the local log
@@ -1416,8 +1503,13 @@ fn spawn_wallpaper_loop(state: AppState) {
         sleep(Duration::from_secs(20)).await;
         let mut wm = wallpaper::WallpaperManager::new();
         loop {
-            // Snapshot settings for this iteration to avoid holding the lock
-            // across the long download + apply step.
+            // Wallpaper enforcement intentionally bypasses the schedule
+            // gate. A wallpaper change is a one-shot apply (downloaded
+            // image written to the OS), not a continuous "capture"
+            // activity, and the wallpaper should reflect the org branding
+            // 24/7 — including during off-hours when the user logs in
+            // briefly for personal stuff. If admin doesn't want that,
+            // the per-agent wallpaper_enforced toggle still works.
             let snap = {
                 let s = state.settings.lock().await;
                 (

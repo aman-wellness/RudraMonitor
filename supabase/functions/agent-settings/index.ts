@@ -35,7 +35,7 @@ Deno.serve(async (req) => {
 
   const { data, error } = await admin
     .from("agents")
-    .select("org_id, screenshots_enabled, active_window_enabled, screenshot_interval_secs, idle_threshold_secs, videos_enabled, video_interval_secs, dlp_enabled, removable_disks_blocked, wallpaper_enforced")
+    .select("org_id, screenshots_enabled, active_window_enabled, screenshot_interval_secs, idle_threshold_secs, videos_enabled, video_interval_secs, dlp_enabled, removable_disks_blocked, wallpaper_enforced, tracking_schedule_override, tracking_schedule_json")
     .eq("enroll_token", token)
     .maybeSingle();
   if (error) {
@@ -60,14 +60,30 @@ Deno.serve(async (req) => {
   const allowVideos = featureSet.has("videos");
   const allowDlp = featureSet.has("dlp");
 
-  // Org-wide wallpaper settings. NULL row → no wallpaper push for this org.
-  // maybeSingle so first-ever fetch (before any admin uploads a wallpaper)
-  // doesn't fail.
+  // Org-wide wallpaper + tracking schedule settings. NULL row = nothing
+  // configured for this org yet. maybeSingle so first-ever fetch (before
+  // any admin opens org settings) doesn't fail.
   const { data: orgSettings } = await admin
     .from("organization_settings")
-    .select("wallpaper_url, wallpaper_updated_at")
+    .select("wallpaper_url, wallpaper_updated_at, tracking_schedule_enabled, tracking_schedule_json")
     .eq("org_id", data.org_id)
     .maybeSingle();
+
+  // Tracking schedule resolution: per-agent override beats org default.
+  //
+  //   If the agent has tracking_schedule_override = true → use the agent's
+  //   own schedule JSON (may be NULL → no schedule = 24/7 tracking).
+  //   Otherwise → fall back to the org default. If org schedule is
+  //   disabled or NULL, the agent tracks 24/7.
+  let trackingScheduleEnabled = false;
+  let trackingScheduleJson: string | null = null;
+  if (data.tracking_schedule_override) {
+    trackingScheduleEnabled = !!data.tracking_schedule_json;
+    trackingScheduleJson = (data.tracking_schedule_json as string | null) ?? null;
+  } else if (orgSettings?.tracking_schedule_enabled) {
+    trackingScheduleEnabled = true;
+    trackingScheduleJson = (orgSettings.tracking_schedule_json as string | null) ?? null;
+  }
 
   return json({
     active_window_enabled: !!data.active_window_enabled && allowMonitoringBasic,
@@ -84,6 +100,8 @@ Deno.serve(async (req) => {
     wallpaper_enforced: !!data.wallpaper_enforced,
     wallpaper_url: orgSettings?.wallpaper_url ?? null,
     wallpaper_updated_at: orgSettings?.wallpaper_updated_at ?? null,
+    tracking_schedule_enabled: trackingScheduleEnabled,
+    tracking_schedule_json: trackingScheduleJson,
   });
 });
 
