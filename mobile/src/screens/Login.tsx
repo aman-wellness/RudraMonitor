@@ -93,6 +93,12 @@ export default function Login() {
       // this guard, browsers that block the custom-scheme deep link
       // (HeyTapBrowser, Samsung Internet) leave the button frozen on
       // "Signing in…" with no recovery short of force-quit.
+      // 30 sec ceiling: with the new appStateChange foreground-resume
+      // recovery in App.tsx, a successful OAuth round-trip completes
+      // within ~1 sec of the user returning to the app — 30 sec leaves
+      // plenty of headroom for the network/browser delay while still
+      // surfacing the email+password fallback quickly when something's
+      // actually broken (was 90 sec, which felt forever).
       window.setTimeout(() => {
         setBusy((current) => {
           if (current) {
@@ -101,7 +107,7 @@ export default function Login() {
           }
           return current;
         });
-      }, 90000);
+      }, 30000);
     } catch (e) {
       setErr((e as Error).message);
       setBusy(false);
