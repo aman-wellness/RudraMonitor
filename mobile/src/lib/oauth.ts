@@ -153,6 +153,61 @@ export async function startOAuth(provider: "google" | "azure"): Promise<void> {
 ///
 /// Self-hosted Supabase Auth returns implicit-flow tokens by default,
 /// so the IMPLICIT path is the one that actually fires in production.
+
+/// Apply a deposited token bundle (PKCE code or IMPLICIT: payload) to the
+/// local Supabase session. Shared by both the background poll loop and
+/// the foreground-resume kick so we don't duplicate the parsing/setSession
+/// branching in two places.
+async function applyDepositCode(code: string): Promise<boolean> {
+  if (code.startsWith("IMPLICIT:")) {
+    try {
+      const payload = JSON.parse(code.slice("IMPLICIT:".length)) as {
+        access_token: string;
+        refresh_token: string;
+      };
+      const { error } = await supabase.auth.setSession({
+        access_token: payload.access_token,
+        refresh_token: payload.refresh_token,
+      });
+      if (error) {
+        console.error("oauth.applyDepositCode setSession:", error.message);
+        return false;
+      }
+    } catch (parseErr) {
+      console.error("oauth.applyDepositCode parse:", (parseErr as Error).message);
+      return false;
+    }
+  } else {
+    const { error } = await supabase.auth.exchangeCodeForSession(code);
+    if (error) {
+      console.error("oauth.applyDepositCode exchangeCodeForSession:", error.message);
+      return false;
+    }
+  }
+  try { await Browser.close(); } catch { /* ignore */ }
+  return true;
+}
+
+/// One-shot retrieve-and-apply, called whenever the app comes back to
+/// the foreground from a backgrounded OAuth flow. Android pauses our JS
+/// setTimeout queue while in the background, so the regular pollHandoff
+/// tick can miss the brief 60-sec window in which the bridge's deposit
+/// is retrievable. This fills that gap.
+export async function tryConsumeOAuthHandoff(): Promise<boolean> {
+  const RETRIEVE_URL =
+    "https://api-ems.wellnessextract.com/functions/v1/oauth-mobile-retrieve";
+  try {
+    const r = await fetch(`${RETRIEVE_URL}?latest=true`);
+    if (!r.ok) return false;
+    const body = (await r.json()) as { ready?: boolean; code?: string };
+    if (!body.ready || !body.code) return false;
+    return await applyDepositCode(body.code);
+  } catch (e) {
+    console.warn("oauth.tryConsumeOAuthHandoff fetch:", (e as Error).message);
+    return false;
+  }
+}
+
 function pollHandoff(_unusedState: string): void {
   const RETRIEVE_URL =
     "https://api-ems.wellnessextract.com/functions/v1/oauth-mobile-retrieve";
@@ -176,38 +231,15 @@ function pollHandoff(_unusedState: string): void {
       if (r.ok) {
         const body = (await r.json()) as { ready?: boolean; code?: string };
         if (body.ready && body.code) {
-          applied = true;
-          if (body.code.startsWith("IMPLICIT:")) {
-            // Implicit flow — tokens already minted by the IdP. Just
-            // set them on the local supabase client.
-            try {
-              const payload = JSON.parse(body.code.slice("IMPLICIT:".length)) as {
-                access_token: string;
-                refresh_token: string;
-              };
-              const { error } = await supabase.auth.setSession({
-                access_token: payload.access_token,
-                refresh_token: payload.refresh_token,
-              });
-              if (error) {
-                console.error("oauth.pollHandoff: setSession:", error.message);
-                return;
-              }
-            } catch (parseErr) {
-              console.error("oauth.pollHandoff: payload parse:", (parseErr as Error).message);
-              return;
-            }
-          } else {
-            // PKCE flow — server returned an exchange code.
-            const { error } = await supabase.auth.exchangeCodeForSession(body.code);
-            if (error) {
-              console.error("oauth.pollHandoff: exchangeCodeForSession:", error.message);
-              return;
-            }
+          const ok = await applyDepositCode(body.code);
+          if (ok) {
+            applied = true;
+            return;
           }
-          // Best-effort close any leftover custom tab / external browser.
-          try { await Browser.close(); } catch { /* ignore */ }
-          return;
+          // applyDepositCode failed (e.g. setSession returned an error) —
+          // do NOT set applied, retry on the next tick. The retrieve call
+          // has already consumed the row server-side, so future ticks
+          // will see 404 — that's fine, the failure was logged.
         }
       }
       // Either 404 (not ready yet) or transient error — try again.

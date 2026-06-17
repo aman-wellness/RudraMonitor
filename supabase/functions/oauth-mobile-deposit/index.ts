@@ -26,7 +26,12 @@ Deno.serve(async (req) => {
   const state = (body.state ?? "").trim();
   const code = (body.code ?? "").trim();
   if (!state || !code) return json({ error: "state and code required" }, 400);
-  if (state.length > 200 || code.length > 5000) return json({ error: "payload too large" }, 400);
+  // Implicit-flow tokens from Microsoft are commonly 6-8 KB once the
+  // provider_token (full Graph API access token) is included. The old
+  // 5 KB ceiling was sized for PKCE codes (~100 chars) — way too tight
+  // for the IMPLICIT:{...} JSON bundle. 32 KB is safely above what any
+  // identity provider emits and still cheap to store/transmit.
+  if (state.length > 200 || code.length > 32768) return json({ error: "payload too large" }, 400);
 
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
     auth: { autoRefreshToken: false, persistSession: false },

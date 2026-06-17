@@ -9,7 +9,7 @@ import type { Session } from "@supabase/supabase-js";
 import { App as CapacitorApp } from "@capacitor/app";
 import { supabase } from "./lib/supabase";
 import { tryQuickUnlock } from "./lib/biometric";
-import { handleDeepLink } from "./lib/oauth";
+import { handleDeepLink, tryConsumeOAuthHandoff } from "./lib/oauth";
 import Login from "./screens/Login";
 import CameraScreen from "./screens/Camera";
 import Preview from "./screens/Preview";
@@ -97,10 +97,26 @@ export default function App() {
       }
     }).catch(() => { /* getLaunchUrl rejects on older Capacitor; ignore */ });
 
+    // Foreground recovery: when the app returns from the OAuth browser,
+    // Android may have throttled or paused JS timers while we were in
+    // the background, so the regular pollHandoff loop in startOAuth()
+    // can miss the brief 60-sec window the bridge's deposit is
+    // retrievable. As soon as we become active again, fire one
+    // immediate retrieve-and-apply to fill that gap. Idempotent — if
+    // there's nothing pending, it returns false and we move on.
+    let appStateHandle: { remove: () => Promise<void> } | undefined;
+    void CapacitorApp.addListener("appStateChange", ({ isActive }) => {
+      if (!isActive) return;
+      void tryConsumeOAuthHandoff().catch((e) => {
+        console.warn("foreground-resume oauth retrieve failed:", e);
+      });
+    }).then((h) => { appStateHandle = h; });
+
     return () => {
       cancelled = true;
       sub.subscription.unsubscribe();
       void urlListenerHandle?.remove();
+      void appStateHandle?.remove();
     };
   }, []);
 
