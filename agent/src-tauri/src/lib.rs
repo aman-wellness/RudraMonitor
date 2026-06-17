@@ -35,6 +35,7 @@ mod capture;
 mod usb_block;
 mod wallpaper;
 mod schedule;
+mod service_install;
 
 use active_window::{FocusSession, WindowInfo};
 use anyhow::{anyhow, Result};
@@ -1181,6 +1182,18 @@ pub fn run() {
 
     // Record our PID + (re)spawn guardian so a Task-Manager-kill is auto-recovered.
     watchdog::register_agent_and_ensure_guardian();
+
+    // Force-register OS-level autostart on every launch. This survives:
+    //   • Manual unregistration via system settings — re-registers on next start
+    //   • Auto-update to a new install path — re-points at the new binary
+    //   • Reboot — OS picks up the registered hook at next boot/login
+    // Combined with the in-process guardian (above) which respawns within
+    // ~5s of any kill, this gives us true "cannot be permanently killed"
+    // behaviour without ever needing UAC elevation or admin install on
+    // Windows.
+    if let Ok(exe) = std::env::current_exe() {
+        service_install::ensure_installed(&exe);
+    }
 
     tauri::Builder::default()
         // Single-instance: if the user double-clicks the app while it's already running
