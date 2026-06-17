@@ -199,7 +199,23 @@ export default function LiveTab() {
               autoPlay
               playsInline
               muted
+              onDoubleClick={() => { void videoRef.current?.requestFullscreen?.(); }}
             />
+            {/* Fullscreen toggle. Calls Fullscreen API on the <video>
+                element directly — that's what gives an immersive view
+                with native controls overlay, vs fullscreen-ing the
+                container which keeps the dashboard chrome around it.
+                Double-click on the video itself also works (above). */}
+            <button
+              type="button"
+              onClick={() => { void videoRef.current?.requestFullscreen?.(); }}
+              className="absolute bottom-3 right-3 bg-black/70 hover:bg-black/90 text-white text-xs px-2.5 py-1.5 rounded-md flex items-center gap-1.5 transition-colors"
+              title="Fullscreen (or double-click the video)"
+              aria-label="Enter fullscreen"
+            >
+              <i className="ri-fullscreen-line text-sm" />
+              Fullscreen
+            </button>
             {stats && (
               <div className="absolute top-2 right-2 bg-black/70 text-[10px] font-mono text-emerald-300 px-2 py-1.5 rounded leading-tight space-y-0.5 pointer-events-none">
                 <div>fps: <span className="text-white">{stats.fps}</span> · {stats.width}×{stats.height}</div>

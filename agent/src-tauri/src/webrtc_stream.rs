@@ -68,9 +68,17 @@ use crate::{api, config, AppState};
 //
 // Dashboard's adaptive-bitrate ladder can dial these UP per-session
 // via the `set_quality` control message when network capacity allows.
-const TARGET_FPS: u32 = 24;
-const TARGET_WIDTH: u32 = 960;
-const DEFAULT_BITRATE_KBPS: u32 = 1_200;
+// Defaults bumped to full HD on customer request (v0.6.6). Previous
+// 960×270-ish output looked blurry, especially on ultrawide / multi-
+// monitor agents where the height got crushed to ~270 px after width-
+// only scaling. 1920px target keeps detail on dual-monitor captures
+// while staying within the LiveKit ingress 1080p ceiling. CPU on
+// modest hardware (Mac mini 2018, Surface Pro 7) stays under 25%
+// with hardware H.264 — the adaptive ladder downshifts to 1280/960
+// automatically when the encoder pegs.
+const TARGET_FPS: u32 = 30;
+const TARGET_WIDTH: u32 = 1920;
+const DEFAULT_BITRATE_KBPS: u32 = 4_500;
 
 /// Shared mutable stream parameters. The control DataChannel writes to
 /// these via `InboundMsg::SetQuality`; the ffmpeg pump reads them when
