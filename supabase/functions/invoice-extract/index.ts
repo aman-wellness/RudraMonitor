@@ -1,9 +1,11 @@
 // POST /functions/v1/invoice-extract
 // Headers: Authorization: Bearer <user JWT>
-// Body:    { pdf_base64: string, filename?: string }
+// Body:    { pdf_base64: string, filename?: string, mime_type?: string }
 //
-// Sends the PDF to Claude (sonnet-4-5) with a structured-extraction
-// prompt. Returns:
+// Hands the PDF / image off to the self-hosted AI sidecar
+// (rudrans-ai-sidecar on the same EC2 box, port 8081). The sidecar
+// OCRs the file (pdftotext / tesseract) and runs the extraction
+// through a local Ollama model. Returns:
 //   {
 //     invoice_number, issue_date (YYYY-MM-DD), period_start, period_end,
 //     due_date, amount, currency, status, vendor_name, vendor_domain,
@@ -11,45 +13,20 @@
 //                                 against the caller's credentials
 //   }
 //
-// Claude API key comes from the integrations table (`ANTHROPIC_API_KEY`,
-// managed via /admin/integrations) — never from .env. This is a SaaS:
-// rotate from portal without redeploying.
-//
-// Cost: ~1 Claude call per upload, ~$0.02-0.05 per PDF depending on size.
+// Why this replaced Claude: paid Anthropic credits ran out and feature
+// went dead. Local OCR + small LLM costs nothing per call and the
+// extraction quality on B2B SaaS invoices (Adobe, AWS, Razorpay, ...)
+// is comparable. See plan: is-tool-ko-app-crystalline-biscuit.md.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.4";
 import { corsHeaders } from "../_shared/cors.ts";
-import { getIntegration } from "../_shared/integrations.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 
-const MODEL = "claude-sonnet-4-5";
-
-const SYSTEM = `Extract structured invoice fields from the attached PDF and output ONE JSON object — no prose, no markdown fence.
-
-Shape (every field optional; emit null if not on the document):
-{
-  "invoice_number": "INV-2025-0042" | null,
-  "issue_date":     "YYYY-MM-DD"  | null,
-  "period_start":   "YYYY-MM-DD"  | null,
-  "period_end":     "YYYY-MM-DD"  | null,
-  "due_date":       "YYYY-MM-DD"  | null,
-  "amount":         <number>      | null,
-  "currency":       "USD"|"INR"|"EUR"... | null,
-  "status":         "paid"|"pending"|"overdue"|"failed"|"refunded"|"draft" | null,
-  "vendor_name":    "Adobe Inc."  | null,
-  "vendor_domain":  "adobe.com"   | null,
-  "notes":          "1-line summary if helpful" | null
-}
-
-Rules:
-- Dates must be ISO YYYY-MM-DD. Convert "Sep 14, 2025" → "2025-09-14".
-- Amount: total/grand-total numeric, no currency symbol. If multiple lines, pick the final due amount.
-- Currency: ISO 4217 code (INR, USD, etc.).
-- vendor_domain: the sender / company's web domain (e.g. "razorpay.com"), used downstream to match against the customer's stored credentials.
-- If the document is clearly not an invoice (receipt, statement, marketing PDF), return all-null fields and put a note explaining what it actually is.`;
+const SIDECAR_URL = Deno.env.get("AI_SIDECAR_URL") ?? "http://172.17.0.1:8081";
+const SIDECAR_TOKEN = Deno.env.get("AI_SIDECAR_TOKEN") ?? "";
 
 interface Extracted {
   invoice_number: string | null;
@@ -118,46 +95,34 @@ Deno.serve(async (req) => {
   if (!mem) return json({ error: "no org for caller" }, 403);
   const orgId = mem.org_id as string;
 
-  const apiKey = await getIntegration("ANTHROPIC_API_KEY").catch(() => "");
-  if (!apiKey) return json({ error: "ANTHROPIC_API_KEY not set in /admin/integrations" }, 500);
+  if (!SIDECAR_TOKEN) return json({ error: "AI_SIDECAR_TOKEN not set in edge env" }, 500);
 
-  // ── Call Claude with the PDF attached ───────────────────────────────
-  const claudeR = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 1024,
-      system: SYSTEM,
-      messages: [{
-        role: "user",
-        content: [
-          isPdf
-            ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } }
-            : { type: "image",    source: { type: "base64", media_type: claudeMedia,        data: b64 } },
-          { type: "text", text: "Extract fields per spec. Output one JSON object only." },
-        ],
-      }],
-    }),
-  });
-  if (!claudeR.ok) {
-    const detail = (await claudeR.text()).slice(0, 400);
-    return json({ error: `claude ${claudeR.status}: ${detail}` }, 502);
-  }
-  const claudeJ = await claudeR.json() as {
-    content: Array<{ type: string; text?: string }>;
-  };
-  const text = claudeJ.content.find((c) => c.type === "text")?.text ?? "";
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start < 0 || end < 0) return json({ error: "no JSON in claude output" }, 502);
+  // ── Call the self-hosted AI sidecar ─────────────────────────────────
+  // The sidecar (rudrans-ai-sidecar at /opt/rudrans-ai on this same EC2
+  // box) handles OCR + LLM extraction with a local Ollama model. We pass
+  // the same base64 + mime payload; it returns the identical Extracted
+  // shape the old Claude path produced, so the vendor-match block below
+  // and the frontend consumer don't change.
   let parsed: Extracted;
-  try { parsed = JSON.parse(text.slice(start, end + 1)); }
-  catch (e) { return json({ error: `parse: ${(e as Error).message}` }, 502); }
+  try {
+    const r = await fetch(`${SIDECAR_URL}/extract-invoice`, {
+      method: "POST",
+      headers: {
+        "authorization": `Bearer ${SIDECAR_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ mime_type: claudeMedia, data_b64: b64 }),
+    });
+    if (!r.ok) {
+      const detail = (await r.text()).slice(0, 400);
+      return json({ error: `local-ai ${r.status}: ${detail}` }, 502);
+    }
+    const body = await r.json() as { extracted?: Extracted };
+    if (!body.extracted) return json({ error: "sidecar returned no extracted field" }, 502);
+    parsed = body.extracted;
+  } catch (e) {
+    return json({ error: `sidecar fetch: ${(e as Error).message}` }, 502);
+  }
 
   // ── Match vendor to credential (best-effort) ────────────────────────
   let matchedCredId: string | null = null;

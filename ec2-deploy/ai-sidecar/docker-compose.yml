@@ -1,0 +1,32 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rudrans-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    environment:
+      OLLAMA_KEEP_ALIVE: "30m"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+
+  ai-sidecar:
+    build: ./sidecar
+    container_name: rudrans-ai-sidecar
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8081:8081"
+    environment:
+      OLLAMA_URL: "http://ollama:11434"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen2.5:1.5b}"
+      SIDECAR_TOKEN: "${SIDECAR_TOKEN}"
+      # Groq cloud is primary (~1s, free tier 30 req/min). Sidecar
+      # silently falls back to local Ollama on any Groq error.
+      GROQ_API_KEY: "${GROQ_API_KEY:-}"
+      GROQ_MODEL: "${GROQ_MODEL:-llama-3.1-8b-instant}"
+    depends_on:
+      - ollama
+
+volumes:
+  ollama-data:
