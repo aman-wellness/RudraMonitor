@@ -15,9 +15,14 @@ import { useMemo } from 'react';
 // URLs from `window.location.origin` would 404 on the marketing pages.
 // Hard-code the dashboard host instead.
 const APP_HOST = 'https://ems.wellnessextract.com';
+// APK is published to the Supabase storage `releases` bucket by the
+// build-mobile-apk.yml CI workflow on every push to main with
+// mobile/** changes. The `-latest-debug.apk` filename is stable across
+// versions so this URL never goes stale — newest build always wins.
+const APK_URL = 'https://api-ems.wellnessextract.com/storage/v1/object/public/releases/Wellness-Extract-Invoice-latest-debug.apk';
 
 export default function MobileAppSection() {
-  const apkUrl = `${APP_HOST}/downloads/wellness-extract-invoice.apk`;
+  const apkUrl = APK_URL;
   const pwaUrl = `${APP_HOST}/m/`;
   const isIos = useMemo(() => /iPad|iPhone|iPod/.test(navigator.userAgent), []);
   const isAndroid = useMemo(() => /Android/i.test(navigator.userAgent), []);

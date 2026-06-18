@@ -140,30 +140,35 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # Publish the debug APK to the production downloads directory so the
-      # landing page link (ems.wellnessextract.com/downloads/wellness-extract-invoice.apk)
-      # always serves the latest build. Only runs on push to main — manual
-      # workflow_dispatch builds stay in artifacts only.
-      - name: Publish APK to production
+      # Publish the debug APK to the Supabase `releases` storage bucket so
+      # the landing page download button always serves the latest build.
+      # Only runs on push to main — manual workflow_dispatch builds stay
+      # in artifacts only. The landing page MobileAppSection links at
+      # https://api-ems.wellnessextract.com/storage/v1/object/public/releases/Wellness-Extract-Invoice-latest-debug.apk
+      # which this step keeps current.
+      - name: Publish APK to Supabase storage
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
-          SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
+          SR_KEY:           ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_BASE_URL: ${{ secrets.SUPABASE_BASE_URL }}
         run: |
-          if [ -z "$SSH_KEY" ] || [ -z "$EC2_HOST" ]; then
-            echo "⚠️  EC2_SSH_KEY or EC2_HOST secret not set — skipping auto-publish."
-            echo "Set both secrets to enable, or download the artifact and upload manually."
+          if [ -z "$SR_KEY" ] || [ -z "$SUPABASE_BASE_URL" ]; then
+            echo "⚠️  SUPABASE_SERVICE_ROLE_KEY or SUPABASE_BASE_URL secret not set — skipping auto-publish."
+            echo "Download the artifact and upload manually if needed."
             exit 0
           fi
-          mkdir -p ~/.ssh
-          echo "$SSH_KEY" > ~/.ssh/agent.pem
-          chmod 600 ~/.ssh/agent.pem
-          ssh-keyscan -H "${EC2_HOST#*@}" >> ~/.ssh/known_hosts 2>/dev/null
-          scp -i ~/.ssh/agent.pem mobile/android/app/build/outputs/apk/debug/app-debug.apk \
-              "$EC2_HOST:/tmp/wellness-extract-invoice.apk"
-          ssh -i ~/.ssh/agent.pem "$EC2_HOST" '
-            sudo mv /tmp/wellness-extract-invoice.apk /opt/rudrans-downloads/wellness-extract-invoice.apk
-            sudo chown www-data:www-data /opt/rudrans-downloads/wellness-extract-invoice.apk
-            sudo chmod 644 /opt/rudrans-downloads/wellness-extract-invoice.apk
-          '
-          echo "✓ APK published to https://ems.wellnessextract.com/downloads/wellness-extract-invoice.apk"
+          APK=mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          URL="${SUPABASE_BASE_URL}/storage/v1/object/releases/Wellness-Extract-Invoice-latest-debug.apk"
+          # Stable filename → upsert via the x-upsert header so the
+          # second-and-subsequent builds overwrite cleanly without 409.
+          HTTP=$(curl -sS -o /tmp/r.json -w "%{http_code}" \
+            --max-time 600 --retry 3 --retry-delay 10 --retry-all-errors \
+            -X POST "$URL" \
+            -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/vnd.android.package-archive" \
+            -H "x-upsert: true" \
+            --data-binary "@$APK")
+          [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ] || {
+            echo "APK upload failed: HTTP $HTTP"; cat /tmp/r.json; exit 1;
+          }
+          echo "✓ APK published — ${SUPABASE_BASE_URL}/storage/v1/object/public/releases/Wellness-Extract-Invoice-latest-debug.apk"
