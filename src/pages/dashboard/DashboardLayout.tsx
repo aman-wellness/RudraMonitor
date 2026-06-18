@@ -1,5 +1,15 @@
-import { useState } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
+
+// Set to `true` for any descendant rendered inside a real DashboardLayout
+// chrome. Nested <DashboardLayout> instances read this and skip rendering
+// their own sidebar/header — they pass children through instead. This is
+// how 26 dashboard pages can keep their `<DashboardLayout>...` wrappers
+// while the router promotes ONE DashboardLayout to a parent layout-route
+// that survives navigation. Without this, route changes would unmount
+// the page → unmount its inner DashboardLayout → refire every Supabase
+// query the sidebar depends on.
+const DashboardLayoutMounted = createContext(false);
 import { useTheme } from '@/context/ThemeContext';
 import { useAuth } from '@/context/AuthContext';
 import { useAlerts } from '@/lib/dataHooks';
@@ -7,6 +17,7 @@ import { useAppRole } from '@/lib/useAppRole';
 import { useOrgRole } from '@/lib/useOrgRole';
 import { useFeatures, type FeatureCode } from '@/lib/useFeatures';
 import { useAppAccess } from '@/lib/useAppAccess';
+import { useGlobalFeatureFlags } from '@/lib/useGlobalFeatureFlags';
 import OtpRequestBanner from '@/components/OtpRequestBanner';
 import TrialGraceBanner from '@/components/TrialGraceBanner';
 
@@ -33,35 +44,150 @@ type SidebarLink = {
   requires?: FeatureCode[];
   /** Per-user app_access code; matches APP_ACCESS_CODES in lib/useAppAccess. */
   access?: import('@/lib/useAppAccess').AppAccessCode;
+  /** Global feature-flag code; matches a row in `app_features` table.
+   *  When that flag is disabled, this link is hidden globally regardless
+   *  of org features / user access. Used for half-built or preview
+   *  features the super admin hasn't enabled yet. */
+  flag?: string;
 };
 
-const sidebarLinks: SidebarLink[] = [
-  { label: 'Dashboard', href: '/dashboard', icon: 'ri-dashboard-3-line', access: 'dashboard' },
-  { label: 'Agents', href: '/agents', icon: 'ri-team-line', requires: ['monitoring_basic'], access: 'agents' },
-  { label: 'Monitoring', href: '/monitoring', icon: 'ri-computer-line', requires: ['monitoring_basic'], access: 'monitoring' },
-  { label: 'Alerts', href: '/alerts', icon: 'ri-notification-3-line', requires: ['monitoring_basic'], access: 'alerts' },
-  { label: 'DLP', href: '/dlp', icon: 'ri-shield-keyhole-line', requires: ['dlp'], access: 'dlp' },
-  { label: 'System Health', href: '/system-health', icon: 'ri-heart-pulse-line', requires: ['monitoring_basic'], access: 'system_health' },
-  { label: 'Performance', href: '/performance-reports', icon: 'ri-bar-chart-grouped-line', requires: ['monitoring_basic'], access: 'performance' },
-  { label: 'Reports', href: '/reports', icon: 'ri-file-chart-line', requires: ['monitoring_basic'], access: 'reports' },
-  { label: 'Agent Setup', href: '/setup', icon: 'ri-download-cloud-line', requires: ['monitoring_basic'], access: 'setup' },
-  { label: 'Employees', href: '/employees', icon: 'ri-user-add-line', requires: ['employee_management'], access: 'employees' },
-  { label: 'Groups & Teams', href: '/employees/groups', icon: 'ri-group-line', requires: ['employee_management'], access: 'groups' },
-  { label: 'Managers', href: '/employees/managers', icon: 'ri-user-star-line', requires: ['employee_management'], access: 'managers' },
-  { label: 'Credentials Vault', href: '/employees/credentials', icon: 'ri-key-2-line', requires: ['employee_management'], access: 'credentials' },
-  { label: 'Auto-Invoice', href: '/employees/auto-invoice', icon: 'ri-file-list-3-line', requires: ['employee_management'], access: 'credentials' },
-  { label: 'OTP Channels', href: '/employees/otp-settings', icon: 'ri-chat-check-line', requires: ['employee_management'], access: 'credentials' },
-  { label: 'IT Hardware', href: '/employees/hardware', icon: 'ri-computer-line', requires: ['employee_management'], access: 'hardware' },
-  { label: 'Offboarding', href: '/employees/offboarding', icon: 'ri-logout-box-line', requires: ['employee_management'], access: 'offboarding' },
-  { label: 'Integrations', href: '/employees/integrations', icon: 'ri-plug-line', requires: ['employee_management'], access: 'integrations' },
-  { label: 'Governance', href: '/governance', icon: 'ri-organization-chart', requires: ['employee_management'], access: 'governance' },
-  { label: 'Org Settings', href: '/org-settings', icon: 'ri-settings-3-line' },
-  { label: 'Admin Portal', href: '/admin-portal', icon: 'ri-shield-user-line', access: 'admin_portal' },
+// Top-level structure: sections with a tiny uppercase heading, plus
+// collapsible parent groups for clusters that share an analytical lens.
+// Groups self-hide when ALL their children are filtered out by feature/
+// access gates — admin never sees an empty disclosure.
+type SidebarSection = {
+  kind: 'section';
+  title: string;
+  /** When non-empty, items become children of a single collapsible
+   *  parent labeled `groupLabel` instead of being rendered as bare
+   *  rows under the section heading. Used for the "Insights" cluster
+   *  (Alerts / System Health / Performance / Reports) so we don't drown
+   *  the sidebar in 4 sibling rows that semantically belong together. */
+  groupLabel?: string;
+  groupIcon?: string;
+  /** Default expanded state for the group (persisted to localStorage). */
+  defaultOpen?: boolean;
+  links: SidebarLink[];
+};
+
+const sidebarSections: SidebarSection[] = [
+  {
+    kind: 'section',
+    title: 'Overview',
+    links: [
+      { label: 'Dashboard', href: '/dashboard', icon: 'ri-dashboard-3-line', access: 'dashboard' },
+      { label: 'Agents', href: '/agents', icon: 'ri-team-line', requires: ['monitoring_basic'], access: 'agents' },
+      { label: 'Live Monitoring', href: '/monitoring', icon: 'ri-computer-line', requires: ['monitoring_basic'], access: 'monitoring' },
+    ],
+  },
+  {
+    kind: 'section',
+    title: 'Insights',
+    groupLabel: 'Insights',
+    groupIcon: 'ri-line-chart-line',
+    defaultOpen: true,
+    links: [
+      { label: 'Alerts', href: '/alerts', icon: 'ri-notification-3-line', requires: ['monitoring_basic'], access: 'alerts' },
+      { label: 'System Health', href: '/system-health', icon: 'ri-heart-pulse-line', requires: ['monitoring_basic'], access: 'system_health' },
+      // Reports now ALSO covers what the old standalone Performance page
+      // showed (Top Performer + Departments tab). /performance-reports
+      // route still exists but redirects here, so legacy bookmarks work.
+      { label: 'Reports', href: '/reports', icon: 'ri-file-chart-line', requires: ['monitoring_basic'], access: 'reports' },
+    ],
+  },
+  {
+    kind: 'section',
+    title: 'Security',
+    links: [
+      { label: 'DLP', href: '/dlp', icon: 'ri-shield-keyhole-line', requires: ['dlp'], access: 'dlp' },
+    ],
+  },
+  {
+    kind: 'section',
+    title: 'Workforce',
+    groupLabel: 'People & HR',
+    groupIcon: 'ri-team-line',
+    defaultOpen: false,
+    links: [
+      { label: 'Employees', href: '/employees', icon: 'ri-user-add-line', requires: ['employee_management'], access: 'employees' },
+      { label: 'Groups & Teams', href: '/employees/groups', icon: 'ri-group-line', requires: ['employee_management'], access: 'groups' },
+      { label: 'Managers', href: '/employees/managers', icon: 'ri-user-star-line', requires: ['employee_management'], access: 'managers' },
+      { label: 'Credentials Vault', href: '/employees/credentials', icon: 'ri-key-2-line', requires: ['employee_management'], access: 'credentials' },
+      // Both gated behind a super-admin global flag (app_features table).
+      // Default off — they live on as routes but stay out of the sidebar
+      // until the team is ready to ship them. Super admin can flip via
+      // Admin Portal → Feature Flags.
+      { label: 'Auto-Invoice', href: '/employees/auto-invoice', icon: 'ri-file-list-3-line', requires: ['employee_management'], access: 'credentials', flag: 'auto_invoice' },
+      { label: 'OTP Channels', href: '/employees/otp-settings', icon: 'ri-chat-check-line', requires: ['employee_management'], access: 'credentials', flag: 'otp_channels' },
+      { label: 'IT Hardware', href: '/employees/hardware', icon: 'ri-computer-line', requires: ['employee_management'], access: 'hardware' },
+      { label: 'Offboarding', href: '/employees/offboarding', icon: 'ri-logout-box-line', requires: ['employee_management'], access: 'offboarding' },
+      { label: 'Integrations', href: '/employees/integrations', icon: 'ri-plug-line', requires: ['employee_management'], access: 'integrations' },
+      { label: 'Governance', href: '/governance', icon: 'ri-organization-chart', requires: ['employee_management'], access: 'governance' },
+    ],
+  },
+  {
+    kind: 'section',
+    title: 'Setup',
+    links: [
+      { label: 'Agent Setup', href: '/setup', icon: 'ri-download-cloud-line', requires: ['monitoring_basic'], access: 'setup' },
+      // Org Settings moved INTO Admin Portal as the "Branding & Policies"
+      // tab so admins have a single home for org-wide config. The
+      // /org-settings route still resolves (redirects to /admin-portal)
+      // so any existing bookmarks keep working.
+      { label: 'Admin Portal', href: '/admin-portal', icon: 'ri-shield-user-line', access: 'admin_portal' },
+    ],
+  },
 ];
 
-export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+// Used as a React Router layout route — sidebar + top nav mount once and
+// stay mounted across route changes; only the <Outlet /> swaps content.
+// Optional `children` prop kept so the few pages still wrapping themselves
+// in <DashboardLayout> (legacy / external callers) continue working.
+export default function DashboardLayout(props: { children?: React.ReactNode }) {
+  // Nested-instance guard. If an ancestor DashboardLayout already mounted
+  // (the parent layout-route in router/config.tsx), this instance is a
+  // page-level remnant from the pre-layout-route era. Short-circuit:
+  // render only the page content, never a second sidebar/header. This
+  // makes the 26 pages that still `<DashboardLayout>…</DashboardLayout>`
+  // no-ops without touching their files.
+  const alreadyMounted = useContext(DashboardLayoutMounted);
+  if (alreadyMounted) {
+    return <>{props.children ?? <Outlet />}</>;
+  }
+  return (
+    <DashboardLayoutMounted.Provider value={true}>
+      <DashboardLayoutChrome>{props.children}</DashboardLayoutChrome>
+    </DashboardLayoutMounted.Provider>
+  );
+}
+
+// The actual sidebar + header + content shell. Split out so the outer
+// `DashboardLayout` can short-circuit nested calls without duplicating
+// the JSX.
+function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
+
+  // Dev-only mount-lifetime probe. With layout-routes wired correctly,
+  // this fires ONCE per session even as the user clicks through Agents
+  // → Reports → Settings etc. If you see it fire twice in a single nav,
+  // the parent layout-route wrapper is missing / page is not under it.
+  // Strip after a release cycle if the noise gets annoying.
+  const renders = useRef(0);
+  renders.current += 1;
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      console.info('[DashboardLayout] mounted');
+      return () => console.info('[DashboardLayout] unmounted');
+    }
+  }, []);
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      console.debug(
+        `[DashboardLayout] render #${renders.current} for ${location.pathname}`,
+      );
+    }
+  });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -71,6 +197,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const { role: appRole } = useAppRole();
   const features = useFeatures();
   const appAccess = useAppAccess();
+  const globalFlags = useGlobalFeatureFlags();
   // Filter the sidebar by TWO gates:
   //   1. Org subscription includes the feature (`requires` → useFeatures).
   //   2. THIS user has the feature in their app_access (`access` →
@@ -82,6 +209,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   // sidebar flashes the full nav for ~200 ms then collapses, leaking
   // module names the user shouldn't be able to discover.
   const linkAllowed = (link: SidebarLink) => {
+    // Global super-admin flag gate. Highest precedence — a feature flipped
+    // off here is invisible to every user, regardless of org plan or
+    // individual access. Used for half-built features we want to hide
+    // everywhere until production-ready.
+    if (link.flag) {
+      if (globalFlags.loading) return false;
+      if (globalFlags.flags[link.flag] === false) return false;
+    }
     // Subscription gate.
     if (link.requires) {
       if (features.loading) return false;
@@ -105,14 +240,62 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
     return true;
   };
-  const visibleLinks = sidebarLinks.filter(linkAllowed).concat(
-    appRole === 'super_admin'
-      ? [{ label: 'Super Admin', href: '/admin/dashboard', icon: 'ri-shield-keyhole-line' }]
-      : [],
-  );
-  const unresolvedAlerts = alertRows.filter((a) => !a.ai_resolved);
+  // Filter each section's links through the same gate, then drop sections
+  // that end up empty so the user never sees a heading with no rows.
+  const visibleSections = sidebarSections
+    .map((s) => ({ ...s, links: s.links.filter(linkAllowed) }))
+    .filter((s) => s.links.length > 0);
+  // Super admins get an extra row tacked onto the very bottom — kept as
+  // its own section so it doesn't merge into Setup visually.
+  if (appRole === 'super_admin') {
+    visibleSections.push({
+      kind: 'section',
+      title: 'Platform',
+      links: [{ label: 'Super Admin', href: '/admin/dashboard', icon: 'ri-shield-keyhole-line' }],
+    });
+  }
 
+  // Collapsible group state — persist open/closed in localStorage so the
+  // admin's expand preferences survive a reload (otherwise the sidebar
+  // re-collapses on every page navigation that remounts this component).
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => {
+    if (typeof window === 'undefined') return {};
+    try {
+      const raw = window.localStorage.getItem('sidebar.openGroups');
+      if (raw) return JSON.parse(raw) as Record<string, boolean>;
+    } catch { /* ignore */ }
+    return {};
+  });
   const currentPath = location.pathname;
+  // Whether the group's content is visible right now. If the user has
+  // explicitly toggled it (entry exists in openGroups), respect that
+  // completely — including a manual collapse while on a child route.
+  // Otherwise fall back to defaultOpen, with one auto-open override:
+  // when the route is INSIDE the group, the very first render expands
+  // it so a fresh visit doesn't hide the user's current location. The
+  // moment they tap the chevron, their preference latches forever.
+  const isGroupOpen = (section: SidebarSection): boolean => {
+    if (!section.groupLabel) return true;
+    const explicit = openGroups[section.groupLabel];
+    if (typeof explicit === 'boolean') return explicit;
+    if (section.links.some((l) => currentPath === l.href)) return true;
+    return !!section.defaultOpen;
+  };
+  // Flip the explicit open/close state. Compute the next value from the
+  // CURRENTLY-DISPLAYED state, not from `openGroups[label]` (which is
+  // `undefined` on first click — `!undefined === true`, which matches an
+  // already-open group, so the first click produced no visible toggle).
+  const toggleGroup = (section: SidebarSection) => {
+    if (!section.groupLabel) return;
+    const label = section.groupLabel;
+    const currentlyOpen = isGroupOpen(section);
+    setOpenGroups((prev) => {
+      const next = { ...prev, [label]: !currentlyOpen };
+      try { window.localStorage.setItem('sidebar.openGroups', JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  };
+  const unresolvedAlerts = alertRows.filter((a) => !a.ai_resolved);
 
   const fullName =
     (user?.user_metadata?.full_name as string | undefined) ||
@@ -151,26 +334,17 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
 
         {/* Nav Links */}
-        <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto min-h-0">
-          {visibleLinks.map((link) => {
-            const active = currentPath === link.href;
-            return (
-              <Link
-                key={link.href}
-                to={link.href}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${
-                  active
-                    ? 'bg-emerald-500/10 text-emerald-400 border-l-2 border-emerald-500'
-                    : 'text-gray-400 hover:text-white hover:bg-dark-700/50'
-                }`}
-              >
-                <span className="w-5 h-5 flex items-center justify-center">
-                  <i className={`${link.icon} text-base`} />
-                </span>
-                {link.label}
-              </Link>
-            );
-          })}
+        <nav className="flex-1 py-3 px-3 overflow-y-auto min-h-0 space-y-5">
+          {visibleSections.map((section) => (
+            <SidebarSectionView
+              key={section.title}
+              section={section}
+              currentPath={currentPath}
+              open={isGroupOpen(section)}
+              onToggle={() => toggleGroup(section)}
+              onLinkClick={undefined}
+            />
+          ))}
         </nav>
 
         {/* User mini profile */}
@@ -225,27 +399,17 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <i className="ri-close-line text-xl" />
           </button>
         </div>
-        <nav className="py-4 px-3 space-y-1 overflow-y-auto h-[calc(100vh-4rem)]">
-          {visibleLinks.map((link) => {
-            const active = currentPath === link.href;
-            return (
-              <Link
-                key={link.href}
-                to={link.href}
-                onClick={() => setSidebarOpen(false)}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                  active
-                    ? 'bg-emerald-500/10 text-emerald-400 border-l-2 border-emerald-500'
-                    : 'text-gray-400 hover:text-white hover:bg-dark-700/50'
-                }`}
-              >
-                <span className="w-5 h-5 flex items-center justify-center">
-                  <i className={`${link.icon} text-base`} />
-                </span>
-                {link.label}
-              </Link>
-            );
-          })}
+        <nav className="py-3 px-3 overflow-y-auto h-[calc(100vh-4rem)] space-y-5">
+          {visibleSections.map((section) => (
+            <SidebarSectionView
+              key={section.title}
+              section={section}
+              currentPath={currentPath}
+              open={isGroupOpen(section)}
+              onToggle={() => toggleGroup(section)}
+              onLinkClick={() => setSidebarOpen(false)}
+            />
+          ))}
         </nav>
       </aside>
 
@@ -384,7 +548,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <ViewerBanner />
             <TrialGraceBanner />
             <OtpRequestBanner />
-            {children}
+            {/* Layout-route render path: the child route's element appears
+                here without remounting the surrounding sidebar/header.
+                Legacy fallback: if a page still passes `children`, render
+                those instead. The two never both exist for the same page. */}
+            {children ?? <Outlet />}
           </div>
         </main>
       </div>
@@ -402,5 +570,135 @@ function ViewerBanner() {
       <i className="ri-eye-line" />
       <span><strong>Viewer mode</strong> — read-only access. Ask your Org Admin if you need to make changes.</span>
     </div>
+  );
+}
+
+
+// Single section block — modern SaaS chrome:
+//   • tiny uppercase title outside any pill, sets visual rhythm
+//   • flat children for ungrouped sections (1-line rows with icon + label)
+//   • disclosure parent + indented children for sections with `groupLabel`
+//   • active route: rounded pill with emerald wash + accent dot
+//   • inactive: hover lifts to neutral dark with white text
+// Both the desktop & mobile sidebars render this; `onLinkClick` is only
+// passed by the mobile aside (to close itself on navigation).
+function SidebarSectionView({
+  section,
+  currentPath,
+  open,
+  onToggle,
+  onLinkClick,
+}: {
+  section: SidebarSection;
+  currentPath: string;
+  open: boolean;
+  onToggle: () => void;
+  onLinkClick?: () => void;
+}) {
+  const hasGroup = !!section.groupLabel;
+  const groupActive = hasGroup && section.links.some((l) => currentPath === l.href);
+
+  return (
+    <div>
+      {/* Section heading. Hidden for the auto-Platform section title we
+          tack on for super-admins to keep the bottom of the sidebar quiet. */}
+      <div className="px-3 mb-1.5 flex items-center justify-between">
+        <span className="text-[10px] uppercase tracking-[0.12em] text-gray-500 font-semibold">
+          {section.title}
+        </span>
+      </div>
+
+      {hasGroup ? (
+        <>
+          {/* Disclosure parent row */}
+          <button
+            type="button"
+            onClick={onToggle}
+            className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+              groupActive
+                ? 'text-white bg-dark-700/40'
+                : 'text-gray-300 hover:text-white hover:bg-dark-700/40'
+            }`}
+            aria-expanded={open}
+          >
+            <span className="w-5 h-5 flex items-center justify-center text-gray-400">
+              <i className={`${section.groupIcon ?? 'ri-folder-line'} text-base`} />
+            </span>
+            <span className="flex-1 text-left">{section.groupLabel}</span>
+            <span className={`w-4 h-4 flex items-center justify-center text-gray-500 transition-transform ${open ? 'rotate-90' : ''}`}>
+              <i className="ri-arrow-right-s-line text-sm" />
+            </span>
+          </button>
+
+          {/* Disclosure children */}
+          {open && (
+            <div className="mt-0.5 ml-3 pl-3 border-l border-dark-700/60 space-y-0.5">
+              {section.links.map((link) => (
+                <SidebarRow
+                  key={link.href}
+                  link={link}
+                  active={currentPath === link.href}
+                  onClick={onLinkClick}
+                  variant="child"
+                />
+              ))}
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="space-y-0.5">
+          {section.links.map((link) => (
+            <SidebarRow
+              key={link.href}
+              link={link}
+              active={currentPath === link.href}
+              onClick={onLinkClick}
+              variant="top"
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// One nav row — used both at top-level and as a disclosure child. The
+// child variant trades icon prominence for a tighter row so the indent
+// reads as obvious hierarchy without crowding the column.
+function SidebarRow({
+  link,
+  active,
+  onClick,
+  variant,
+}: {
+  link: SidebarLink;
+  active: boolean;
+  onClick?: () => void;
+  variant: 'top' | 'child';
+}) {
+  const base = variant === 'top'
+    ? 'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors'
+    : 'flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-[13px] transition-colors';
+
+  const activeCls = variant === 'top'
+    ? 'bg-emerald-500/12 text-emerald-300 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.18)]'
+    : 'bg-emerald-500/10 text-emerald-300';
+
+  const idleCls = 'text-gray-400 hover:text-white hover:bg-dark-700/50';
+
+  return (
+    <Link
+      to={link.href}
+      onClick={onClick}
+      className={`${base} ${active ? activeCls : idleCls}`}
+    >
+      <span className={`flex items-center justify-center ${variant === 'top' ? 'w-5 h-5' : 'w-4 h-4'}`}>
+        <i className={`${link.icon} ${variant === 'top' ? 'text-base' : 'text-sm'}`} />
+      </span>
+      <span className="flex-1 truncate">{link.label}</span>
+      {active && (
+        <span className="w-1 h-1 rounded-full bg-emerald-400" aria-hidden="true" />
+      )}
+    </Link>
   );
 }

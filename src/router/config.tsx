@@ -1,5 +1,7 @@
 import { Suspense, lazy } from "react";
 import type { RouteObject } from "react-router-dom";
+import { Navigate } from "react-router-dom";
+import DashboardLayout from "../pages/dashboard/DashboardLayout";
 import ProtectedRoute from "./ProtectedRoute";
 import RequireEm from "../components/RequireEm";
 import RequireFeature from "../components/RequireFeature";
@@ -29,7 +31,10 @@ const Setup = lazy(() => import("../pages/setup/page"));
 const AdminPortal = lazy(() => import("../pages/admin-portal/page"));
 const EmployeesIntegrations = lazy(() => import("../pages/employees/integrations/page"));
 const Governance = lazy(() => import("../pages/governance/page"));
-const OrgSettings = lazy(() => import("../pages/org-settings/page"));
+// OrgSettings page merged into Admin Portal's "Branding & Policies" tab.
+// Lazy import removed (unused) — the page file is retained at
+// src/pages/org-settings/page.tsx for reference until cleanup, and the
+// /org-settings route now redirects to /admin-portal.
 const EmployeesList = lazy(() => import("../pages/employees/page"));
 const NewEmployee = lazy(() => import("../pages/employees/new/page"));
 const NewM365User = lazy(() => import("../pages/employees/new/m365/page"));
@@ -50,7 +55,9 @@ const Reports = lazy(() => import("../pages/reports/page"));
 const DlpPage = lazy(() => import("../pages/dlp/page"));
 const Alerts = lazy(() => import("../pages/alerts/page"));
 const SystemHealth = lazy(() => import("../pages/system-health/page"));
-const PerformanceReports = lazy(() => import("../pages/performance-reports/page"));
+// PerformanceReports merged into Reports; route kept as a redirect.
+// Lazy import removed (unused) — page file retained at
+// src/pages/performance-reports/page.tsx for reference until cleanup.
 const PostLogin = lazy(() => import("../pages/post-login/page"));
 const PartnerSignup = lazy(() => import("../pages/partner-signup/page"));
 const PartnerLogin = lazy(() => import("../pages/partner-login/page"));
@@ -73,6 +80,7 @@ const AdminBillingEntity = lazy(() => import("../pages/admin/billing-entity/page
 const InvoicePage = lazy(() => import("../pages/invoice/page"));
 const AdminStorage = lazy(() => import("../pages/admin/storage/page"));
 const AdminUsers = lazy(() => import("../pages/admin/users/page"));
+const AdminFeatureFlags = lazy(() => import("../pages/admin/feature-flags/page"));
 const DocsUserGuide = lazy(() => import("../pages/docs/UserGuide"));
 const DocsPartnerGuide = lazy(() => import("../pages/docs/PartnerGuide"));
 const DocsIntegrations = lazy(() => import("../pages/docs/IntegrationsGuide"));
@@ -122,50 +130,66 @@ const routes: RouteObject[] = [
   // Internet, etc.). Public, no auth gate — the page just forwards to
   // the app's custom URL scheme.
   { path: "/oauth-mobile-bridge", element: wrap(<OAuthMobileBridge />) },
-  { path: "/dashboard", element: protect(access("dashboard", <Dashboard />)) },
-  // Monitoring family — require the basic monitoring feature. EM-only
-  // customers (who haven't bought any monitoring tier) get the upgrade CTA.
-  { path: "/monitoring", element: requires("monitoring_basic", <Monitoring />, "monitoring") },
-  { path: "/agents", element: requires("monitoring_basic", <Agents />, "agents") },
-  { path: "/agents/:agentId", element: requires("monitoring_basic", <AgentDetail />, "agents") },
-  { path: "/setup", element: requires("monitoring_basic", <Setup />, "setup") },
-  { path: "/alerts", element: requires("monitoring_basic", <Alerts />, "alerts") },
-  { path: "/system-health", element: requires("monitoring_basic", <SystemHealth />, "system_health") },
-  { path: "/performance-reports", element: requires("monitoring_basic", <PerformanceReports />, "performance") },
-  { path: "/admin-portal", element: protect(access("admin_portal", <AdminPortal />)) },
-  { path: "/reports", element: requires("monitoring_basic", <Reports />, "reports") },
-  // DLP — its own feature flag. Available on Pro, Enterprise, or as add-on
-  // layered onto Starter.
-  { path: "/dlp", element: requires("dlp", <DlpPage />, "dlp") },
+  // ── DASHBOARD LAYOUT ─────────────────────────────────────────────
+  // All customer-facing pages that render inside the sidebar+header
+  // chrome are grouped under ONE parent layout-route. React Router
+  // mounts <DashboardLayout/> once for the first match and keeps it
+  // mounted across child route changes — only the <Outlet/> swaps.
+  //
+  // Result: sidebar never remounts, sidebar-scoped Supabase queries
+  // (useAlerts, useFeatures, useAppAccess, useAppRole) fire ONCE per
+  // session, and alert-realtime subscriptions stay open.
+  //
+  // The 26 pages inside still wrap themselves in <DashboardLayout> at
+  // the JSX level; DashboardLayout detects the nested-mount context
+  // and short-circuits to a passthrough. So no page files change.
+  {
+    element: <DashboardLayout />,
+    children: [
+      { path: "/dashboard", element: protect(access("dashboard", <Dashboard />)) },
+      // Monitoring family — require the basic monitoring feature. EM-only
+      // customers (who haven't bought any monitoring tier) get the upgrade CTA.
+      { path: "/monitoring", element: requires("monitoring_basic", <Monitoring />, "monitoring") },
+      { path: "/agents", element: requires("monitoring_basic", <Agents />, "agents") },
+      { path: "/agents/:agentId", element: requires("monitoring_basic", <AgentDetail />, "agents") },
+      { path: "/setup", element: requires("monitoring_basic", <Setup />, "setup") },
+      { path: "/alerts", element: requires("monitoring_basic", <Alerts />, "alerts") },
+      { path: "/system-health", element: requires("monitoring_basic", <SystemHealth />, "system_health") },
+      // Legacy redirects — pages were merged.
+      { path: "/performance-reports", element: <Navigate to="/reports" replace /> },
+      { path: "/org-settings",        element: <Navigate to="/admin-portal" replace /> },
+      { path: "/admin-portal", element: protect(access("admin_portal", <AdminPortal />)) },
+      { path: "/reports", element: requires("monitoring_basic", <Reports />, "reports") },
+      // DLP — its own feature flag. Available on Pro, Enterprise, or as add-on
+      // layered onto Starter.
+      { path: "/dlp", element: requires("dlp", <DlpPage />, "dlp") },
 
-  // Employee Management — gated behind the EM subscription (trial orgs pass through).
-  { path: "/employees",              element: em(<EmployeesList />, "employees") },
-  { path: "/employees/new",          element: em(<NewEmployee />, "employees") },
-  { path: "/employees/new/m365",     element: em(<NewM365User />, "employees") },
-  { path: "/employees/groups",       element: em(<GroupsManager />, "groups") },
-  { path: "/employees/managers",     element: em(<ManagersPage />, "managers") },
-  { path: "/employees/hardware",     element: em(<HardwareInventory />, "hardware") },
-  { path: "/employees/credentials",  element: em(<CredentialsVault />, "credentials") },
-  { path: "/employees/offboarding",  element: em(<OffboardingPipeline />, "offboarding") },
-  { path: "/employees/integrations", element: em(<EmployeesIntegrations />, "integrations") },
+      // Employee Management — gated behind the EM subscription (trial orgs pass through).
+      { path: "/employees",              element: em(<EmployeesList />, "employees") },
+      { path: "/employees/new",          element: em(<NewEmployee />, "employees") },
+      { path: "/employees/new/m365",     element: em(<NewM365User />, "employees") },
+      { path: "/employees/groups",       element: em(<GroupsManager />, "groups") },
+      { path: "/employees/managers",     element: em(<ManagersPage />, "managers") },
+      { path: "/employees/hardware",     element: em(<HardwareInventory />, "hardware") },
+      { path: "/employees/credentials",  element: em(<CredentialsVault />, "credentials") },
+      { path: "/employees/offboarding",  element: em(<OffboardingPipeline />, "offboarding") },
+      { path: "/employees/integrations", element: em(<EmployeesIntegrations />, "integrations") },
+      { path: "/employees/otp-settings", element: protect(access("credentials", <OtpSettings />)) },
+      { path: "/employees/auto-invoice", element: protect(access("credentials", <AutoInvoice />)) },
 
-  // Governance — pillars, org chart, channels, access register, policies.
-  // Same EM subscription gate as the rest of /employees/* family.
-  { path: "/governance",             element: em(<Governance />, "governance") },
+      // Governance — pillars, org chart, channels, access register, policies.
+      { path: "/governance",             element: em(<Governance />, "governance") },
 
-  // Org-wide settings — wallpaper push, org branding. Always available to writers.
-  { path: "/org-settings",           element: protect(<OrgSettings />) },
-
-  // Self-service subscription & add-on management (always available to org owner).
-  { path: "/subscription",           element: protect(<SubscriptionPage />) },
-  { path: "/checkout",               element: protect(<Checkout />) },
-  { path: "/addon-seats",            element: protect(<AddonSeats />) },
+      // Self-service subscription & add-on management.
+      { path: "/subscription",           element: protect(<SubscriptionPage />) },
+      { path: "/checkout",               element: protect(<Checkout />) },
+      { path: "/addon-seats",            element: protect(<AddonSeats />) },
+    ],
+  },
 
   // Public credential-request form (unauthenticated; gated by HMAC-signed magic link from email)
   { path: "/r/credentials-request",  element: wrap(<PublicCredentialsRequest />) },
   { path: "/otp/:requestId",         element: wrap(<OtpRespond />) },
-  { path: "/employees/otp-settings", element: protect(access("credentials", <OtpSettings />)) },
-  { path: "/employees/auto-invoice", element: protect(access("credentials", <AutoInvoice />)) },
   { path: "/r/decision",             element: wrap(<CredentialsDecisionResult />) },
 
   // Post-login role router
@@ -202,6 +226,7 @@ const routes: RouteObject[] = [
   { path: "/invoices/:id",           element: protect(<InvoicePage />) },
   { path: "/admin/storage",      element: superAdmin(<AdminStorage />) },
   { path: "/admin/users",        element: superAdmin(<AdminUsers />) },
+  { path: "/admin/feature-flags", element: superAdmin(<AdminFeatureFlags />) },
   { path: "/admin/docs/super-admin",  element: superAdmin(<DocsSuperAdmin />) },
   { path: "/admin/docs/architecture", element: superAdmin(<DocsArchitecture />) },
 
