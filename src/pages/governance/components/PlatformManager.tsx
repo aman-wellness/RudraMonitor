@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { RolePill } from './Pill';
 import AccessGrantModal from './AccessGrantModal';
@@ -227,9 +228,9 @@ export default function PlatformManager({
                                 : 'never rotated'}
                             </div>
                           </div>
-                          <a href="/employees/credentials" className="text-[10px] text-emerald-400 hover:underline whitespace-nowrap">
+                          <Link to="/employees/credentials" className="text-[10px] text-emerald-400 hover:underline whitespace-nowrap">
                             Open vault →
-                          </a>
+                          </Link>
                         </div>
                       ) : (
                         <div className="flex items-center justify-between text-xs">

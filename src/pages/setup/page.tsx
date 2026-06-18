@@ -58,19 +58,26 @@ const buildOsData = (version: string, ref: string) => [
     arch: 'x64',
     downloads: [
       {
-        label: 'Security Assistant (.exe)',
+        label: 'NSIS Installer (.exe)',
         filename: `Security-Assistant-Windows-${ref}.exe`,
         url: `${RELEASES_BASE}/Security-Assistant-Windows-${ref}.exe`,
-        size: '~12 MB',
+        size: '~73 MB',
+        version,
+      },
+      {
+        label: 'MSI Installer (.msi) — MDM / Intune',
+        filename: `Security-Assistant-Windows-${ref}.msi`,
+        url: `${RELEASES_BASE}/Security-Assistant-Windows-${ref}.msi`,
+        size: '~96 MB',
         version,
       },
     ],
     steps: [
-      'Download the .exe installer',
-      'Double-click to run — installs silently to your user profile (no admin prompt)',
-      'If Windows SmartScreen warns "Unknown publisher" → click "More info" → "Run anyway"',
-      'Enrollment dialog opens — paste the License Key below and your name',
-      'Agent runs hidden in the tray; auto-updates silently going forward',
+      'Personal Windows — download the .exe and double-click. Installs silently to your user profile (no admin prompt).',
+      'Corporate / MDM-managed Windows — use the .msi instead. IT admin uploads it to Intune (Apps → Windows → Add → Line-of-business app → upload .msi) or pushes via AppLocker / Group Policy.',
+      'If Windows SmartScreen warns "Unknown publisher" → click "More info" → "Run anyway" (until our Azure Trusted Signing cert lands).',
+      'Enrollment dialog opens — paste the License Key below and your name.',
+      'Agent runs hidden in the tray; auto-updates silently going forward.',
     ],
   },
   {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
+import { Link } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { useAppAccess } from '@/lib/useAppAccess';
@@ -224,7 +225,7 @@ export default function GovernancePage() {
                 {organization?.name ?? 'Your Organization'}
               </h1>
               <p className="text-sm text-gray-400 mt-2 max-w-2xl">
-                Live org chart from your employees, ownership of every platform, channels, access register, and the policies that bind them. Edits in <a href="/employees/managers" className="text-emerald-400 hover:underline">/employees/managers</a> flow in automatically.
+                Live org chart from your employees, ownership of every platform, channels, access register, and the policies that bind them. Edits in <Link to="/employees/managers" className="text-emerald-400 hover:underline">/employees/managers</Link> flow in automatically.
               </p>
             </div>
             {canWrite && (
@@ -366,7 +367,7 @@ export default function GovernancePage() {
                     </button>
                   )}
                   <p className="text-[11px] text-gray-500">
-                    Built from <strong>employees → manager_id</strong>. Add/edit at <a href="/employees/managers" className="text-emerald-400 hover:underline">/employees/managers</a>.
+                    Built from <strong>employees → manager_id</strong>. Add/edit at <Link to="/employees/managers" className="text-emerald-400 hover:underline">/employees/managers</Link>.
                   </p>
                 </div>
               </div>

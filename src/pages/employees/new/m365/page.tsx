@@ -10,9 +10,10 @@
 // Wellness Extract-side metadata (department, manager, DOJ, employee code, personal email)
 // is collected on the Optional step before review.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Country } from 'country-state-city';
+// `country-state-city` is ~8 MB unpacked. Defer it to a separate chunk
+// loaded only when this M365 form is actually navigated to.
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import { supabase } from '@/lib/supabase';
 
@@ -91,7 +92,17 @@ export default function NewM365User() {
     employee_id?: string;
   } | null>(null);
 
-  const countries = useMemo(() => Country.getAllCountries().map((c) => ({ code: c.isoCode, name: c.name })), []);
+  // Country dropdown — lazy-load `country-state-city` (8 MB) so the
+  // M365 page first-paint isn't waiting on it.
+  const [countries, setCountries] = useState<{ code: string; name: string }[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void import('country-state-city').then((mod) => {
+      if (cancelled) return;
+      setCountries(mod.Country.getAllCountries().map((c) => ({ code: c.isoCode, name: c.name })));
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   // ---- Load tenant info + departments + managers ----
   const loadTenant = useCallback(async () => {

@@ -7,14 +7,17 @@ import {
   useOrgProductivityDaily,
 } from '@/lib/dataHooks';
 
-type ReportTab = 'productivity' | 'activity' | 'system' | 'time';
+// Departments rollup lives in Admin Portal → Departments tab.
+// System Health has its own sidebar entry (Insights → System Health).
+// Reports stays focused on the three report types managers actually
+// export: productivity, activity volume, and time tracking.
+type ReportTab = 'productivity' | 'activity' | 'time';
 type ExportFormat = 'csv' | 'excel' | 'pdf';
 
-const tabs: { id: ReportTab; label: string; icon: string }[] = [
-  { id: 'productivity', label: 'Productivity', icon: 'ri-bar-chart-grouped-line' },
-  { id: 'activity', label: 'Activity', icon: 'ri-pulse-line' },
-  { id: 'system', label: 'System Health', icon: 'ri-heart-pulse-line' },
-  { id: 'time', label: 'Time Reports', icon: 'ri-time-line' },
+const tabs: { id: ReportTab; label: string; icon: string; help: string }[] = [
+  { id: 'productivity', label: 'Productivity', icon: 'ri-bar-chart-grouped-line', help: 'Per-agent productivity %, active hours, idle time. Top performers shown above.' },
+  { id: 'activity',     label: 'Activity',     icon: 'ri-pulse-line',             help: 'How busy each agent has been — app switches, browser hits, screenshots captured.' },
+  { id: 'time',         label: 'Time Tracking',icon: 'ri-time-line',              help: 'Session totals + idle breakdowns per agent. Use for billable-hour reports.' },
 ];
 
 const departments = ['All', 'Development', 'HR', 'Finance', 'Design', 'Sales', 'Support', 'Marketing', 'Unassigned'];
@@ -123,6 +126,15 @@ export default function ReportsPage() {
     });
   }, [agents, deptFilter, statusFilter, search]);
 
+  // Top performer card (Productivity tab). Picks the highest-productivity
+  // agent with at least 30 min of activity — avoids "100% on 5 minutes of
+  // signal" anomalies that would mislead managers.
+  const topPerformer = useMemo(() => {
+    const eligible = agents.filter((a) => a.activeHoursSec >= 30 * 60);
+    if (eligible.length === 0) return null;
+    return eligible.reduce((best, a) => (a.productivity > best.productivity ? a : best), eligible[0]);
+  }, [agents]);
+
   /* ─── export helpers ─── */
 
   const buildCSV = (tab: ReportTab, data: typeof agents) => {
@@ -157,13 +169,6 @@ export default function ReportsPage() {
             String(c.alerts),
             String(c.appSwitches + c.browserEvents + c.screenshots + c.videos + c.alerts),
           ];
-        });
-        break;
-      case 'system':
-        headers = ['Agent Name', 'Department', 'Machine', 'OS', 'CPU %', 'Memory %', 'Disk %', 'Uptime'];
-        rows = data.map((a) => {
-          const s = systemData[a.id] || { cpu: 0, memory: 0, disk: 0, uptime: 'N/A' };
-          return [a.name, a.department, a.machine, a.os, String(s.cpu), String(s.memory), String(s.disk), s.uptime];
         });
         break;
       case 'time':
@@ -240,13 +245,6 @@ export default function ReportsPage() {
           { label: 'Videos', value: String(filteredAgents.reduce((s, a) => s + (activityCounts[a.id]?.videos || 0), 0)), icon: 'ri-video-line', color: 'amber' },
           { label: 'Alerts', value: String(filteredAgents.reduce((s, a) => s + (activityCounts[a.id]?.alerts || 0), 0)), icon: 'ri-notification-3-line', color: 'red' },
         ];
-      case 'system':
-        return [
-          { label: 'Avg CPU', value: `${Math.round(filteredAgents.reduce((s, a) => s + (systemData[a.id]?.cpu || 0), 0) / (filteredAgents.filter((a) => systemData[a.id]?.cpu > 0).length || 1))}%`, icon: 'ri-cpu-line', color: 'emerald' },
-          { label: 'High CPU Agents', value: String(filteredAgents.filter((a) => (systemData[a.id]?.cpu || 0) > 70).length), icon: 'ri-fire-line', color: 'red' },
-          { label: 'Avg Memory', value: `${Math.round(filteredAgents.reduce((s, a) => s + (systemData[a.id]?.memory || 0), 0) / (filteredAgents.filter((a) => systemData[a.id]?.memory > 0).length || 1))}%`, icon: 'ri-database-2-line', color: 'teal' },
-          { label: 'Online', value: String(filteredAgents.filter((a) => a.status === 'online').length), icon: 'ri-wifi-line', color: 'violet' },
-        ];
       case 'time':
         return [
           { label: 'Total Sessions', value: `${filteredAgents.reduce((s, a) => s + parseInt((timeData[a.id]?.session || '0h')), 0)}h`, icon: 'ri-time-line', color: 'emerald' },
@@ -258,7 +256,7 @@ export default function ReportsPage() {
           { label: 'Active Today', value: String(filteredAgents.filter((a) => a.status !== 'offline').length), icon: 'ri-user-follow-line', color: 'violet' },
         ];
     }
-  }, [activeTab, filteredAgents]);
+  }, [activeTab, filteredAgents, timeData, activityCounts]);
 
   const getColorClasses = (color: string) => {
     const map: Record<string, { bg: string; text: string }> = {
@@ -371,6 +369,39 @@ export default function ReportsPage() {
             </button>
           ))}
         </div>
+
+        {/* Tab help line — one-line explanation of what THIS tab shows.
+            Customers told us they didn't understand the difference between
+            Performance and Reports; making each tab's purpose explicit at
+            the top of the page is the cheapest possible fix. */}
+        {(() => {
+          const cur = tabs.find((t) => t.id === activeTab);
+          return cur ? (
+            <p className="text-xs text-gray-500 -mt-2 px-1">{cur.help}</p>
+          ) : null;
+        })()}
+
+        {/* Top Performer hero (Productivity tab only). Pulls from agents
+            with ≥30min activity so we don't crown someone who happened to
+            hit 100% on 5 minutes of signal. */}
+        {activeTab === 'productivity' && topPerformer && (
+          <div className="bg-gradient-to-r from-emerald-500/15 to-teal-500/10 border border-emerald-500/25 rounded-xl p-4 flex items-center gap-4">
+            <span className="w-10 h-10 rounded-lg bg-emerald-500/20 flex items-center justify-center text-emerald-400">
+              <i className="ri-trophy-line text-lg" />
+            </span>
+            <div className="flex-1">
+              <p className="text-[11px] uppercase tracking-wider text-emerald-300/80 font-medium">Top performer today</p>
+              <p className="text-sm text-white font-semibold mt-0.5">
+                {topPerformer.name}
+                <span className="text-gray-500 font-normal ml-2">· {topPerformer.department}</span>
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-2xl font-bold text-emerald-400">{topPerformer.productivity}%</p>
+              <p className="text-[11px] text-gray-500">{topPerformer.activeHours} active</p>
+            </div>
+          </div>
+        )}
 
         {/* Filters */}
         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 flex-wrap">
@@ -580,98 +611,6 @@ export default function ReportsPage() {
           </div>
         )}
 
-        {/* ─── SYSTEM HEALTH TABLE ─── */}
-        {activeTab === 'system' && (
-          <div className="bg-dark-800 border border-dark-700 rounded-xl overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[900px]">
-                <thead>
-                  <tr className="border-b border-dark-700">
-                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Agent</th>
-                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Machine</th>
-                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">OS</th>
-                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">CPU Usage</th>
-                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Memory</th>
-                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Disk</th>
-                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Uptime</th>
-                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Health</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredAgents.map((agent) => {
-                    const s = systemData[agent.id] || { cpu: 0, memory: 0, disk: 0, uptime: 'N/A' };
-                    const avg = (s.cpu + s.memory + s.disk) / 3;
-                    const health = avg > 75 ? 'Critical' : avg > 50 ? 'Warning' : 'Good';
-                    return (
-                      <tr key={agent.id} className="border-b border-dark-700/50 hover:bg-dark-700/30 transition-colors">
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-3">
-                            <div className="w-8 h-8 rounded-full bg-violet-500/15 flex items-center justify-center">
-                              <span className="text-xs text-violet-400 font-semibold">{agent.name.charAt(0)}</span>
-                            </div>
-                            <div>
-                              <p className="text-sm text-white font-medium">{agent.name}</p>
-                              <p className="text-xs text-gray-500">{agent.department}</p>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-300">{agent.machine}</td>
-                        <td className="px-4 py-3">
-                          <span className="flex items-center gap-1.5 text-xs text-gray-400">
-                            <span className="w-4 h-4 flex items-center justify-center"><i className={`${getOSIcon(agent.os)} text-sm`} /></span>
-                            {agent.os}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
-                            <div className="w-16 h-2 bg-dark-700 rounded-full overflow-hidden">
-                              <div className={`h-full rounded-full ${s.cpu > 70 ? 'bg-red-500' : s.cpu > 40 ? 'bg-amber-500' : 'bg-emerald-500'}`} style={{ width: `${s.cpu}%` }} />
-                            </div>
-                            <span className="text-xs text-gray-300">{s.cpu}%</span>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
-                            <div className="w-16 h-2 bg-dark-700 rounded-full overflow-hidden">
-                              <div className={`h-full rounded-full ${s.memory > 70 ? 'bg-red-500' : s.memory > 40 ? 'bg-amber-500' : 'bg-emerald-500'}`} style={{ width: `${s.memory}%` }} />
-                            </div>
-                            <span className="text-xs text-gray-300">{s.memory}%</span>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
-                            <div className="w-16 h-2 bg-dark-700 rounded-full overflow-hidden">
-                              <div className={`h-full rounded-full ${s.disk > 80 ? 'bg-red-500' : s.disk > 50 ? 'bg-amber-500' : 'bg-emerald-500'}`} style={{ width: `${s.disk}%` }} />
-                            </div>
-                            <span className="text-xs text-gray-300">{s.disk}%</span>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-300">{s.uptime}</td>
-                        <td className="px-4 py-3">
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
-                            health === 'Good' ? 'bg-emerald-500/15 text-emerald-400' :
-                            health === 'Warning' ? 'bg-amber-500/15 text-amber-400' :
-                            'bg-red-500/15 text-red-400'
-                          }`}>
-                            {health}
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-            {filteredAgents.length === 0 && (
-              <div className="p-12 text-center">
-                <span className="w-12 h-12 flex items-center justify-center mx-auto mb-3 text-gray-600">
-                  <i className="ri-search-2-line text-3xl" />
-                </span>
-                <p className="text-sm text-gray-500">No agents match your filters</p>
-              </div>
-            )}
-          </div>
-        )}
 
         {/* ─── TIME REPORTS TABLE ─── */}
         {activeTab === 'time' && (

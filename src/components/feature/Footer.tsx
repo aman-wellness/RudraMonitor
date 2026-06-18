@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 
 export default function Footer() {
   const [email, setEmail] = useState('');
@@ -64,16 +65,31 @@ export default function Footer() {
                 { label: 'Integrations', href: '/docs/integrations' },
                 { label: 'Security',     href: '/legal/privacy' },
                 { label: 'API',          href: '/docs/integrations' },
-              ].map((item) => (
-                <li key={item.label}>
-                  <a
-                    href={item.href}
-                    className="text-sm text-gray-500 hover:text-emerald-400 transition-colors duration-200"
-                  >
-                    {item.label}
-                  </a>
-                </li>
-              ))}
+              ].map((item) => {
+                // Hash links ('#features') stay as <a> — they target an in-page
+                // anchor on the landing route, not a separate React Router route.
+                // Path-style hrefs ('/docs/...') become <Link> for SPA navigation.
+                const isHash = item.href.startsWith('#');
+                return (
+                  <li key={item.label}>
+                    {isHash ? (
+                      <a
+                        href={item.href}
+                        className="text-sm text-gray-500 hover:text-emerald-400 transition-colors duration-200"
+                      >
+                        {item.label}
+                      </a>
+                    ) : (
+                      <Link
+                        to={item.href}
+                        className="text-sm text-gray-500 hover:text-emerald-400 transition-colors duration-200"
+                      >
+                        {item.label}
+                      </Link>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           </div>
 
@@ -84,19 +100,19 @@ export default function Footer() {
             </h4>
             <ul className="space-y-2.5">
               <li>
-                <a href="/docs/user-guide" className="text-sm text-gray-500 hover:text-emerald-400 transition-colors duration-200">
+                <Link to="/docs/user-guide" className="text-sm text-gray-500 hover:text-emerald-400 transition-colors duration-200">
                   User Guide
-                </a>
+                </Link>
               </li>
               <li>
-                <a href="/docs/integrations" className="text-sm text-gray-500 hover:text-emerald-400 transition-colors duration-200">
+                <Link to="/docs/integrations" className="text-sm text-gray-500 hover:text-emerald-400 transition-colors duration-200">
                   Integrations Setup
-                </a>
+                </Link>
               </li>
               <li>
-                <a href="/docs/partner-guide" className="text-sm text-gray-500 hover:text-emerald-400 transition-colors duration-200">
+                <Link to="/docs/partner-guide" className="text-sm text-gray-500 hover:text-emerald-400 transition-colors duration-200">
                   Partner Guide
-                </a>
+                </Link>
               </li>
               {['Blog', 'Case Studies', 'Support', 'FAQs'].map((item) => (
                 <li key={item}>
@@ -159,8 +175,8 @@ export default function Footer() {
               &copy; 2025 Wellness Extract. All rights reserved.
             </p>
             <div className="flex items-center gap-4">
-              <a href="/legal/privacy" className="text-xs text-gray-600 hover:text-gray-400 transition-colors">Privacy Policy</a>
-              <a href="/legal/terms" className="text-xs text-gray-600 hover:text-gray-400 transition-colors">Terms of Service</a>
+              <Link to="/legal/privacy" className="text-xs text-gray-600 hover:text-gray-400 transition-colors">Privacy Policy</Link>
+              <Link to="/legal/terms" className="text-xs text-gray-600 hover:text-gray-400 transition-colors">Terms of Service</Link>
             </div>
           </div>
         </div>

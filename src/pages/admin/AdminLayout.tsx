@@ -17,7 +17,8 @@ const nav = [
   { to: '/admin/storage',   label: 'Storage',    icon: 'ri-database-2-line' },
   { to: '/admin/integrations', label: 'Integrations', icon: 'ri-plug-line' },
   { to: '/admin/billing-entity', label: 'Billing Entity', icon: 'ri-building-line' },
-  { to: '/admin/users',     label: 'Admin Users', icon: 'ri-shield-user-line' },
+  { to: '/admin/users',         label: 'Admin Users',   icon: 'ri-shield-user-line' },
+  { to: '/admin/feature-flags', label: 'Feature Flags', icon: 'ri-toggle-line' },
   { to: '/admin/docs/super-admin',  label: 'Super Admin Guide', icon: 'ri-book-open-line' },
   { to: '/admin/docs/architecture', label: 'Tech Architecture', icon: 'ri-stack-line' },
 ];

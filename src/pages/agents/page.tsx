@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAgents, useProductivityPerAgent } from '@/lib/dataHooks';
 import { supabase } from '@/lib/supabase';
 
@@ -232,9 +232,9 @@ export default function AgentsPage() {
                   Locked agents stop reporting data. Upgrade your subscription to re-activate them, or remove other agents to free up seats.
                 </p>
               </div>
-              <a href="/subscription" className="text-xs font-medium bg-rose-500/20 hover:bg-rose-500/30 text-rose-100 border border-rose-500/40 rounded-lg px-3 py-1.5 whitespace-nowrap">
+              <Link to="/subscription" className="text-xs font-medium bg-rose-500/20 hover:bg-rose-500/30 text-rose-100 border border-rose-500/40 rounded-lg px-3 py-1.5 whitespace-nowrap">
                 Upgrade plan
-              </a>
+              </Link>
             </div>
           );
         })()}

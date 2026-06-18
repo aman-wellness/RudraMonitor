@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import ModalShell from './ModalShell';
 import type { GovPillar, GovPillarPlatform } from '../types';
@@ -172,7 +173,7 @@ export default function PlatformEditModal({ platform, pillars, defaultPillarId, 
             ))}
           </select>
           <p className="text-[10px] text-blue-300/70 mt-2">
-            Linking surfaces real passwords, OTP channels, and billing from <a href="/employees/credentials" className="underline">Credentials Vault</a> in this platform card.
+            Linking surfaces real passwords, OTP channels, and billing from <Link to="/employees/credentials" className="underline">Credentials Vault</Link> in this platform card.
           </p>
         </div>
 

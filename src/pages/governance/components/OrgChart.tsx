@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import {
   ReactFlow, Background, Controls, MiniMap, MarkerType,
@@ -861,7 +862,7 @@ function OrgChartInner({
   if (activeEmployees.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-dark-700 bg-dark-900/40 p-10 text-center text-sm text-gray-500">
-        No employees yet — add employees (with managers) at <a href="/employees" className="text-emerald-400 hover:underline">/employees</a> and the chart will populate automatically.
+        No employees yet — add employees (with managers) at <Link to="/employees" className="text-emerald-400 hover:underline">/employees</Link> and the chart will populate automatically.
       </div>
     );
   }
@@ -1011,9 +1012,9 @@ function OrgChartInner({
               <i className="ri-error-warning-line" />
               <strong>{unassignedList.length}</strong> employee{unassignedList.length === 1 ? '' : 's'} have no manager assigned
             </div>
-            <a href="/employees/managers" className="text-xs text-amber-300 hover:text-amber-200 underline">
+            <Link to="/employees/managers" className="text-xs text-amber-300 hover:text-amber-200 underline">
               Open Managers page →
-            </a>
+            </Link>
           </div>
           <p className="text-[11px] text-amber-200/70 mb-3">
             These employees imported from M365/Google directory without a manager_id, OR were never assigned one in Wellness Extract.

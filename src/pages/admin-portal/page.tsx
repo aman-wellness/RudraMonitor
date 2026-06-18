@@ -1,11 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { useAgents, useOrgMembers } from '@/lib/dataHooks';
 import { useOrgRole } from '@/lib/useOrgRole';
 import { supabase } from '@/lib/supabase';
 import DepartmentsTab from './components/DepartmentsTab';
+// Branding & Policies tab reuses the components originally built for the
+// standalone /org-settings page. That page now redirects here so admins
+// have a single home for org-wide configuration.
+import WallpaperUploadCard from '@/pages/org-settings/components/WallpaperUploadCard';
+import TrackingScheduleCard from '@/pages/org-settings/components/TrackingScheduleCard';
 import PlanGrid from '@/components/PlanGrid';
 import { APP_ACCESS_CODES, type AppAccessCode, type AccessLevel } from '@/lib/useAppAccess';
 
@@ -23,7 +28,8 @@ const adminTabs = [
   { id: 'subscription', label: 'Subscription', icon: 'ri-vip-crown-line' },
   { id: 'users', label: 'Users', icon: 'ri-team-line' },
   { id: 'departments', label: 'Departments', icon: 'ri-organization-chart' },
-  { id: 'settings', label: 'Settings', icon: 'ri-settings-3-line' },
+  { id: 'branding', label: 'Branding & Policies', icon: 'ri-palette-line' },
+  { id: 'settings', label: 'Defaults', icon: 'ri-settings-3-line' },
 ];
 
 const roles = ['Viewer', 'Manager', 'Org Admin'];
@@ -1212,6 +1218,19 @@ export default function AdminPortalPage() {
         {/* === DEPARTMENTS TAB === */}
         {activeTab === 'departments' && (
           <DepartmentsTab orgId={organization?.id ?? null} />
+        )}
+
+        {/* === BRANDING & POLICIES TAB === */}
+        {/* Hosts the org-wide schedule + wallpaper push. These used to live
+            on a separate /org-settings page in the sidebar but it's cleaner
+            for the admin to find everything org-level under one roof. The
+            /org-settings route still resolves (redirects here) so any
+            existing bookmarks keep working. */}
+        {activeTab === 'branding' && (
+          <div className="space-y-5 max-w-3xl">
+            <TrackingScheduleCard />
+            <WallpaperUploadCard />
+          </div>
         )}
 
         {/* === SETTINGS TAB === */}
