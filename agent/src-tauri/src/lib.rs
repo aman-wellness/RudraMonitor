@@ -1571,6 +1571,19 @@ fn spawn_updater_loop(handle: tauri::AppHandle) {
         // long enough for Tauri setup + system tray to settle.
         sleep(Duration::from_secs(UPDATE_CHECK_STARTUP_DELAY_SECS)).await;
 
+        // Latch flipped ONCE per process lifetime the moment
+        // `download_and_install` returns Ok. Any further check() call
+        // from this doomed process would re-fire the install because
+        // our binary's baked-in version (env!("CARGO_PKG_VERSION"))
+        // is still older than latest.json until the installer swaps
+        // files. Windows especially: NSIS-passive install can take
+        // 30-60 s to fully replace the exe, and during that window a
+        // second check() → second installer → double-install crash
+        // was observed in v0.6.7 as a "continuous update" loop.
+        let install_fired = std::sync::Arc::new(
+            std::sync::atomic::AtomicBool::new(false)
+        );
+
         // FAST LANE: for the first 10 minutes after boot, check every
         // 60 s. This is where most missed-update scenarios live —
         // machine was offline when v0.X.Y was released, comes online
@@ -1579,8 +1592,10 @@ fn spawn_updater_loop(handle: tauri::AppHandle) {
         // 1 min of being online.
         let fast_lane_deadline = std::time::Instant::now()
             + Duration::from_secs(UPDATE_CHECK_FAST_DURATION_SECS);
-        while std::time::Instant::now() < fast_lane_deadline {
-            if let Err(e) = check_for_update(&handle).await {
+        while std::time::Instant::now() < fast_lane_deadline
+            && !install_fired.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            if let Err(e) = check_for_update(&handle, &install_fired).await {
                 log::warn!("update check (fast) failed: {e}");
             }
             sleep(Duration::from_secs(UPDATE_CHECK_FAST_INTERVAL_SECS)).await;
@@ -1593,16 +1608,26 @@ fn spawn_updater_loop(handle: tauri::AppHandle) {
         //   • <1 min from agent-online to install if agent comes back
         //     online after a publish.
         //   • <10 min in any other steady-state edge case.
+        //
+        // Post-install the latch keeps us silent so we don't fight the
+        // running installer. Loop kept alive (rather than returning)
+        // so the process stays observable in `ps` — the installer
+        // will kill us as part of its file-swap step.
         loop {
-            if let Err(e) = check_for_update(&handle).await {
-                log::warn!("update check failed: {e}");
+            if !install_fired.load(std::sync::atomic::Ordering::SeqCst) {
+                if let Err(e) = check_for_update(&handle, &install_fired).await {
+                    log::warn!("update check failed: {e}");
+                }
             }
             sleep(Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS)).await;
         }
     });
 }
 
-async fn check_for_update(handle: &tauri::AppHandle) -> Result<()> {
+async fn check_for_update(
+    handle: &tauri::AppHandle,
+    install_fired: &std::sync::atomic::AtomicBool,
+) -> Result<()> {
     // Customers reported "agents not updating" — add structured logs at
     // every step so we can read /tmp/wellness-extract-agent.log (mac) or
     // %LOCALAPPDATA%\com.wellnessextract.agent\logs\… (win) to see which step
@@ -1642,14 +1667,29 @@ async fn check_for_update(handle: &tauri::AppHandle) -> Result<()> {
                 .await;
             match result {
                 Ok(_) => {
-                    log::info!("updater: install reported success; restarting agent");
-                    handle.restart();
+                    // DO NOT call handle.restart() here. On Windows the
+                    // installer (NSIS passive) is still swapping files
+                    // when this branch runs — restarting the current exe
+                    // would relaunch the OLD binary alongside the
+                    // in-flight installer and race the file-swap step.
+                    // The installer relaunches the new version itself
+                    // once files are in place. On macOS the same holds
+                    // for the .app-tarball swap step.
+                    //
+                    // Flip the latch so the polling loop stops firing
+                    // check() while the installer works. Without this,
+                    // the fast-lane hits check() again in 60 s, sees
+                    // our still-old baked version < latest.json, and
+                    // spawns a second concurrent installer — the exact
+                    // "continuous update" symptom customers reported.
+                    install_fired.store(true, std::sync::atomic::Ordering::SeqCst);
+                    log::info!("updater: install kicked off — suppressing further checks; installer will restart us");
                 }
                 Err(e) => {
                     // Windows: most common failure modes are UAC declined,
                     // running .exe file-locked, or missing admin token.
                     // Don't propagate the error — keep the loop alive so the
-                    // next 30-min tick retries.
+                    // next 10-min tick retries.
                     log::warn!("updater: download_and_install failed: {e}");
                 }
             }
