@@ -1260,10 +1260,16 @@ pub fn run() {
                 let _ = app.set_activation_policy(policy);
             }
 
-            // Always build the tray so users have a way back to the UI even when
-            // enrolled (re-enroll, sign out, manual updates check, support escape
-            // hatch when stale state exists). Tray is the minimum visible UI.
-            build_tray(app)?;
+            // Tray is intentionally hidden once the agent is enrolled — the
+            // customer shouldn't have any visible indication that a monitoring
+            // tool is running (matches the stealth spec: no dock icon, no
+            // menu-bar icon, no window). The tray is ONLY built during the
+            // first-run enrollment window so a user launching from the
+            // Applications folder has a place to paste the license key.
+            // Post-enrollment re-enrollment is an admin task (re-install).
+            if !enrolled {
+                build_tray(app)?;
+            }
 
             // Re-arm autostart on every launch when the agent is enrolled.
             // We already call `enable()` once at the end of enroll() (line

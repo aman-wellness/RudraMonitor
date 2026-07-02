@@ -60,16 +60,6 @@ export default function App() {
     }
   };
 
-  const onSignOut = async () => {
-    setBusy(true);
-    try {
-      await invoke("sign_out");
-      await refresh();
-    } finally {
-      setBusy(false);
-    }
-  };
-
   if (!status) {
     return <div className="app"><div className="muted">Loading…</div></div>;
   }
@@ -78,7 +68,7 @@ export default function App() {
     <div className="app">
       <div className="brand">
         <span className="brand-dot" />
-        Rudrans Agent
+        Security Assistant
       </div>
 
       {error && <div className="error">{error}</div>}
@@ -145,39 +135,6 @@ export default function App() {
             </div>
           </div>
 
-          <div className="card">
-            <h2>Settings</h2>
-            <div className="row" style={{ borderTop: 0 }}>
-              <span className="k">Pause monitoring</span>
-              <label style={{ cursor: "pointer" }}>
-                <input
-                  type="checkbox"
-                  checked={status.paused}
-                  onChange={async (e) => { await invoke("set_paused", { paused: e.target.checked }); await refresh(); }}
-                />
-              </label>
-            </div>
-            <div className="row">
-              <span className="k">Start at login</span>
-              <label style={{ cursor: "pointer" }}>
-                <input
-                  type="checkbox"
-                  checked={status.autostart_enabled}
-                  onChange={async (e) => {
-                    try {
-                      await invoke("set_autostart", { enabled: e.target.checked });
-                      await refresh();
-                    } catch (err) { setError(String(err)); }
-                  }}
-                />
-              </label>
-            </div>
-            <p className="muted" style={{ marginTop: 8 }}>
-              Closing this window keeps the agent running in the system tray.
-            </p>
-          </div>
-
-          <button className="ghost" onClick={onSignOut} disabled={busy}>Sign out</button>
         </>
       )}
     </div>
