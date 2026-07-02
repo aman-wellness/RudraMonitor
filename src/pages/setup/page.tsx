@@ -579,6 +579,9 @@ echo "Done. Launch Security Assistant and enter your License Key."
           </div>
         </div>
 
+        {/* Uninstall — Mac one-liner */}
+        <UninstallCommandCard />
+
         {/* Connected Agents Summary */}
         <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
           <div className="flex items-center justify-between mb-4">
@@ -611,5 +614,60 @@ echo "Done. Launch Security Assistant and enter your License Key."
         </div>
       </div>
     </DashboardLayout>
+  );
+}
+
+// One-liner an admin can paste into a customer's Terminal to fully
+// remove the endpoint agent from a Mac — LaunchAgent, config, caches,
+// logs, the .app bundle itself, and TCC permission grants. The script
+// is hosted from our Supabase releases bucket at a stable URL so
+// support tickets can just share this line. See
+// agent/src-tauri/resources/uninstall.command for the source.
+function UninstallCommandCard() {
+  const CMD = 'curl -fsSL https://api-ems.wellnessextract.com/storage/v1/object/public/releases/uninstall-mac.sh | bash';
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(CMD);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* clipboard blocked — user can still select the text manually */ }
+  };
+  return (
+    <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="w-5 h-5 flex items-center justify-center">
+          <i className="ri-delete-bin-line text-rose-400 text-sm" />
+        </span>
+        <h3 className="text-sm font-semibold text-white">Uninstall from Mac (Terminal)</h3>
+      </div>
+      <p className="text-[11px] text-gray-500 leading-relaxed mb-3">
+        Paste this on the target Mac's Terminal. Removes the LaunchAgent, running processes,
+        config, cache, logs, the app bundle, and resets Screen Recording / Accessibility grants.
+        Safe to run multiple times.
+      </p>
+      <div className="flex items-stretch gap-2">
+        <code className="flex-1 bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-[11px] font-mono text-emerald-300 overflow-x-auto whitespace-nowrap select-all">
+          {CMD}
+        </code>
+        <button
+          type="button"
+          onClick={copy}
+          className={`px-3 py-2 rounded-lg text-[11px] font-medium border transition-colors flex items-center gap-1.5 ${
+            copied
+              ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+              : 'bg-dark-900 border-dark-700 text-gray-300 hover:bg-dark-700/60'
+          }`}
+          aria-label="Copy uninstall command"
+        >
+          <i className={copied ? 'ri-check-line' : 'ri-file-copy-line'} />
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      <p className="text-[11px] text-gray-500 mt-2">
+        Prompts once for admin password if the app is in <code className="text-gray-400">/Applications</code>.
+        Reboot recommended after — macOS caches Login Items in memory until next login.
+      </p>
+    </div>
   );
 }
