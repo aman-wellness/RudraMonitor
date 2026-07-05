@@ -334,13 +334,87 @@ jobs:
           # 2's bundler runs `xcrun notarytool submit --wait` when these
           # are present AND `--options runtime` is on. Then it staples
           # the ticket to the .app so the Gatekeeper check works offline.
-          APPLE_API_ISSUER: ${{ matrix.os == 'macos-14' && secrets.APPLE_API_ISSUER_ID || '' }}
-          APPLE_API_KEY: ${{ matrix.os == 'macos-14' && secrets.APPLE_API_KEY_ID || '' }}
-          # APPLE_API_KEY_PATH is written to GITHUB_ENV by the prior
-          # "Write notarization API key to disk" step (macOS-only) and
-          # inherited by this step automatically. On non-mac runners
-          # it stays unset, which Tauri treats as "skip notarization".
+          # Deliberately DO NOT pass APPLE_API_ISSUER / APPLE_API_KEY /
+          # APPLE_API_KEY_PATH here. If those are set Tauri notarizes
+          # inline, but its bundle-copy step scrambles signatures on
+          # nested Frameworks inside RustDesk.app — every attempt
+          # v0.6.10–v0.6.12 failed at Tauri's own notarize call with
+          # "The signature of the binary is invalid" for the same 20+
+          # nested framework binaries even though our pre-sign step
+          # verified them as valid on disk right before Tauri ran.
+          # Instead: let Tauri just SIGN + BUNDLE, then the two post-
+          # build steps below re-sign every Mach-O bottom-up on the
+          # FINAL bundle path and submit for notarization ourselves.
         run: npm run tauri build -- --bundles ${{ matrix.bundle }} --target ${{ matrix.target }}
+
+      # Deep bottom-up re-sign the final .app that Tauri produced.
+      # Tauri's build copies our resources/rustdesk/RustDesk.app tree
+      # into the output bundle in a way that strips the framework
+      # signatures we applied earlier. Re-doing the exact same signing
+      # pass here on the post-build path lands the signatures in
+      # their FINAL location, so nothing touches them again before
+      # notarization.
+      - name: Post-build re-sign the built .app
+        if: matrix.os == 'macos-14'
+        env:
+          IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -e
+          APP=$(ls -d agent/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app | head -1)
+          echo "Signing final bundle: $APP"
+          # (a) every Mach-O executable / dylib
+          find "$APP" -type f | while read -r f; do
+            if file "$f" 2>/dev/null | grep -q "Mach-O"; then
+              codesign --force --sign "$IDENTITY" \
+                --options runtime --timestamp "$f" 2>&1 \
+                | grep -v "^$" || true
+            fi
+          done
+          # (b) every framework bundle, deepest first
+          find "$APP" -type d -name "*.framework" -depth | while read -r fw; do
+            codesign --force --sign "$IDENTITY" \
+              --options runtime --timestamp "$fw" 2>&1 \
+              | grep -v "^$" || true
+          done
+          # (c) every nested app bundle (Security Assistant.app contains
+          # RustDesk.app which contains its OWN Contents/MacOS/…). Depth-
+          # first so inner nested .apps are signed before their outer.
+          find "$APP" -type d -name "*.app" -depth | while read -r inner; do
+            [ "$inner" = "$APP" ] && continue   # save outer for last
+            codesign --force --sign "$IDENTITY" \
+              --options runtime --timestamp "$inner" 2>&1 \
+              | grep -v "^$" || true
+          done
+          # (d) the outer Security Assistant.app itself
+          codesign --force --sign "$IDENTITY" \
+            --options runtime --timestamp "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP" 2>&1 | tail -5
+          echo "✓ Final .app fully re-signed bottom-up."
+
+      # Notarize the built .app with the App Store Connect API key
+      # (same key as Tauri would have used inline, only now the .app
+      # signatures are in their final post-copy location so Apple's
+      # server accepts them). `--wait` blocks until Apple returns a
+      # verdict (~1-5 min), then `stapler staple` embeds the ticket so
+      # Gatekeeper approves the app offline.
+      - name: Notarize + staple built .app
+        if: matrix.os == 'macos-14'
+        run: |
+          set -e
+          APP=$(ls -d agent/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app | head -1)
+          ZIP="$RUNNER_TEMP/$(basename "$APP").zip"
+          # notarytool wants a zip or dmg, not a raw .app. `ditto -c -k`
+          # is the Apple-recommended zip method — preserves xattrs +
+          # symlinks that plain `zip` would drop.
+          ditto -c -k --keepParent "$APP" "$ZIP"
+          xcrun notarytool submit "$ZIP" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "${{ secrets.APPLE_API_KEY_ID }}" \
+            --issuer "${{ secrets.APPLE_API_ISSUER_ID }}" \
+            --wait
+          xcrun stapler staple "$APP"
+          rm -f "$ZIP"
+          echo "✓ .app notarized + stapled."
 
       # Read the actual product version from tauri.conf.json so artifact names
       # are deterministic across triggers (push tag, workflow_dispatch on main, …).
