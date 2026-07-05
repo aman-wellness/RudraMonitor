@@ -5,7 +5,7 @@ import type { CapacitorConfig } from "@capacitor/cli";
 // stores; new ids = new apps + lost user data.
 const config: CapacitorConfig = {
   appId: "com.wellnessextract.invoice",
-  appName: "Wellness Extract Invoice",
+  appName: "WE Invoice",
   webDir: "dist",
   ios: {
     contentInset: "always",

@@ -51,7 +51,8 @@
       "entitlements": "entitlements.plist",
       "exceptionDomain": null,
       "hardenedRuntime": true,
-      "signingIdentity": "Rudrans Software Code Signing"
+      "signingIdentity": null,
+      "providerShortName": "LJ7BU8586L"
     },
     "windows": {
       "allowDowngrades": true,
