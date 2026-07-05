@@ -254,23 +254,51 @@ jobs:
         run: |
           set -e
           BASE=agent/src-tauri/resources
-          # RustDesk (whole .app bundle). Its own upstream signature is
-          # invalid outside its own distribution channel — strip + re-sign.
+
+          # `codesign --deep` claims to recursively re-sign a bundle
+          # but empirically MISSES nested Mach-O binaries inside
+          # .framework directories (verified: v0.6.10 + v0.6.11 both
+          # failed notarization with "signature invalid" for the exact
+          # framework binaries we thought --deep had covered). Apple's
+          # recommended approach for nested bundles is to sign
+          # bottom-up: every Mach-O file first, then every framework
+          # bundle, finally the containing .app. Doing it manually.
+          resign_bundle() {
+            local APP="$1"
+            [ -d "$APP" ] || return 0
+            echo "── Re-signing $APP ──"
+            # 1) Every Mach-O executable / dylib in the tree.
+            find "$APP" -type f | while read -r f; do
+              if file "$f" 2>/dev/null | grep -q "Mach-O"; then
+                codesign --force --sign "$IDENTITY" \
+                  --options runtime --timestamp "$f" 2>&1 \
+                  | grep -v "^$" || true
+              fi
+            done
+            # 2) Every .framework bundle, deepest first.
+            find "$APP" -type d -name "*.framework" -depth | while read -r fw; do
+              codesign --force --sign "$IDENTITY" \
+                --options runtime --timestamp "$fw" 2>&1 \
+                | grep -v "^$" || true
+            done
+            # 3) The outer bundle itself.
+            codesign --force --sign "$IDENTITY" \
+              --options runtime --timestamp "$APP" 2>&1 \
+              | grep -v "^$" || true
+            # Verify — codesign --verify --deep --strict fails loud
+            # if any nested signature is still invalid.
+            codesign --verify --deep --strict --verbose=2 "$APP" 2>&1 | tail -5
+          }
+
           if [ -d "$BASE/rustdesk/RustDesk.app" ]; then
-            echo "Re-signing RustDesk.app…"
-            codesign --force --deep --sign "$IDENTITY" \
-              --options runtime --timestamp \
-              --keychain build.keychain \
-              "$BASE/rustdesk/RustDesk.app"
+            resign_bundle "$BASE/rustdesk/RustDesk.app"
           fi
           # ffmpeg (single Mach-O binary). Downloaded from our Supabase
           # bucket — was built ad-hoc without a Developer ID signature.
           if [ -f "$BASE/ffmpeg" ]; then
-            echo "Re-signing ffmpeg…"
+            echo "── Re-signing ffmpeg ──"
             codesign --force --sign "$IDENTITY" \
-              --options runtime --timestamp \
-              --keychain build.keychain \
-              "$BASE/ffmpeg"
+              --options runtime --timestamp "$BASE/ffmpeg"
           fi
           echo "Third-party binaries re-signed under our Developer ID."
 
