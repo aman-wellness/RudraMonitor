@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+Export options for `xcodebuild -exportArchive`. Kept in-repo so
+the same command line can be re-run identically from any
+developer's machine or the CI runner.
+
+- method=app-store  → produces an .ipa signed with the Apple
+  Distribution cert + App Store provisioning profile, ready for
+  `xcrun altool --upload-app` to push to App Store Connect.
+- teamID pinned to the Wellness Extract Pvt. Ltd. account so
+  automatic signing picks the right team even if a machine has
+  multiple Apple IDs logged in.
+- uploadBitcode=false → Apple deprecated bitcode in Xcode 14; leaving
+  it on triggers a warning at upload time.
+- uploadSymbols=true → sends dSYMs to App Store Connect so Crashlytics
+  / Apple Crashes report symbolicated stacks.
+-->
+<plist version="1.0">
+<dict>
+  <key>method</key>
+  <string>app-store</string>
+  <key>teamID</key>
+  <string>THJMM6C3XU</string>
+  <key>uploadBitcode</key>
+  <false/>
+  <key>uploadSymbols</key>
+  <true/>
+  <key>compileBitcode</key>
+  <false/>
+  <key>signingStyle</key>
+  <string>automatic</string>
+  <key>destination</key>
+  <string>export</string>
+</dict>
+</plist>
