@@ -178,8 +178,24 @@ jobs:
           set -uo pipefail
           mkdir -p agent/src-tauri/resources/rustdesk
           case "${{ matrix.target }}" in
-            aarch64-apple-darwin)     ZIP=rustdesk-macos-arm64.zip ;;
-            x86_64-apple-darwin)      ZIP=rustdesk-macos-x64.zip   ;;
+            # macOS: DO NOT bundle RustDesk into the .app on macOS.
+            # RustDesk is a Flutter app whose upstream builds ship with
+            # signatures from RustDesk's own dev team + entitlements
+            # referencing that team ID. Re-signing every nested Mach-O
+            # + framework under our Developer ID does NOT reliably
+            # convince Apple's notarizer (v0.6.10 → v0.6.13 all failed
+            # with the same 20+ "signature invalid" errors even after
+            # verified-valid-on-disk local re-sign passes).
+            # Trade-off: macOS agents ship without in-bundle remote-
+            # desktop; the listener responds "no rustdesk binary
+            # bundled" and the feature is silently disabled on Mac.
+            # Follow-up: download RustDesk at first use into
+            # ~/Library/Application Support/RudransAgent/rustdesk/,
+            # outside the notarized .app so Apple never inspects it.
+            aarch64-apple-darwin|x86_64-apple-darwin)
+              echo "skipping rustdesk bundle for ${{ matrix.target }} (macOS notarization compatibility)"
+              exit 0
+              ;;
             x86_64-pc-windows-msvc)   ZIP=rustdesk-windows-x64.zip ;;
             x86_64-unknown-linux-gnu) ZIP=rustdesk-linux-x64.zip   ;;
           esac
