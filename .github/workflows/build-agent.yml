@@ -234,6 +234,46 @@ jobs:
           echo "Imported. Identities now available:"
           security find-identity -v -p codesigning build.keychain
 
+      # Deep-re-sign every bundled third-party binary with our own
+      # Developer ID cert BEFORE Tauri builds. Notarytool inspects
+      # every executable + framework inside the .app; if any inner
+      # signature was issued by a different cert (or self-signed
+      # like upstream RustDesk builds), notarization rejects with
+      # "The signature of the binary is invalid" and Tauri's build
+      # step fails at the notarize stage.
+      #
+      # `codesign --force --deep --sign … --options runtime` overwrites
+      # every existing signature top-down. --deep is deprecated but
+      # still the pragmatic way to re-sign nested frameworks; the
+      # replacement (individual `codesign` calls per Mach-O) works
+      # too but is ~40 lines here vs 3.
+      - name: Deep-re-sign bundled third-party binaries
+        if: matrix.os == 'macos-14'
+        env:
+          IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -e
+          BASE=agent/src-tauri/resources
+          # RustDesk (whole .app bundle). Its own upstream signature is
+          # invalid outside its own distribution channel — strip + re-sign.
+          if [ -d "$BASE/rustdesk/RustDesk.app" ]; then
+            echo "Re-signing RustDesk.app…"
+            codesign --force --deep --sign "$IDENTITY" \
+              --options runtime --timestamp \
+              --keychain build.keychain \
+              "$BASE/rustdesk/RustDesk.app"
+          fi
+          # ffmpeg (single Mach-O binary). Downloaded from our Supabase
+          # bucket — was built ad-hoc without a Developer ID signature.
+          if [ -f "$BASE/ffmpeg" ]; then
+            echo "Re-signing ffmpeg…"
+            codesign --force --sign "$IDENTITY" \
+              --options runtime --timestamp \
+              --keychain build.keychain \
+              "$BASE/ffmpeg"
+          fi
+          echo "Third-party binaries re-signed under our Developer ID."
+
       # Materialise the App Store Connect API .p8 to disk — Tauri's
       # bundler + xcrun notarytool both take a file path (not the key
       # contents inline). Location is under RUNNER_TEMP so it vanishes
@@ -422,7 +462,38 @@ jobs:
             --version "$VERSION" \
             --install-location "/" \
             --scripts "$SCRIPTS_DIR" \
+            "agent/dist-mac/${{ steps.remote.outputs.name }}.unsigned"
+
+          # Sign the outer .pkg with the "Developer ID Installer"
+          # certificate so Gatekeeper trusts the installer itself
+          # (not just the .app inside it). Without this the customer
+          # sees an "unidentified developer" prompt at pkg-open time
+          # even though the .app is notarized. productsign is the
+          # macOS-signed-package-signing utility; identity has to be
+          # an Installer cert, not the Application cert.
+          #
+          # The build.keychain was created by the earlier "Import
+          # Apple Developer ID cert" step and had productsign
+          # authorised via -T /usr/bin/productsign.
+          productsign --sign "${{ secrets.APPLE_INSTALLER_IDENTITY }}" \
+            --keychain build.keychain \
+            "agent/dist-mac/${{ steps.remote.outputs.name }}.unsigned" \
             "agent/dist-mac/${{ steps.remote.outputs.name }}"
+          rm "agent/dist-mac/${{ steps.remote.outputs.name }}.unsigned"
+
+          # Notarize the pkg — pkg notarization is separate from the
+          # .app notarization done during `tauri build`. Uses the same
+          # App Store Connect API key. --wait blocks until Apple's
+          # servers issue a ticket (~2-5 min). Ticket is then stapled
+          # so Gatekeeper approves the pkg without a network call.
+          xcrun notarytool submit \
+            "agent/dist-mac/${{ steps.remote.outputs.name }}" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "${{ secrets.APPLE_API_KEY_ID }}" \
+            --issuer "${{ secrets.APPLE_API_ISSUER_ID }}" \
+            --wait
+          xcrun stapler staple "agent/dist-mac/${{ steps.remote.outputs.name }}"
+          echo "Pkg signed + notarized + stapled."
 
       - name: Locate artifact (passthrough)
         if: matrix.packager == 'passthrough'
