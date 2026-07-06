@@ -127,23 +127,21 @@ export default function SetupPage() {
   const { organization } = useAuth();
   const { agents, createAgent } = useAgents();
 
-  // Pull the live release version from the same latest.json the desktop agents
-  // poll for auto-updates. This way bumping the version in tauri.conf.json (+
-  // shipping a new build) is the only step admins need — the dashboard's
-  // "Latest Version" label and per-card version chips update automatically.
-  const [agentVersion, setAgentVersion] = useState(FALLBACK_VERSION);
-  useEffect(() => {
-    let alive = true;
-    fetch(`${RELEASES_BASE}/latest.json`, { cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((m) => { if (alive && m?.version) setAgentVersion(String(m.version)); })
-      .catch(() => { /* keep fallback */ });
-    return () => { alive = false; };
-  }, []);
-  // Derive the file-ref from the live version (e.g. "0.2.0" → "v0.2.0") so the
-  // download URLs always match the artifacts CI just uploaded. Fall back to the
-  // hard-coded BUILD_REF if latest.json is unreachable for some reason.
-  const ref = agentVersion ? `v${agentVersion}` : BUILD_REF;
+  // Historically we fetched the version from latest.json (the same manifest
+  // desktop agents poll for auto-updates) so the Setup page reflected the
+  // exact same release. That coupling breaks when we ship a signed pkg
+  // OUTSIDE the auto-updater pipeline (e.g. v0.6.15 was hand-notarized to
+  // work around GitHub Actions notarize timeouts + Apple queue congestion —
+  // the .pkg artifacts are on Supabase but the .app.tar.gz updater bundles
+  // are not, so latest.json stays on the older version until the next CI
+  // green build).
+  //
+  // Fix: pin the Setup page display to BUILD_REF / FALLBACK_VERSION —
+  // whatever the admin bumped last commit is what customers download.
+  // Auto-updater keeps its own truth via latest.json; the two views can
+  // legitimately be out of sync during a hotfix window.
+  const agentVersion = FALLBACK_VERSION;
+  const ref = BUILD_REF;
   const osData = buildOsData(agentVersion, ref);
 
   const licenseKey = organization?.license_key ?? '—';
