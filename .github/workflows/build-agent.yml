@@ -419,18 +419,61 @@ jobs:
           set -e
           APP=$(ls -d agent/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app | head -1)
           ZIP="$RUNNER_TEMP/$(basename "$APP").zip"
-          # notarytool wants a zip or dmg, not a raw .app. `ditto -c -k`
-          # is the Apple-recommended zip method — preserves xattrs +
-          # symlinks that plain `zip` would drop.
+          # `ditto -c -k --keepParent` — Apple-recommended zip; keeps
+          # xattrs + symlinks that `zip -r` would drop and break the
+          # nested-code signatures.
           ditto -c -k --keepParent "$APP" "$ZIP"
-          xcrun notarytool submit "$ZIP" \
+
+          # Submit once (no --wait) so we own the submission ID even
+          # if the poll leg later hits a network hiccup. `--wait` on
+          # its own has bitten us before: GitHub runner's network
+          # dropped mid-poll (NSURLError -1009) and the whole notarize
+          # died, forcing a resubmit that starts Apple's ~30 min
+          # processing from scratch.
+          SUBMIT_JSON=$(xcrun notarytool submit "$ZIP" \
             --key "$APPLE_API_KEY_PATH" \
             --key-id "${{ secrets.APPLE_API_KEY_ID }}" \
             --issuer "${{ secrets.APPLE_API_ISSUER_ID }}" \
-            --wait
+            --output-format json)
+          SUBMIT_ID=$(echo "$SUBMIT_JSON" | jq -r '.id')
+          echo "notarize submission id: $SUBMIT_ID"
+
+          # Poll status with tolerance for transient network errors.
+          # Apple's notary service returns:
+          #   • In Progress   — keep polling
+          #   • Accepted      — success → staple
+          #   • Invalid       — Apple rejected the bundle → fail
+          #   • Rejected      — auth failure → fail
+          # 40 iterations × 45 s = 30 min ceiling. If we hit that
+          # without a verdict Apple is congested; fail this job and
+          # the next tag push retries. We DO NOT resubmit here —
+          # a fresh submit restarts Apple's 5-30 min queue.
+          for i in $(seq 1 40); do
+            sleep 45
+            INFO_JSON=$(xcrun notarytool info "$SUBMIT_ID" \
+              --key "$APPLE_API_KEY_PATH" \
+              --key-id "${{ secrets.APPLE_API_KEY_ID }}" \
+              --issuer "${{ secrets.APPLE_API_ISSUER_ID }}" \
+              --output-format json 2>/dev/null || echo '{"status":"NetworkError"}')
+            STATUS=$(echo "$INFO_JSON" | jq -r '.status // "NetworkError"')
+            echo "  [$i/40] $STATUS"
+            case "$STATUS" in
+              Accepted)     break ;;
+              Invalid|Rejected)
+                echo "notarize failed with $STATUS — fetching log:"
+                xcrun notarytool log "$SUBMIT_ID" \
+                  --key "$APPLE_API_KEY_PATH" \
+                  --key-id "${{ secrets.APPLE_API_KEY_ID }}" \
+                  --issuer "${{ secrets.APPLE_API_ISSUER_ID }}"
+                exit 1 ;;
+              # In Progress / NetworkError → keep polling
+            esac
+          done
+          [ "$STATUS" = "Accepted" ] || { echo "notarize did not accept within 30 min (last status: $STATUS)"; exit 1; }
+
           xcrun stapler staple "$APP"
           rm -f "$ZIP"
-          echo "✓ .app notarized + stapled."
+          echo "✓ .app notarized + stapled (submission $SUBMIT_ID)."
 
       # Read the actual product version from tauri.conf.json so artifact names
       # are deterministic across triggers (push tag, workflow_dispatch on main, …).
