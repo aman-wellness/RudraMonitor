@@ -10,8 +10,8 @@ const RELEASES_BASE = 'https://api-ems.wellnessextract.com/storage/v1/object/pub
 // File names embed the git ref (`v0.2.0` for tag pushes, `main` for branch builds).
 // We default to the latest tagged release and fetch the actual current version
 // from latest.json at runtime so the Setup page never drifts behind a code change.
-const BUILD_REF = 'v0.2.3';
-const FALLBACK_VERSION = '0.2.3';
+const BUILD_REF = 'v0.6.15';
+const FALLBACK_VERSION = '0.6.15';
 
 const buildOsData = (version: string, ref: string) => [
   {
@@ -39,12 +39,10 @@ const buildOsData = (version: string, ref: string) => [
       },
     ],
     steps: [
-      'Download the .pkg matching your Mac (Apple Silicon = M1/M2/M3, Intel = older)',
-      'IMPORTANT — clear Gatekeeper quarantine: open Terminal and run: xattr -dr com.apple.quarantine ~/Downloads/Security-Assistant-macOS-arm64-*.pkg',
-      'OR if you prefer the GUI: double-click .pkg → "Done" on the warning → System Settings → Privacy & Security → scroll down → click "Open Anyway"',
-      'Double-click the .pkg and follow the installer (admin password required)',
-      'After install, grant Screen Recording + Accessibility in System Settings → Privacy & Security → Screen Recording (toggle Security Assistant on)',
-      'Launch Security Assistant from Applications — enrollment dialog appears',
+      'Download the .pkg matching your Mac (Apple Silicon = M1/M2/M3+, Intel = older)',
+      'Double-click the .pkg — no Gatekeeper warning (build v0.6.15+ is Apple-notarized). Enter your Mac password when the installer asks.',
+      'Grant Screen Recording + Accessibility in System Settings → Privacy & Security (toggle Security Assistant on).',
+      'Launch Security Assistant from Applications — enrollment dialog appears.',
       'Paste the License Key below and your agent name. Done — agent runs silently in the background and auto-starts on every reboot.',
     ],
   },
