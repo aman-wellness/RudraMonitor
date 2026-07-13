@@ -127,9 +127,13 @@ fn ensure_installed_impl(exe_path: &std::path::Path) -> std::io::Result<()> {
 
     // Check whether the task already exists AND points at the same exe.
     // `schtasks /query /tn <name>` returns 0 if the task exists, 1 if not.
-    let query = std::process::Command::new("schtasks")
-        .args(["/query", "/tn", task_name, "/fo", "LIST", "/v"])
-        .output();
+    // no_window flag: schtasks + powershell would otherwise pop a cmd
+    // window on every agent launch and steal keyboard focus (customer
+    // saw random cmd-flashes + dropped keystrokes on Windows).
+    let mut query_cmd = std::process::Command::new("schtasks");
+    query_cmd.args(["/query", "/tn", task_name, "/fo", "LIST", "/v"]);
+    crate::win_proc::no_window(&mut query_cmd);
+    let query = query_cmd.output();
     if let Ok(o) = &query {
         if o.status.success() {
             let s = String::from_utf8_lossy(&o.stdout);
@@ -146,11 +150,12 @@ fn ensure_installed_impl(exe_path: &std::path::Path) -> std::io::Result<()> {
     // same name. /sc onlogon = trigger on user login (any user). /rl
     // limited = standard user privileges (no admin needed). /it = run
     // only if user is logged on (matches our "tray app" model).
-    let create = std::process::Command::new("schtasks")
-        .args(["/create", "/f", "/sc", "onlogon", "/rl", "limited", "/it",
-               "/tn", task_name,
-               "/tr", &format!("\"{exe}\"")])
-        .output()?;
+    let mut create_cmd = std::process::Command::new("schtasks");
+    create_cmd.args(["/create", "/f", "/sc", "onlogon", "/rl", "limited", "/it",
+                     "/tn", task_name,
+                     "/tr", &format!("\"{exe}\"")]);
+    crate::win_proc::no_window(&mut create_cmd);
+    let create = create_cmd.output()?;
     if !create.status.success() {
         log::warn!(
             "service_install: schtasks /create failed: {}",
@@ -173,9 +178,10 @@ fn ensure_installed_impl(exe_path: &std::path::Path) -> std::io::Result<()> {
            Set-ScheduledTask -InputObject $t | Out-Null \
          }}"
     );
-    let _ = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
-        .output();
+    let mut ps_cmd = std::process::Command::new("powershell");
+    ps_cmd.args(["-NoProfile", "-NonInteractive", "-Command", &ps]);
+    crate::win_proc::no_window(&mut ps_cmd);
+    let _ = ps_cmd.output();
 
     log::info!("service_install: registered Scheduled Task {task_name}");
     Ok(())

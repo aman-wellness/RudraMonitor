@@ -209,10 +209,15 @@ fn try_unmount(mount_point: &std::path::Path) -> bool {
     let drive_letter = drive.chars().next().map(|c| format!("{c}:")).unwrap_or_default();
     if drive_letter.is_empty() { return false; }
 
-    let mv = std::process::Command::new("mountvol")
-        .arg(&drive_letter)
-        .arg("/D")
-        .output();
+    // NB: crate::win_proc::no_window applies CREATE_NO_WINDOW so the child
+    // process doesn't briefly pop a console. Without that flag, spawning
+    // mountvol / powershell every 5 s (the usb_block loop cadence) makes
+    // a cmd window flash on the user's desktop AND steals focus mid-
+    // keystroke — customer symptom: "type hi nhi hota hai auto".
+    let mut mv_cmd = std::process::Command::new("mountvol");
+    mv_cmd.arg(&drive_letter).arg("/D");
+    crate::win_proc::no_window(&mut mv_cmd);
+    let mv = mv_cmd.output();
     if let Ok(o) = mv {
         if o.status.success() { return true; }
     }
@@ -222,9 +227,10 @@ fn try_unmount(mount_point: &std::path::Path) -> bool {
          if ($vol) {{ $vol.InvokeVerb('Eject') }}",
         drive_letter
     );
-    let ps = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &ps_cmd])
-        .output();
+    let mut ps_command = std::process::Command::new("powershell");
+    ps_command.args(["-NoProfile", "-NonInteractive", "-Command", &ps_cmd]);
+    crate::win_proc::no_window(&mut ps_command);
+    let ps = ps_command.output();
     matches!(ps, Ok(ref o) if o.status.success())
 }
 
@@ -243,9 +249,10 @@ fn try_mount(_drive_letter: &str) -> bool {
     // underlying disk is still attached. The cleanest "remount everything"
     // is `mountvol /R` which rescans and re-mounts all volumes that lost
     // their assignment. Cheap enough to run once per remount attempt.
-    let out = std::process::Command::new("mountvol")
-        .arg("/R")
-        .output();
+    let mut cmd = std::process::Command::new("mountvol");
+    cmd.arg("/R");
+    crate::win_proc::no_window(&mut cmd);
+    let out = cmd.output();
     matches!(out, Ok(ref o) if o.status.success())
 }
 
