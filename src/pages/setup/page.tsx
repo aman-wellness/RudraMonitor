@@ -10,8 +10,11 @@ const RELEASES_BASE = 'https://api-ems.wellnessextract.com/storage/v1/object/pub
 // File names embed the git ref (`v0.2.0` for tag pushes, `main` for branch builds).
 // We default to the latest tagged release and fetch the actual current version
 // from latest.json at runtime so the Setup page never drifts behind a code change.
-const BUILD_REF = 'v0.6.15';
-const FALLBACK_VERSION = '0.6.15';
+// Only used if latest.json is unreachable at page-load time. Bump these
+// after a big release so the fallback stays fresh; the useEffect below
+// overwrites both when the manifest fetch succeeds (which is nearly always).
+const BUILD_REF = 'v0.6.17';
+const FALLBACK_VERSION = '0.6.17';
 
 const buildOsData = (version: string, ref: string) => [
   {
@@ -127,21 +130,28 @@ export default function SetupPage() {
   const { organization } = useAuth();
   const { agents, createAgent } = useAgents();
 
-  // Historically we fetched the version from latest.json (the same manifest
-  // desktop agents poll for auto-updates) so the Setup page reflected the
-  // exact same release. That coupling breaks when we ship a signed pkg
-  // OUTSIDE the auto-updater pipeline (e.g. v0.6.15 was hand-notarized to
-  // work around GitHub Actions notarize timeouts + Apple queue congestion —
-  // the .pkg artifacts are on Supabase but the .app.tar.gz updater bundles
-  // are not, so latest.json stays on the older version until the next CI
-  // green build).
+  // Pull the live release version from the same latest.json the desktop
+  // agents poll for auto-updates. Bumping the version in tauri.conf.json
+  // (+ shipping a new build via CI) is the only step admins need — the
+  // Setup page's "Latest Version" label + per-card version chips update
+  // automatically on next page load. Fallback pins to BUILD_REF only if
+  // latest.json is unreachable (offline / storage outage).
   //
-  // Fix: pin the Setup page display to BUILD_REF / FALLBACK_VERSION —
-  // whatever the admin bumped last commit is what customers download.
-  // Auto-updater keeps its own truth via latest.json; the two views can
-  // legitimately be out of sync during a hotfix window.
-  const agentVersion = FALLBACK_VERSION;
-  const ref = BUILD_REF;
+  // (This coupling was intentionally broken during the v0.6.15 hand-
+  // notarization window when .pkg artifacts existed OUTSIDE latest.json.
+  // Now that CI reliably writes latest.json for every tag, we're back on
+  // the auto-track — see git history if you're wondering why the
+  // useEffect looks slightly over-commented.)
+  const [agentVersion, setAgentVersion] = useState(FALLBACK_VERSION);
+  useEffect(() => {
+    let alive = true;
+    fetch(`${RELEASES_BASE}/latest.json`, { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((m) => { if (alive && m?.version) setAgentVersion(String(m.version)); })
+      .catch(() => { /* keep fallback */ });
+    return () => { alive = false; };
+  }, []);
+  const ref = agentVersion ? `v${agentVersion}` : BUILD_REF;
   const osData = buildOsData(agentVersion, ref);
 
   const licenseKey = organization?.license_key ?? '—';
