@@ -204,34 +204,25 @@ async function revoke(admin: ReturnType<typeof createClient>, callerId: string, 
     detail.google = { ok: true, error: "not provisioned" };
   }
 
-  // ---- Hardware: auto-unassign every device this employee currently holds.
-  //      Devices go back to status='in_stock' (recoverable for stage-3 handover
-  //      review). The assignment history row gets unassign_reason='offboarding'
-  //      so finance/IT audit can trace which devices were released and when.
-  const { data: assets } = await admin
+  // ---- Hardware: do NOT touch hardware_assets at stage 2. Devices stay
+  // assigned to the employee until IT physically confirms handover at
+  // stage 3 (Complete). Reclaiming here breaks the stage-3 UI — its
+  // "assigned devices" auto-fetch (filter `status = 'assigned'`) returns
+  // an empty list, so IT can't see what was supposed to be handed back
+  // and has to manually type serial + notes. See customer report
+  // 2026-07-15. The stage-3 Complete handler further down flips assets
+  // back to in_stock + closes the hardware_assignments rows, which is
+  // where the reclaim semantically belongs.
+  const { data: heldAssetsPreview } = await admin
     .from("hardware_assets")
     .select("id")
-    .eq("assigned_employee_id", emp.id);
-  if (assets?.length) {
-    await admin.from("hardware_assignments")
-      .update({
-        unassigned_at: new Date().toISOString(),
-        unassigned_by: callerId,
-        unassign_reason: "offboarding",
-      })
-      .in("asset_id", assets.map((a: { id: string }) => a.id))
-      .is("unassigned_at", null);
-    await admin.from("hardware_assets")
-      .update({
-        assigned_employee_id: null,
-        unassigned_at: new Date().toISOString(),
-        status: "in_stock",
-      })
-      .in("id", assets.map((a: { id: string }) => a.id));
-    detail.hardware = { ok: true, unassigned_count: assets.length };
-  } else {
-    detail.hardware = { ok: true, unassigned_count: 0 };
-  }
+    .eq("assigned_employee_id", emp.id)
+    .eq("status", "assigned");
+  detail.hardware = {
+    ok: true,
+    still_assigned_count: heldAssetsPreview?.length ?? 0,
+    note: "auto-unassign deferred to stage-3 completion",
+  };
 
   const now = new Date().toISOString();
   await admin.from("offboardings").update({
