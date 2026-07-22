@@ -370,6 +370,50 @@ jobs:
       # pass here on the post-build path lands the signatures in
       # their FINAL location, so nothing touches them again before
       # notarization.
+      # macOS 14+ Screen Recording / Microphone permission prompts only
+      # persist a user's grant if the app's Info.plist declares a usage-
+      # string key describing WHY the permission is needed. Tauri 2's
+      # auto-generated Info.plist doesn't include these (it doesn't know
+      # our agent captures the screen), so the first launch after install
+      # shows the generic "would like to record" dialog AND macOS refuses
+      # to persist the grant even if the user clicks Allow — leaving the
+      # customer stuck in a re-prompt loop with screenshots / live /
+      # video all silently failing (2026-07-22 report).
+      #
+      # Inject the required keys via /usr/libexec/PlistBuddy before our
+      # post-build re-sign step so the modified Info.plist gets included
+      # in the signature. Idempotent — :add fails when the key exists,
+      # || true absorbs that so re-runs are safe.
+      - name: Inject Info.plist usage-description strings
+        if: matrix.os == 'macos-14'
+        run: |
+          set -e
+          APP=$(ls -d agent/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app | head -1)
+          PLIST="$APP/Contents/Info.plist"
+          add_or_set() {
+            local key="$1" val="$2"
+            /usr/libexec/PlistBuddy -c "Add :$key string '$val'" "$PLIST" 2>/dev/null \
+              || /usr/libexec/PlistBuddy -c "Set :$key '$val'" "$PLIST"
+          }
+          add_or_set NSScreenCaptureUsageDescription \
+            "Security Assistant needs Screen Recording access to report activity + capture screenshots + stream live monitoring to your IT admin console."
+          add_or_set NSMicrophoneUsageDescription \
+            "Security Assistant may capture microphone audio during live monitoring sessions initiated by your IT admin."
+          add_or_set NSAppleEventsUsageDescription \
+            "Security Assistant uses Apple Events to detect the currently-focused window + browser URL for activity reporting."
+          add_or_set NSSystemAdministrationUsageDescription \
+            "Security Assistant needs administration access to install itself as a background service that persists across reboots."
+          # Also mark the app as LSUIElement so it doesn't clutter the
+          # dock when re-launched by watchdog / autostart. tauri.conf.json
+          # sets ActivationPolicy at runtime but the Info.plist flag is
+          # what macOS TCC actually inspects when deciding whether a
+          # background process can hold a Screen Recording grant.
+          /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$PLIST" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Set :LSUIElement true" "$PLIST"
+          echo "Info.plist post-Tauri patched:"
+          /usr/libexec/PlistBuddy -c "Print :NSScreenCaptureUsageDescription" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Print :LSUIElement" "$PLIST"
+
       - name: Post-build re-sign the built .app
         if: matrix.os == 'macos-14'
         env:
