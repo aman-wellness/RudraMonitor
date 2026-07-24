@@ -788,21 +788,40 @@ export function useProductivityPerAgent(sinceHours: number) {
       p_since: since,
     });
     if (!error && data) {
-      type Raw = Omit<PerAgentAgg, 'productivity_pct'>;
+      type Raw = Omit<PerAgentAgg, 'productivity_pct'> & { unproductive_seconds?: number | string };
       const map: Record<string, PerAgentAgg> = {};
       for (const r of data as Raw[]) {
         const active = Number(r.active_seconds) || 0;
-        const weighted = Number(r.weighted_seconds) || 0;
+        // weighted_seconds is now `productive_seconds` (migration 0118).
+        // The 0.5 neutral-fallback that used to pin every agent at 50%
+        // is gone — an app has to match an explicit 'productive' rule
+        // to contribute here.
+        const productive = Number(r.weighted_seconds) || 0;
+        const unproductive = Number(r.unproductive_seconds ?? 0) || 0;
+        const categorized = productive + unproductive;
+        // productivity_pct semantics:
+        //   categorized > 0 → productive share of rule-matched time
+        //   categorized = 0 → 0 (no productivity_rules match anything,
+        //                        so productivity is undefined; UI can
+        //                        interpret 0 with 0 categorized as
+        //                        "N/A" and render "—" if it wants).
+        // Reason we don't emit a real `null`: dashboard call sites
+        // currently type this as `number`; changing to `number | null`
+        // ripples through downstream components. Callers that want
+        // "N/A" detection should check `weighted_seconds === 0 &&
+        // unproductive_seconds === 0` explicitly.
         map[r.agent_id] = {
           agent_id: r.agent_id,
           active_seconds: active,
-          weighted_seconds: weighted,
+          weighted_seconds: productive,
           idle_seconds: Number(r.idle_seconds) || 0,
           app_switches: Number(r.app_switches) || 0,
           browser_events: Number(r.browser_events) || 0,
           screenshots: Number(r.screenshots) || 0,
           alerts_count: Number(r.alerts_count) || 0,
-          productivity_pct: active > 0 ? Math.round((weighted / active) * 100) : 0,
+          productivity_pct: categorized > 0
+            ? Math.round((productive / categorized) * 100)
+            : 0,
         };
       }
       setByAgent(map);

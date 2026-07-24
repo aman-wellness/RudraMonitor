@@ -307,35 +307,30 @@ function buildDetail(
   const firstActivity = Number.isFinite(earliestMs) ? new Date(earliestMs).toISOString() : null;
   const lastActivity  = Number.isFinite(latestMs)   ? new Date(latestMs).toISOString()   : null;
 
-  // System On + Active semantics — expected by customers auditing
-  // hours worked (report 2026-07-24): if the agent's first activity of
-  // the day was at 09:46 and last at 17:06, System On MUST read 7h 20m
-  // (the wall clock — machine was demonstrably on the whole time; the
-  // agent kept polling and emitting rows).
+  // System On + Idle + Active semantics — customer feedback 2026-07-24:
+  // "if agent logged in 09:46 and logged out 17:06 (wall 7h 20m), showing
+  // Active 5h 46m + Idle 15m (= 6h 01m accounted) is wrong; 1h 19m has to
+  // land somewhere". Customer's next clarification: "if laptop is on for
+  // 10 min with no activity, it should count as idle". So gaps must
+  // roll into IDLE, not vanish into nowhere and not count as active.
   //
-  // Prior code capped System On to the sum of app + browser focus
-  // durations. That under-reported by 30–90 min per day because
-  // apps+browser focus don't cover 100% of on-time: brief gaps between
-  // an app losing focus and the next one gaining focus (Alt-Tab pause,
-  // desktop click, screensaver seconds, network switch) leave no focus
-  // row but the user IS still at the machine. Customers reading the
-  // card saw "Active 6h 29m" for a genuinely 7h+ day and (rightly)
-  // called it wrong.
+  // Formula:
+  //   System On = wall clock (first → last activity), capped to range.
+  //   Idle      = max(explicit idle-row sum, wall - focus)
+  //               — takes the LARGER of what the agent explicitly
+  //                 flagged (>= 5 min of true keyboard/mouse idle) and
+  //                 the wall-clock gap not covered by any tracked
+  //                 app/browser row (walked-away-at-EOD, screensaver,
+  //                 brief AFKs below the 5-min agent threshold).
+  //   Active    = System On - Idle.
   //
-  // New formula:
-  //   System On = wall clock (first → last activity), capped to the
-  //               selected range so a "today" view can't exceed 24h.
-  //   Active    = System On - Idle (only explicit idle events subtract).
-  //   Idle      = explicit idle-row sum (unchanged).
-  //
-  // rawFocusSec is retained for the future "Focused time" secondary
-  // metric (how much of System On was in a tracked app/browser window)
-  // but no longer gates System On. Aditya Pandey 2026-07-24 example:
+  // Aditya Pandey 2026-07-24 example:
   //   wall_sec        26 400 s (7h 20m)
-  //   focus_sec       24 334 s (6h 45m)  ← was clamping System On here
-  //   idle_sec           966 s (16m)
+  //   focus_sec       24 334 s (6h 45m)
+  //   explicit idle      966 s (16m)
   //   → System On     7h 20m
-  //   → Active        7h  4m  = 7h 20m - 16m
+  //   → Idle          max(16m, 35m) = 35m   ← gap now credited as idle
+  //   → Active        6h 45m                 ← matches focused time
   const wallStart = firstActivity ? new Date(firstActivity).getTime() : null;
   const wallEnd = lastActivity ? new Date(lastActivity).getTime() : null;
   const wallSec = wallStart != null && wallEnd != null
@@ -344,11 +339,14 @@ function buildDetail(
   const rangeCapSec = rangeStart && rangeEnd
     ? Math.max(0, Math.floor((rangeEnd.getTime() - rangeStart.getTime()) / 1000))
     : Infinity;
-  // Cap wall_sec to range in case someone picked a narrow window that
-  // ends BEFORE the last activity we fetched (edge case — the query
-  // filter usually prevents it, but the cap is cheap insurance).
   const systemOnSec = Math.min(wallSec, rangeCapSec);
-  const totalActiveSec = Math.max(0, systemOnSec - totalIdleSec);
+  // Idle rolls up any wall-clock time not covered by a focus row.
+  // Explicit idle rows and focus rows can overlap (the agent emits
+  // idle separately even while an app is still marked focused), so
+  // take the max not the sum — sum would double-count.
+  const unfocusedGapSec = Math.max(0, systemOnSec - rawFocusSec);
+  const effectiveIdleSec = Math.max(totalIdleSec, unfocusedGapSec);
+  const totalActiveSec = Math.max(0, systemOnSec - effectiveIdleSec);
 
   const appBuckets = new Map<string, number>();
   for (const r of apps) {
@@ -450,7 +448,10 @@ function buildDetail(
     screenshotsCount: screenshots.length,
     alertsCount: alertCount,
     sessionsCount: apps.length + browser.length,
-    idleTime: formatHM(totalIdleSec),
+    // Report effective idle (explicit rows OR unfocused wall gaps,
+    // whichever's larger) so the card matches the arithmetic:
+    //   System On = Active + Idle
+    idleTime: formatHM(effectiveIdleSec),
     timeline,
     appsTime,
   };
