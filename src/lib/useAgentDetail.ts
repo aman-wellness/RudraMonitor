@@ -307,9 +307,35 @@ function buildDetail(
   const firstActivity = Number.isFinite(earliestMs) ? new Date(earliestMs).toISOString() : null;
   const lastActivity  = Number.isFinite(latestMs)   ? new Date(latestMs).toISOString()   : null;
 
-  // Cap "system on" to wall-clock between first→last activity (or the selected
-  // range if narrower). Without this cap, overlapping focus + idle rows can
-  // sum to > 24h for a "today" view.
+  // System On + Active semantics — expected by customers auditing
+  // hours worked (report 2026-07-24): if the agent's first activity of
+  // the day was at 09:46 and last at 17:06, System On MUST read 7h 20m
+  // (the wall clock — machine was demonstrably on the whole time; the
+  // agent kept polling and emitting rows).
+  //
+  // Prior code capped System On to the sum of app + browser focus
+  // durations. That under-reported by 30–90 min per day because
+  // apps+browser focus don't cover 100% of on-time: brief gaps between
+  // an app losing focus and the next one gaining focus (Alt-Tab pause,
+  // desktop click, screensaver seconds, network switch) leave no focus
+  // row but the user IS still at the machine. Customers reading the
+  // card saw "Active 6h 29m" for a genuinely 7h+ day and (rightly)
+  // called it wrong.
+  //
+  // New formula:
+  //   System On = wall clock (first → last activity), capped to the
+  //               selected range so a "today" view can't exceed 24h.
+  //   Active    = System On - Idle (only explicit idle events subtract).
+  //   Idle      = explicit idle-row sum (unchanged).
+  //
+  // rawFocusSec is retained for the future "Focused time" secondary
+  // metric (how much of System On was in a tracked app/browser window)
+  // but no longer gates System On. Aditya Pandey 2026-07-24 example:
+  //   wall_sec        26 400 s (7h 20m)
+  //   focus_sec       24 334 s (6h 45m)  ← was clamping System On here
+  //   idle_sec           966 s (16m)
+  //   → System On     7h 20m
+  //   → Active        7h  4m  = 7h 20m - 16m
   const wallStart = firstActivity ? new Date(firstActivity).getTime() : null;
   const wallEnd = lastActivity ? new Date(lastActivity).getTime() : null;
   const wallSec = wallStart != null && wallEnd != null
@@ -318,7 +344,10 @@ function buildDetail(
   const rangeCapSec = rangeStart && rangeEnd
     ? Math.max(0, Math.floor((rangeEnd.getTime() - rangeStart.getTime()) / 1000))
     : Infinity;
-  const systemOnSec = Math.min(rawFocusSec, wallSec || rawFocusSec, rangeCapSec);
+  // Cap wall_sec to range in case someone picked a narrow window that
+  // ends BEFORE the last activity we fetched (edge case — the query
+  // filter usually prevents it, but the cap is cheap insurance).
+  const systemOnSec = Math.min(wallSec, rangeCapSec);
   const totalActiveSec = Math.max(0, systemOnSec - totalIdleSec);
 
   const appBuckets = new Map<string, number>();
