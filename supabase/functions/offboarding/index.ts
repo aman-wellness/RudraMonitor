@@ -433,9 +433,45 @@ async function complete(admin: ReturnType<typeof createClient>, callerId: string
       .in("id", assetIds);
   }
 
+  // Auto-remove the offboarded employee from every group / team / channel
+  // / pillar / department they're a member of. Customer report 2026-07-24:
+  // offboarded users kept appearing in the Governance org chart's team
+  // rosters even though their employees.status was 'offboarded'. Cleanup
+  // has to happen at completion so downstream reports (governance
+  // membership counts, per-team dashboards) don't carry the ghost.
+  //
+  // Also revoke any credential_assignments the admin didn't explicitly
+  // pick in the stage-3 revoke list — safety net so no active credential
+  // survives an offboarding just because it wasn't ticked. Uses
+  // revoked_reason='offboarding' so audit can distinguish auto-revokes
+  // from admin-selected ones.
+  const [chanDel, pillarDel, credRev, deptUpd] = await Promise.all([
+    admin.from("gov_channel_members").delete().eq("employee_id", emp.id),
+    admin.from("gov_pillar_assignments").delete().eq("employee_id", emp.id),
+    admin.from("credential_assignments")
+      .update({ revoked_at: now, revoked_reason: "offboarding" })
+      .eq("employee_id", emp.id)
+      .is("revoked_at", null),
+    // Nullify department so the offboarded person doesn't count against
+    // team-size aggregations. `manager_id` intentionally left as-is: the
+    // reporting line is historically valid and admins may want to
+    // reparent the ex-employee's reports manually.
+    admin.from("employees").update({ department_id: null }).eq("id", emp.id),
+  ]);
+  const membershipCleanup = {
+    channels_removed:  (chanDel.data as { id: string }[] | null)?.length ?? null,
+    pillars_removed:   (pillarDel.data as { id: string }[] | null)?.length ?? null,
+    creds_revoked:     (credRev.data as { id: string }[] | null)?.length ?? null,
+    department_cleared: deptUpd.error == null,
+  };
+
   await admin.from("offboarding_events").insert({
     offboarding_id: offId, org_id: off.org_id, actor_id: callerId, event: "completed",
-    detail: { mail_ok: mail.ok, mail_error: mail.error, unassigned_assets: assetIds.length },
+    detail: {
+      mail_ok: mail.ok, mail_error: mail.error,
+      unassigned_assets: assetIds.length,
+      membership_cleanup: membershipCleanup,
+    },
   });
   await admin.from("employee_audit").insert({
     org_id: off.org_id, employee_id: emp.id, actor_id: callerId, action: "offboarding_completed",
