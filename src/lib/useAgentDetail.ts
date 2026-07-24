@@ -285,8 +285,27 @@ function buildDetail(
   const rawFocusSec = apps.concat(browser).reduce((s, r) => s + (r.duration ?? 0), 0);
   const totalIdleSec = idle.reduce((s, r) => s + (r.duration ?? 0), 0);
 
-  const firstActivity = activity[0]?.created_at ?? null;
-  const lastActivity = activity[activity.length - 1]?.created_at ?? null;
+  // `activity[]` is a concatenation of THREE sub-arrays with different
+  // sort orders — timelineData ascending, screenshotData + videoData
+  // descending. So `activity[0]` and `activity[activity.length-1]` are
+  // NOT the earliest / latest rows overall. Prior code did that and
+  // Aditya Pandey (WE-IN-35) 2026-07-24 hit it: lastActivity resolved
+  // to the OLDEST screenshot (~09:47 IST) instead of the real last row
+  // (~17:06 IST), collapsing the wall-clock window to 60 seconds and
+  // pinning System On + Active/Worked cards at 0h 00m even though
+  // 24,334 s of app/browser focus was recorded that day.
+  //
+  // Compute the true min/max across every row instead.
+  let earliestMs = Infinity;
+  let latestMs = -Infinity;
+  for (const r of activity) {
+    const t = new Date(r.created_at).getTime();
+    if (!Number.isFinite(t)) continue;
+    if (t < earliestMs) earliestMs = t;
+    if (t > latestMs) latestMs = t;
+  }
+  const firstActivity = Number.isFinite(earliestMs) ? new Date(earliestMs).toISOString() : null;
+  const lastActivity  = Number.isFinite(latestMs)   ? new Date(latestMs).toISOString()   : null;
 
   // Cap "system on" to wall-clock between first→last activity (or the selected
   // range if narrower). Without this cap, overlapping focus + idle rows can

@@ -85,13 +85,20 @@ export default function LiveTab() {
           return;
         }
         handleRef.current = handle;
-        // Belt-and-braces: if no video arrives within 12s, mark failed.
-        // LiveKit's room connects fast (~300 ms) but the agent's first
-        // frame can lag by 1-2 s on cold start; 12 s is a generous cap.
+        // Belt-and-braces: if no video arrives within 90s, mark failed.
+        // Root causes differ per OS, so tailor the hint accordingly —
+        // customers pinged us with the wrong-OS text on 2026-07-24.
+        const selectedAgent = onlineAgents.find((a) => a.id === selectedId);
+        const os = (selectedAgent?.os ?? '').toLowerCase();
+        const hint = os.includes('mac')
+          ? 'Most common cause on macOS: Screen Recording permission not granted. On the target Mac open System Settings → Privacy & Security → Screen Recording → toggle "Security Assistant" on, then quit + relaunch the agent from Applications.'
+          : os.includes('win')
+            ? 'Windows Defender first-run scan can take 30–60 s — try once more. If it still fails, verify the agent process is running under the correct user session.'
+            : 'Ensure the agent is running on the target machine and has permission to record the screen.';
         const noTrackTimer = setTimeout(() => {
           if (!cancelled && status !== 'live' && !trackRef.current) {
             setStatus('failed');
-            setErrorMsg('agent did not publish video within 90 s (Windows Defender first-run scan can take 30-60 s — try once more)');
+            setErrorMsg(`Agent did not publish video within 90 s. ${hint}`);
           }
         }, 90_000);
         // Cleanup also clears this timer.

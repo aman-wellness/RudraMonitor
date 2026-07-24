@@ -109,14 +109,16 @@ export default function AgentStatCards({
         </div>
       </div>
 
-      <div className="bg-dark-800/50 border border-dark-700/50 rounded-lg p-3 flex items-start gap-2">
-        <span className="w-4 h-4 flex items-center justify-center text-blue-400 mt-0.5 flex-shrink-0">
-          <i className="ri-information-line" />
-        </span>
-        <p className="text-xs text-gray-500">
-          <span className="text-white font-medium">No login/logout events recorded in this window.</span> This agent may be running an older agent version that doesn&apos;t emit system events, or the agent hasn&apos;t been restarted/locked/unlocked during the selected period. System-on time above is approximated from first—last activity span.
-        </p>
-      </div>
+      {logins === 0 && logouts === 0 && (
+        <div className="bg-dark-800/50 border border-dark-700/50 rounded-lg p-3 flex items-start gap-2">
+          <span className="w-4 h-4 flex items-center justify-center text-blue-400 mt-0.5 flex-shrink-0">
+            <i className="ri-information-line" />
+          </span>
+          <p className="text-xs text-gray-500">
+            <span className="text-white font-medium">No login/logout events recorded in this window.</span> This agent may be running an older agent version that doesn&apos;t emit system events, or the agent hasn&apos;t been restarted/locked/unlocked during the selected period. System-on time above is approximated from first—last activity span.
+          </p>
+        </div>
+      )}
     </>
   );
 }
