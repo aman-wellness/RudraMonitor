@@ -106,9 +106,101 @@ pub async fn record_clip() -> Result<CapturedClip> {
         .await
         .context("provisioning ffmpeg")?;
 
+    // On macOS, use the SYSTEM `screencapture` binary for the actual
+    // recording — it inherits the parent .app's TCC Screen Recording
+    // grant automatically. Bundled ffmpeg is treated by macOS TCC as a
+    // separate binary that never got a Screen Recording grant, so
+    // `-f avfoundation` silently records black frames (customer report
+    // 2026-07-27: Jomin's Mac had Screen Recording toggled on but
+    // Videos tab stayed at 0 clips because the bundled-ffmpeg path
+    // couldn't actually see the screen). ffmpeg is still invoked
+    // for the .mov → .mp4 re-encode, which needs NO screen access
+    // so the TCC quirk doesn't apply.
+    #[cfg(target_os = "macos")]
+    {
+        return tokio::task::spawn_blocking(move || record_clip_macos_native(&ffmpeg_bin))
+            .await
+            .context("screencapture+ffmpeg join")?;
+    }
+    #[cfg(not(target_os = "macos"))]
     tokio::task::spawn_blocking(move || record_clip_blocking(&ffmpeg_bin))
         .await
         .context("ffmpeg join")?
+}
+
+#[cfg(target_os = "macos")]
+fn record_clip_macos_native(ffmpeg_bin: &PathBuf) -> Result<CapturedClip> {
+    let mov = {
+        let mut p = std::env::temp_dir();
+        p.push(format!("we_{}.mov", chrono::Utc::now().timestamp_millis()));
+        p
+    };
+    let mp4 = temp_path();
+
+    // screencapture -V <seconds> -v -x -o -T 0 <path.mov>
+    //   -V N   : capture video for N seconds
+    //   -v     : silent (no shutter sound)
+    //   -x     : no notification / preview panel
+    //   -T 0   : no start delay
+    // Inherits the parent .app's TCC Screen Recording grant.
+    let sc_status = Command::new("/usr/sbin/screencapture")
+        .args(["-V", &CLIP_DURATION_SECS.to_string(), "-v", "-x", "-T", "0"])
+        .arg(&mov)
+        .stderr(Stdio::piped())
+        .output()
+        .context("spawn screencapture")?;
+    if !sc_status.status.success() {
+        // Common case: TCC not granted. `screencapture` writes nothing to
+        // stdout in that case; log the exit code + stderr so support can
+        // point the customer at System Settings → Privacy → Screen
+        // Recording quickly.
+        let err = String::from_utf8_lossy(&sc_status.stderr);
+        return Err(anyhow!(
+            "screencapture exited {} — did the user grant Screen Recording to Security Assistant? stderr: {}",
+            sc_status.status, err.trim()
+        ));
+    }
+    if !mov.exists() {
+        return Err(anyhow!("screencapture reported success but no .mov file at {mov:?}"));
+    }
+
+    // Re-encode .mov → .mp4 with the same encoding params the pre-2026-07
+    // path used, so downstream browser playback + our upload-size ceiling
+    // stay identical. Encoding doesn't need screen access → ffmpeg's
+    // sandboxed identity is a non-issue here.
+    let mut cmd = Command::new(ffmpeg_bin);
+    crate::win_proc::no_window(&mut cmd);
+    let mov_str = mov.to_string_lossy().to_string();
+    let mp4_str = mp4.to_string_lossy().to_string();
+    cmd.arg("-y")
+        .arg("-loglevel").arg("error")
+        .arg("-i").arg(&mov_str)
+        .arg("-vf").arg(SCALE_FILTER)
+        .arg("-r").arg(FRAMERATE.to_string())
+        .arg("-c:v").arg("libx264")
+        .arg("-preset").arg("ultrafast")
+        .arg("-crf").arg("28")
+        .arg("-pix_fmt").arg("yuv420p")
+        .arg("-movflags").arg("+faststart")
+        .arg("-an")
+        .arg(&mp4_str)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let ff = cmd.output().context("spawn ffmpeg re-encode")?;
+    // Best-effort cleanup of the intermediate .mov regardless of ffmpeg outcome.
+    let _ = std::fs::remove_file(&mov);
+    if !ff.status.success() {
+        let err = String::from_utf8_lossy(&ff.stderr);
+        return Err(anyhow!("ffmpeg re-encode failed ({}): {}", ff.status, err.trim()));
+    }
+
+    let bytes = std::fs::read(&mp4).context("read encoded mp4")?;
+    let _ = std::fs::remove_file(&mp4);
+    Ok(CapturedClip {
+        mp4_b64: STANDARD.encode(&bytes),
+        taken_at: Utc::now(),
+        duration_secs: CLIP_DURATION_SECS,
+    })
 }
 
 fn record_clip_blocking(ffmpeg_bin: &PathBuf) -> Result<CapturedClip> {
