@@ -160,51 +160,57 @@ export default function ReportsPage() {
 
   /* ─── export helpers ─── */
 
-  const buildCSV = (tab: ReportTab, data: typeof agents) => {
-    let headers: string[] = [];
-    let rows: string[][] = [];
-
+  // Returns [headers, rows] for a tab so both CSV + PDF paths use the
+  // exact same source arrays. Prior code duplicated headers/rows across
+  // buildCSV and would have needed a parallel duplicate for the PDF
+  // path — one struct keeps them in sync forever.
+  const buildTabRows = (tab: ReportTab, data: typeof agents): { headers: string[]; rows: string[][] } => {
     switch (tab) {
       case 'productivity':
-        headers = ['Agent Name', 'Department', 'Machine', 'Status', 'Productivity %', 'Active Hours', 'Idle Time', 'Efficiency Score'];
-        rows = data.map((a) => [
-          a.name,
-          a.department,
-          a.machine,
-          a.status,
-          String(a.productivity),
-          a.activeHours,
-          a.idleTime,
-          String(Math.round(a.productivity * 0.9)),
-        ]);
-        break;
-      case 'activity':
-        headers = ['Agent Name', 'Department', 'App Switches', 'Browser Events', 'Screenshots', 'Videos', 'Alerts', 'Total Events'];
-        rows = data.map((a) => {
-          const c = activityCounts[a.id] || { appSwitches: 0, browserEvents: 0, screenshots: 0, videos: 0, alerts: 0 };
-          return [
+        return {
+          headers: ['Agent Name', 'Department', 'Machine', 'Status', 'Productivity %', 'Active Hours', 'Idle Time', 'Efficiency Score'],
+          rows: data.map((a) => [
             a.name,
             a.department,
-            String(c.appSwitches),
-            String(c.browserEvents),
-            String(c.screenshots),
-            String(c.videos),
-            String(c.alerts),
-            String(c.appSwitches + c.browserEvents + c.screenshots + c.videos + c.alerts),
-          ];
-        });
-        break;
+            a.machine,
+            a.status,
+            String(a.productivity),
+            a.activeHours,
+            a.idleTime,
+            String(Math.round(a.productivity * 0.9)),
+          ]),
+        };
+      case 'activity':
+        return {
+          headers: ['Agent Name', 'Department', 'App Switches', 'Browser Events', 'Screenshots', 'Videos', 'Alerts', 'Total Events'],
+          rows: data.map((a) => {
+            const c = activityCounts[a.id] || { appSwitches: 0, browserEvents: 0, screenshots: 0, videos: 0, alerts: 0 };
+            return [
+              a.name,
+              a.department,
+              String(c.appSwitches),
+              String(c.browserEvents),
+              String(c.screenshots),
+              String(c.videos),
+              String(c.alerts),
+              String(c.appSwitches + c.browserEvents + c.screenshots + c.videos + c.alerts),
+            ];
+          }),
+        };
       case 'time':
-        headers = ['Agent Name', 'Department', 'Login Time', 'Logout Time', 'Total Session', 'Break Duration'];
-        rows = data.map((a) => {
-          const t = timeData[a.id] || { login: '-', logout: '-', session: '-', breaks: '-' };
-          return [a.name, a.department, t.login, t.logout, t.session, t.breaks];
-        });
-        break;
+        return {
+          headers: ['Agent Name', 'Department', 'Login Time', 'Logout Time', 'Total Session', 'Break Duration'],
+          rows: data.map((a) => {
+            const t = timeData[a.id] || { login: '-', logout: '-', session: '-', breaks: '-' };
+            return [a.name, a.department, t.login, t.logout, t.session, t.breaks];
+          }),
+        };
     }
+  };
 
-    const csv = [headers.join(','), ...rows.map((r) => r.map((cell) => `"${cell}"`).join(','))].join('\n');
-    return csv;
+  const buildCSV = (tab: ReportTab, data: typeof agents) => {
+    const { headers, rows } = buildTabRows(tab, data);
+    return [headers.join(','), ...rows.map((r) => r.map((cell) => `"${cell}"`).join(','))].join('\n');
   };
 
   const downloadFile = (content: string, filename: string, mime: string) => {
@@ -249,9 +255,96 @@ export default function ReportsPage() {
     ].join('\n');
   };
 
+  // Render a real PDF via jspdf + autotable. Client-side, no server round
+  // trip. Layout: title block on top (agent name / dept / machine / window /
+  // generated timestamp), then one section per tab with a striped table.
+  // For the multi-agent path, single section with the current tab's data.
+  const buildPDF = async (): Promise<Blob> => {
+    // Dynamic import so the ~150 KB jspdf bundle doesn't inflate the
+    // main Reports page load \u2014 only paid when the user actually clicks
+    // "PDF". Vite splits it into its own chunk.
+    const [{ default: jsPDF }, autoTableModule] = await Promise.all([
+      import('jspdf'),
+      import('jspdf-autotable'),
+    ]);
+    const autoTable = (autoTableModule as { default: (doc: unknown, opts: unknown) => void }).default;
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+
+    const singleAgent = exportTarget !== 'all'
+      ? filteredAgents.find((a) => a.id === exportTarget) ?? null
+      : null;
+
+    const windowLabel = dateRange === 'today' ? 'Today' : dateRange === 'week' ? 'This Week' : 'This Month';
+    const now = new Date().toLocaleString();
+
+    // Title block. jspdf coords: (x, y) in points from the top-left.
+    doc.setFontSize(16);
+    doc.setTextColor(20, 20, 20);
+    doc.text(
+      singleAgent ? `Agent Report \u2014 ${singleAgent.name}` : 'Reports',
+      40, 40,
+    );
+    doc.setFontSize(9);
+    doc.setTextColor(90, 90, 90);
+    const meta: string[] = singleAgent
+      ? [
+          `Department: ${singleAgent.department}`,
+          `Machine: ${singleAgent.machine}`,
+          `Status: ${singleAgent.status}`,
+          `Window: ${windowLabel}`,
+          `Generated: ${now}`,
+        ]
+      : [
+          `${filteredAgents.length} agent${filteredAgents.length === 1 ? '' : 's'}`,
+          `Tab: ${activeTab}`,
+          `Window: ${windowLabel}`,
+          `Generated: ${now}`,
+        ];
+    doc.text(meta.join('   \u00B7   '), 40, 60);
+
+    const tabs: ReportTab[] = singleAgent
+      ? ['productivity', 'activity', 'time']
+      : [activeTab];
+    const dataSlice = singleAgent ? [singleAgent] : filteredAgents;
+
+    // Track cursor y between sections so multi-tab PDFs flow naturally.
+    let startY = 80;
+    for (const tab of tabs) {
+      const { headers, rows } = buildTabRows(tab, dataSlice);
+      const label = tab === 'productivity' ? 'Productivity'
+        : tab === 'activity' ? 'Activity'
+        : 'Time Tracking';
+      doc.setFontSize(11);
+      doc.setTextColor(20, 20, 20);
+      doc.text(label, 40, startY);
+      autoTable(doc, {
+        head: [headers],
+        body: rows,
+        startY: startY + 8,
+        theme: 'striped',
+        headStyles: { fillColor: [16, 185, 129], textColor: 255, fontSize: 9 },
+        bodyStyles: { fontSize: 8, textColor: 30 },
+        margin: { left: 40, right: 40 },
+        styles: { cellPadding: 4, overflow: 'linebreak' },
+      });
+      // autoTable extends the doc with a `lastAutoTable` bookkeeping
+      // object holding the finalY coord after the table renders. Read
+      // it to know where to place the NEXT section's heading without
+      // overlapping the table above.
+      const finalY = (doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? startY;
+      startY = finalY + 30;
+      // Page break if next section wouldn't fit above the footer band.
+      if (startY > doc.internal.pageSize.getHeight() - 80) {
+        doc.addPage();
+        startY = 40;
+      }
+    }
+
+    return doc.output('blob');
+  };
+
   const handleExport = async (format: ExportFormat) => {
     setExporting(format);
-    await new Promise((r) => setTimeout(r, 1200));
 
     const dateStr = new Date().toISOString().split('T')[0];
     const singleAgent = exportTarget !== 'all'
@@ -262,26 +355,28 @@ export default function ReportsPage() {
       ? `Rudrans_${singleAgent.name.replace(/[^\w-]+/g, '_')}_full_report_${dateStr}`
       : `Rudrans_${activeTab}_report_${dateStr}`;
 
-    const csvBody = singleAgent
-      ? buildAgentFullCSV(singleAgent)
-      : buildCSV(activeTab, filteredAgents);
-
-    switch (format) {
-      case 'csv':
-        downloadFile(csvBody, `${filename}.csv`, 'text/csv;charset=utf-8;');
-        break;
-      case 'excel':
-        // BOM prefix so Excel opens UTF-8 without garbling the header.
-        downloadFile('\uFEFF' + csvBody, `${filename}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        break;
-      case 'pdf':
-        // Same body, .pdf extension \u2014 the current downloader is a shim
-        // that hands CSV as PDF; a real PDF renderer is a follow-up.
-        downloadFile(csvBody, `${filename}.pdf`, 'application/pdf');
-        break;
+    try {
+      if (format === 'pdf') {
+        const blob = await buildPDF();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = `${filename}.pdf`;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } else {
+        const csvBody = singleAgent
+          ? buildAgentFullCSV(singleAgent)
+          : buildCSV(activeTab, filteredAgents);
+        if (format === 'csv') {
+          downloadFile(csvBody, `${filename}.csv`, 'text/csv;charset=utf-8;');
+        } else {
+          // BOM prefix so Excel opens UTF-8 without garbling the header.
+          downloadFile('\uFEFF' + csvBody, `${filename}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        }
+      }
+    } finally {
+      setExporting(null);
     }
-
-    setExporting(null);
   };
 
   /* ─── summary cards ─── */
