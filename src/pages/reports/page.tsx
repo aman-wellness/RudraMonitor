@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import {
   useAgents,
@@ -113,6 +113,29 @@ export default function ReportsPage() {
   const [search, setSearch] = useState('');
   const [dateRange, setDateRange] = useState('today');
   const [exporting, setExporting] = useState<ExportFormat | null>(null);
+  // 'all' → export the current tab for every filtered agent (original
+  // behavior). An agent id → export all THREE tabs' data for that ONE
+  // agent into a single file — "complete per-agent report" customers
+  // asked for on 2026-07-27.
+  const [exportTarget, setExportTarget] = useState<string>('all');
+  // If the currently-picked agent gets filtered out (search / dept /
+  // status change), snap back to 'all' so the dropdown never shows a
+  // stale selection that doesn't correspond to a listed agent.
+  useEffect(() => {
+    if (exportTarget === 'all') return;
+    // Compute inline instead of depending on filteredAgents from below
+    // (which isn't in scope yet) — same filter logic.
+    const stillListed = agents.some((a) => {
+      if (a.id !== exportTarget) return false;
+      const matchesDept = deptFilter === 'All' || a.department === deptFilter;
+      const matchesStatus = statusFilter === 'All' || a.status === statusFilter;
+      const matchesSearch = search === '' ||
+        a.name.toLowerCase().includes(search.toLowerCase()) ||
+        a.machine.toLowerCase().includes(search.toLowerCase());
+      return matchesDept && matchesStatus && matchesSearch;
+    });
+    if (!stillListed) setExportTarget('all');
+  }, [agents, exportTarget, deptFilter, statusFilter, search]);
 
   const filteredAgents = useMemo(() => {
     return agents.filter((a) => {
@@ -196,30 +219,66 @@ export default function ReportsPage() {
     URL.revokeObjectURL(url);
   };
 
+  // Build the FULL per-agent report \u2014 every tab's data in one file,
+  // sectioned with clear headers. Used when exportTarget !== 'all'.
+  const buildAgentFullCSV = (agent: (typeof agents)[number]) => {
+    const nameSafe = agent.name.replace(/"/g, '""');
+    const header = [
+      `"AGENT REPORT \u2014 ${nameSafe}"`,
+      `"Department","${agent.department}"`,
+      `"Machine","${agent.machine}"`,
+      `"Status","${agent.status}"`,
+      `"Window","${dateRange === 'today' ? 'Today' : dateRange === 'week' ? 'This Week' : 'This Month'}"`,
+      `"Generated","${new Date().toISOString()}"`,
+      '',
+    ].join('\n');
+    // Reuse buildCSV with a single-row slice so section formatting stays
+    // consistent with the multi-agent export shape.
+    const one = [agent];
+    return [
+      header,
+      '"\u2014 Productivity \u2014"',
+      buildCSV('productivity', one),
+      '',
+      '"\u2014 Activity \u2014"',
+      buildCSV('activity', one),
+      '',
+      '"\u2014 Time Tracking \u2014"',
+      buildCSV('time', one),
+      '',
+    ].join('\n');
+  };
+
   const handleExport = async (format: ExportFormat) => {
     setExporting(format);
     await new Promise((r) => setTimeout(r, 1200));
 
     const dateStr = new Date().toISOString().split('T')[0];
-    const tabName = activeTab;
-    const filename = `Rudrans_${tabName}_report_${dateStr}`;
+    const singleAgent = exportTarget !== 'all'
+      ? filteredAgents.find((a) => a.id === exportTarget) ?? null
+      : null;
+
+    const filename = singleAgent
+      ? `Rudrans_${singleAgent.name.replace(/[^\w-]+/g, '_')}_full_report_${dateStr}`
+      : `Rudrans_${activeTab}_report_${dateStr}`;
+
+    const csvBody = singleAgent
+      ? buildAgentFullCSV(singleAgent)
+      : buildCSV(activeTab, filteredAgents);
 
     switch (format) {
-      case 'csv': {
-        const csv = buildCSV(activeTab, filteredAgents);
-        downloadFile(csv, `${filename}.csv`, 'text/csv;charset=utf-8;');
+      case 'csv':
+        downloadFile(csvBody, `${filename}.csv`, 'text/csv;charset=utf-8;');
         break;
-      }
-      case 'excel': {
-        const csv = '\uFEFF' + buildCSV(activeTab, filteredAgents);
-        downloadFile(csv, `${filename}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      case 'excel':
+        // BOM prefix so Excel opens UTF-8 without garbling the header.
+        downloadFile('\uFEFF' + csvBody, `${filename}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         break;
-      }
-      case 'pdf': {
-        const csv = buildCSV(activeTab, filteredAgents);
-        downloadFile(csv, `${filename}.pdf`, 'application/pdf');
+      case 'pdf':
+        // Same body, .pdf extension \u2014 the current downloader is a shim
+        // that hands CSV as PDF; a real PDF renderer is a follow-up.
+        downloadFile(csvBody, `${filename}.pdf`, 'application/pdf');
         break;
-      }
     }
 
     setExporting(null);
@@ -296,7 +355,21 @@ export default function ReportsPage() {
               {filteredAgents.length} agents · {dateRange === 'today' ? 'Today' : dateRange === 'week' ? 'This Week' : 'This Month'}
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Target selector — pick "All agents" for the current tab,
+                or a single agent to export their full multi-tab report. */}
+            <select
+              value={exportTarget}
+              onChange={(e) => setExportTarget(e.target.value)}
+              disabled={!!exporting}
+              title="Choose export target"
+              className="px-3 py-2 rounded-lg bg-dark-800 text-gray-300 text-xs font-medium border border-dark-700 hover:bg-dark-700 transition-colors focus:outline-none disabled:opacity-50 max-w-[220px] truncate"
+            >
+              <option value="all">All agents ({filteredAgents.length})</option>
+              {filteredAgents.map((a) => (
+                <option key={a.id} value={a.id}>{a.name}{a.department ? ` · ${a.department}` : ''}</option>
+              ))}
+            </select>
             <button
               onClick={() => handleExport('csv')}
               disabled={!!exporting}
