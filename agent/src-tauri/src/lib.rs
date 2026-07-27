@@ -1667,23 +1667,40 @@ async fn check_for_update(
                 .await;
             match result {
                 Ok(_) => {
-                    // DO NOT call handle.restart() here. On Windows the
-                    // installer (NSIS passive) is still swapping files
-                    // when this branch runs — restarting the current exe
-                    // would relaunch the OLD binary alongside the
-                    // in-flight installer and race the file-swap step.
-                    // The installer relaunches the new version itself
-                    // once files are in place. On macOS the same holds
-                    // for the .app-tarball swap step.
-                    //
-                    // Flip the latch so the polling loop stops firing
-                    // check() while the installer works. Without this,
-                    // the fast-lane hits check() again in 60 s, sees
-                    // our still-old baked version < latest.json, and
-                    // spawns a second concurrent installer — the exact
-                    // "continuous update" symptom customers reported.
+                    // Latch stops the polling loop from firing check()
+                    // again while the installer works. Prevents the
+                    // v0.6.7 "continuous update" loop where fast-lane
+                    // hit check() every 60 s, saw our still-old baked
+                    // version < latest.json, and spawned a second
+                    // concurrent installer over the first.
                     install_fired.store(true, std::sync::atomic::Ordering::SeqCst);
-                    log::info!("updater: install kicked off — suppressing further checks; installer will restart us");
+                    log::info!("updater: install kicked off — suppressing further checks");
+
+                    // macOS: download_and_install is SYNCHRONOUS with the
+                    // .app.tar.gz extract + swap. When Ok() returns, the
+                    // new .app is on disk. But — unlike NSIS on Windows —
+                    // Tauri's Mac updater does NOT spawn a relauncher, so
+                    // the OLD running process keeps executing indefinitely
+                    // with install_fired latched forever. Result: the Mac
+                    // catches ONE update then goes silent for all future
+                    // versions. That's how every macOS agent got stranded
+                    // on v0.6.18 while Windows kept marching forward.
+                    //
+                    // Fix: exit(0) after a successful Mac install. The
+                    // LaunchAgent (KeepAlive=true) respawns us from the
+                    // just-swapped /Applications/Security Assistant.app,
+                    // which is the NEW version, with install_fired=false.
+                    //
+                    // Windows path is left untouched — NSIS relaunches
+                    // the fresh exe itself once its file-swap finishes,
+                    // and we must NOT beat it to the punch.
+                    #[cfg(target_os = "macos")]
+                    {
+                        log::info!("updater: macOS — exiting so LaunchAgent respawns the new .app");
+                        // Give the log a moment to flush before we die.
+                        sleep(Duration::from_millis(500)).await;
+                        std::process::exit(0);
+                    }
                 }
                 Err(e) => {
                     // Windows: most common failure modes are UAC declined,

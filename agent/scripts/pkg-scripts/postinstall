@@ -58,6 +58,28 @@ fi
 # right-clicking → Open on a Safari-downloaded .app. Recursively applied.
 /usr/bin/xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
 
+# ---------------------------------------------------------------------------
+# Give the console user ownership of the .app so Tauri's in-process auto-
+# updater can atomically replace it on future version bumps. Without this
+# every new .app.tar.gz downloads + verifies successfully but the actual
+# swap (mv the new .app over the old one in /Applications/) fails EACCES
+# because the pkg install left the bundle root-owned. That's exactly what
+# stranded every macOS agent on v0.6.18 while Windows agents happily
+# auto-updated to v0.6.19 on 2026-07-27.
+#
+# We chown to the CONSOLE USER (the person logged into the desktop) rather
+# than a hardcoded uid. That's who runs the LaunchAgent, and therefore who
+# runs Tauri's updater. On a shared Mac only that user can push updates
+# by hand — auto-updates during that user's session still work because
+# they're the ones executing the .app anyway.
+CONSOLE_USER=$(/usr/bin/stat -f%Su /dev/console 2>/dev/null || echo "")
+if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+  /usr/sbin/chown -R "$CONSOLE_USER:admin" "$APP" 2>/dev/null || true
+  # Group-writable so any local admin can also drive updates if the app is
+  # ever managed by a different account.
+  /bin/chmod -R g+w "$APP" 2>/dev/null || true
+fi
+
 # Customers upgrading from a prior ad-hoc-signed build have stale TCC entries
 # keyed by the old cdhash. Reset them so the first launch of THIS signed build
 # re-prompts ONCE, captures the grant under the new (stable) signing identity,
