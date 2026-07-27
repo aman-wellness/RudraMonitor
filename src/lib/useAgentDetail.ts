@@ -33,6 +33,7 @@ export type AgentDetail = {
   appsUsed: number;
   sitesVisited: number;
   screenshotsCount: number;
+  videosCount: number;
   alertsCount: number;
   sessionsCount: number;
   idleTime: string;
@@ -274,6 +275,7 @@ function buildDetail(
   const browser = activity.filter((a) => a.activity_type === 'browser');
   const idle = activity.filter((a) => a.activity_type === 'idle');
   const screenshots = activity.filter((a) => a.activity_type === 'screenshot');
+  const videos = activity.filter((a) => a.activity_type === 'video');
   const sessions = activity.filter((a) => a.activity_type === 'session_start');
 
   // Focus session durations include time the user was idle on that window
@@ -446,6 +448,7 @@ function buildDetail(
     appsUsed: appBuckets.size,
     sitesVisited: sites.size,
     screenshotsCount: screenshots.length,
+    videosCount: videos.length,
     alertsCount: alertCount,
     sessionsCount: apps.length + browser.length,
     // Report effective idle (explicit rows OR unfocused wall gaps,

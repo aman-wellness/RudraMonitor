@@ -181,7 +181,7 @@ export default function AgentDetailPage() {
   const counts: Record<string, number | null> = {
     applications: agent.appsUsed,
     browser: agent.sitesVisited,
-    videos: 0,
+    videos: agent.videosCount,
     screenshots: agent.screenshotsCount,
     timeline: null,
     alerts: agent.alertsCount,
