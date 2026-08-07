@@ -194,6 +194,26 @@ async fn handle_event(
                 }
             });
         }
+        "signature.push" => {
+            log::info!("signature: received signature.push");
+            // Windows-only. On macOS/Linux the Outlook OWA push (Exchange
+            // PowerShell REST from the signatures-push edge fn) has already
+            // handled the user's signature — nothing local to do.
+            #[cfg(target_os = "windows")]
+            {
+                let state = state.clone();
+                let remote = remote.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = handle_signature_push(state, remote).await {
+                        log::warn!("signature.push handler failed: {e}");
+                    }
+                });
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                log::debug!("signature: ignoring signature.push (non-Windows)");
+            }
+        }
         "remote.ended" => {
             log::info!("remote: received remote.ended payload={inner_payload}");
             let remote = remote.clone();
@@ -230,6 +250,40 @@ struct RequestPayload {
 
 fn de_bool_null_as_false<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     Ok(Option::<bool>::deserialize(d)?.unwrap_or(false))
+}
+
+/// Fetch the org's active Outlook signature for this agent's user and
+/// deploy it locally. Windows only — on other OSes the OWA push path
+/// already handled the signature server-side.
+///
+/// Fires on the `signature.push` Realtime broadcast triggered by the
+/// admin's "Push signature now" button in the portal.
+#[cfg(target_os = "windows")]
+async fn handle_signature_push(state: crate::AppState, remote: Arc<super::RemoteState>) -> Result<()> {
+    let (supabase_url, anon_key, enroll_token) = {
+        let cfg = state.config.lock().await.clone();
+        let url = crate::config::supabase_url(&cfg);
+        let anon = crate::config::supabase_anon_key(&cfg);
+        let tok = cfg.enrollment.as_ref().map(|e| e.enroll_token.clone());
+        (url, anon, tok)
+    };
+    let (url, anon, token) = match (supabase_url, anon_key, enroll_token) {
+        (Some(u), Some(a), Some(t)) => (u, a, t),
+        _ => return Err(anyhow!("agent not enrolled — cannot deploy signature")),
+    };
+
+    let client = crate::api::build_client().context("build_client")?;
+
+    let last = remote.last_signature_checksum.lock().await.clone();
+    match crate::signature_deploy::deploy_now(&client, &url, &anon, &token, last.as_deref()).await {
+        Ok(new_checksum) => {
+            if let Some(c) = new_checksum {
+                *remote.last_signature_checksum.lock().await = Some(c);
+            }
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 async fn handle_request(

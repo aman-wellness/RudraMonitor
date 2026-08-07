@@ -244,6 +244,55 @@ Deno.serve(async (req) => {
 
   const applied = results.filter((r) => r.state === "applied").length;
   const failed  = results.filter((r) => r.state === "failed").length;
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Realtime broadcast — tell every Windows agent whose employee matched a
+  // pushed UPN to fetch + deploy locally. Classic Outlook Desktop can only
+  // be reached this way (Exchange REST doesn't touch %APPDATA%\Signatures
+  // unless the tenant has cloud/roaming signatures on). Broadcast is
+  // fire-and-forget — Realtime's transient delivery is fine because a fresh
+  // agent process re-deploys on next Realtime reconnect anyway.
+  // ────────────────────────────────────────────────────────────────────────
+  const pushedUpns = results.filter((r) => r.state === "applied").map((r) => r.upn);
+  if (pushedUpns.length > 0) {
+    try {
+      const { data: matchedAgents } = await admin
+        .from("agents")
+        .select("id, agent_name, os_type")
+        .eq("org_id", orgId)
+        .ilike("os_type", "windows%");
+      // Filter agents whose display name matches any of the pushed users.
+      // We join on employees.full_name (same rule as agent-signature-fetch)
+      // so agents whose employee row hasn't been created yet get skipped.
+      const { data: matchedEmps } = await admin
+        .from("employees")
+        .select("full_name, work_email")
+        .eq("org_id", orgId)
+        .in("work_email", pushedUpns);
+      const empNames = new Set((matchedEmps ?? []).map((e) => (e.full_name ?? "").toLowerCase().trim()));
+      const targetAgents = (matchedAgents ?? []).filter(
+        (a) => empNames.has((a.agent_name ?? "").toLowerCase().trim()),
+      );
+      await Promise.all(targetAgents.map(async (a) => {
+        try {
+          const ch = admin.channel(`agent:${a.id}`);
+          await ch.send({
+            type: "broadcast",
+            event: "signature.push",
+            payload: { template_id: tpl.id, at: new Date().toISOString() },
+          });
+          await admin.removeChannel(ch);
+        } catch (err) {
+          console.warn(`[signatures-push] broadcast to agent ${a.id} failed: ${(err as Error).message}`);
+        }
+      }));
+    } catch (err) {
+      // Broadcast failure doesn't fail the push — OWA already applied,
+      // agents will pick up on their next Realtime reconnect anyway.
+      console.warn(`[signatures-push] realtime broadcast wrapper failed: ${(err as Error).message}`);
+    }
+  }
+
   return json({ pushed: applied, failed, total: results.length, results }, 200, cors);
 });
 

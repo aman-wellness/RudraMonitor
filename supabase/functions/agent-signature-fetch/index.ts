@@ -158,9 +158,21 @@ Deno.serve(async (req) => {
   const text = htmlToText(html);
   const checksum = await sha256Hex(html + "|" + text);
 
+  // Signature entry name = employee's actual name, sanitized to be safe as a
+  // Windows filename (Outlook derives the dropdown label from the filename).
+  // Falls back to the agent-provided name if we can't derive one — never
+  // falls back to a brand string.
+  const rawName =
+    employeeRow?.full_name?.trim() ||
+    du?.display_name?.trim() ||
+    agent.agent_name?.trim() ||
+    "";
+  const signatureName = sanitizeFilename(rawName) || sanitizeFilename(workEmail.split("@")[0]) || "Signature";
+
   return json({
     enabled: true,
-    name: tpl.name,
+    name: tpl.name,             // admin-facing template name
+    signature_name: signatureName, // filename + Outlook dropdown label
     html,
     text,
     checksum,
@@ -238,6 +250,24 @@ function htmlToText(html: string): string {
     .replace(/&quot;/g, '"')
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+/**
+ * Strip characters Windows won't accept in a filename, collapse whitespace,
+ * and clamp length. The Outlook Signatures folder is on NTFS which forbids
+ * `\ / : * ? " < > |` and control chars. We also drop trailing dots/spaces
+ * because Explorer silently trims them and Outlook would then not find the
+ * file it just wrote.
+ */
+function sanitizeFilename(name: string): string {
+  if (!name) return "";
+  return name
+    .replace(/[\\/:*?"<>|]/g, "")
+    .replace(/[\x00-\x1f]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/[. ]+$/g, "")
+    .trim()
+    .slice(0, 60);
 }
 
 async function sha256Hex(s: string): Promise<string> {

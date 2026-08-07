@@ -40,11 +40,20 @@ use tokio::sync::Mutex;
 /// (rustdesk subprocess can't co-host multiple controllers).
 pub struct RemoteState {
     pub active_session: Mutex<Option<rustdesk_host::HostHandle>>,
+    /// Last successfully-deployed Outlook signature checksum. In-memory only
+    /// — a fresh process re-deploys on the first `signature.push` event even
+    /// if the checksum hasn't changed, which is desirable if the user
+    /// reinstalled Office and lost the registry keys. Unused on non-Windows
+    /// but kept in the shared struct for cross-platform code simplicity.
+    pub last_signature_checksum: Mutex<Option<String>>,
 }
 
 impl RemoteState {
     pub fn new() -> Self {
-        Self { active_session: Mutex::new(None) }
+        Self {
+            active_session: Mutex::new(None),
+            last_signature_checksum: Mutex::new(None),
+        }
     }
 }
 

@@ -551,7 +551,7 @@ export default function EmailSignaturesPage() {
           <h2 className="text-sm font-semibold text-gray-900 mb-3">Where this signature shows up</h2>
           <ul className="space-y-1.5 text-sm text-gray-700">
             <li><span className="text-green-600 font-bold">✓</span> <strong>Outlook Web + New Outlook</strong> — applied on New / Reply / Forward, immediately after push.</li>
-            <li><span className="text-green-600 font-bold">✓</span> <strong>Classic Outlook Desktop (Windows)</strong> — auto-deployed by the TrackForce agent v0.6.21+ every 15 minutes. Writes files to <code className="text-xs">%APPDATA%\Microsoft\Signatures\</code> and sets Outlook's default via registry. No admin, no restart.</li>
+            <li><span className="text-green-600 font-bold">✓</span> <strong>Classic Outlook Desktop (Windows)</strong> — the moment you click <em>Push signature now</em>, the Security Assistant agent v0.6.22+ receives a realtime notification and writes the signature under the user's own name to <code className="text-xs">%APPDATA%\Microsoft\Signatures\</code> plus sets it as Outlook's default via registry. No polling, no timer — pushes only when you push.</li>
             <li><span className="text-amber-600 font-bold">△</span> <strong>Outlook Mobile app</strong> — Microsoft doesn't expose a push API for mobile. Users must set the mobile signature manually once (Outlook mobile → Settings → Signature).</li>
           </ul>
         </div>
