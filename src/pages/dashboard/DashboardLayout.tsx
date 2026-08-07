@@ -122,6 +122,7 @@ const sidebarSections: SidebarSection[] = [
       { label: 'IT Hardware', href: '/employees/hardware', icon: 'ri-computer-line', requires: ['employee_management'], access: 'hardware' },
       { label: 'Offboarding', href: '/employees/offboarding', icon: 'ri-logout-box-line', requires: ['employee_management'], access: 'offboarding' },
       { label: 'Integrations', href: '/employees/integrations', icon: 'ri-plug-line', requires: ['employee_management'], access: 'integrations' },
+      { label: 'Email Signatures', href: '/employees/email-signatures', icon: 'ri-mail-settings-line', requires: ['employee_management'], access: 'integrations' },
       { label: 'Governance', href: '/governance', icon: 'ri-organization-chart', requires: ['employee_management'], access: 'governance' },
     ],
   },

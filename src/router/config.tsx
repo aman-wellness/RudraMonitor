@@ -30,6 +30,7 @@ const Agents = lazy(() => import("../pages/agents/page"));
 const Setup = lazy(() => import("../pages/setup/page"));
 const AdminPortal = lazy(() => import("../pages/admin-portal/page"));
 const EmployeesIntegrations = lazy(() => import("../pages/employees/integrations/page"));
+const EmployeesEmailSignatures = lazy(() => import("../pages/employees/email-signatures/page"));
 const Governance = lazy(() => import("../pages/governance/page"));
 // OrgSettings page merged into Admin Portal's "Branding & Policies" tab.
 // Lazy import removed (unused) — the page file is retained at
@@ -174,6 +175,7 @@ const routes: RouteObject[] = [
       { path: "/employees/credentials",  element: em(<CredentialsVault />, "credentials") },
       { path: "/employees/offboarding",  element: em(<OffboardingPipeline />, "offboarding") },
       { path: "/employees/integrations", element: em(<EmployeesIntegrations />, "integrations") },
+      { path: "/employees/email-signatures", element: em(<EmployeesEmailSignatures />, "integrations") },
       { path: "/employees/otp-settings", element: protect(access("credentials", <OtpSettings />)) },
       { path: "/employees/auto-invoice", element: protect(access("credentials", <AutoInvoice />)) },
 

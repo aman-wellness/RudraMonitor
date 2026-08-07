@@ -250,6 +250,50 @@ async function applyChange(
     } catch (e) {
       console.warn(`[m365-webhook] reverse manager sync failed for ${extId}: ${(e as Error).message}`);
     }
+
+    // Auto-apply the org's active signature template to newly-created users.
+    // Runs fire-and-forget so the webhook still returns to Graph within its
+    // response budget (Graph gives us ~30s before retrying). A single push
+    // typically completes in 2-5s; if Exchange is slow we let it finish
+    // asynchronously — the push function updates signature_push_status so the
+    // admin UI shows the outcome regardless.
+    if (n.changeType === "created") {
+      try {
+        const { data: tpl } = await admin
+          .from("signature_templates")
+          .select("id")
+          .eq("org_id", orgId)
+          .eq("is_active", true)
+          .maybeSingle();
+        if (tpl?.id) {
+          const { data: newEmp } = await admin
+            .from("employees").select("id")
+            .eq("org_id", orgId)
+            .eq("m365_user_id", extId)
+            .maybeSingle();
+          // Skip if the employee row hasn't been created yet — HR usually
+          // creates it during onboarding, and admin can manually push once
+          // the employee exists. We do NOT fall back to "all" here because
+          // that would blast every user in the org on a single-user event.
+          if (newEmp?.id) {
+            void fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/signatures-push`, {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                template_id: tpl.id,
+                org_id: orgId,
+                employee_ids: [newEmp.id],
+              }),
+            }).catch((e) => console.warn(`[m365-webhook] signature auto-push failed for ${extId}: ${(e as Error).message}`));
+          }
+        }
+      } catch (e) {
+        console.warn(`[m365-webhook] signature auto-push lookup for ${extId}: ${(e as Error).message}`);
+      }
+    }
     return;
   }
 

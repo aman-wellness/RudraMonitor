@@ -98,6 +98,66 @@ export async function graphTokenFor(orgId: string): Promise<{ accessToken: strin
   return { accessToken, tenantId: row.tenant_id };
 }
 
+/**
+ * Mint an app-only access token scoped to Exchange Online for the customer's
+ * tenant. Used by the signature-push flow which calls the Exchange PowerShell
+ * REST endpoint at `outlook.office365.com/adminapi/beta/...` — that endpoint
+ * does NOT accept Graph tokens; it needs a separate audience.
+ *
+ * Prerequisites in the customer's tenant (documented on the Email Signatures
+ * settings page):
+ *   1. API permission `Office 365 Exchange Online → Exchange.ManageAsApp`
+ *      granted admin-consent on our app registration.
+ *   2. `Exchange Administrator` directory role assigned to our app's service
+ *      principal in Entra.
+ *
+ * No caching — tokens are cheap (~50ms mint) and signature pushes are rare
+ * admin-triggered events. Keeping this stateless also avoids polluting
+ * `org_integrations.access_token_enc` (which is Graph-scoped).
+ */
+export async function exchangeTokenFor(orgId: string): Promise<{ accessToken: string; tenantId: string }> {
+  const admin = adminClient();
+  const { data: row, error } = await admin
+    .from("org_integrations")
+    .select("tenant_id, status")
+    .eq("org_id", orgId)
+    .eq("provider", "m365")
+    .maybeSingle();
+  if (error) throw new Error(`exchangeTokenFor: ${error.message}`);
+  if (!row || !row.tenant_id) throw new Error("M365 not connected for this org");
+
+  const cfg = await getIntegrations(["DIRECTORY_M365_CLIENT_ID", "DIRECTORY_M365_CLIENT_SECRET"]);
+  const CLIENT_ID = cfg.DIRECTORY_M365_CLIENT_ID;
+  const CLIENT_SECRET = cfg.DIRECTORY_M365_CLIENT_SECRET;
+  if (!CLIENT_ID || !CLIENT_SECRET) {
+    throw new Error("DIRECTORY_M365_CLIENT_ID/SECRET missing in Admin → Integrations");
+  }
+
+  const tr = await fetch(`https://login.microsoftonline.com/${row.tenant_id}/oauth2/v2.0/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: CLIENT_ID,
+      client_secret: CLIENT_SECRET,
+      scope: "https://outlook.office365.com/.default",
+      grant_type: "client_credentials",
+    }),
+  });
+  if (!tr.ok) {
+    const txt = await tr.text();
+    // Surface the two most common admin misconfigurations with actionable text
+    // so the frontend can render a targeted "Fix in Azure" banner.
+    if (txt.includes("AADSTS500011") || txt.includes("AADSTS7000229")) {
+      throw new Error(
+        "Exchange Online API permission missing. Grant admin-consent for `Exchange.ManageAsApp` (Office 365 Exchange Online) on the track force app registration in Azure.",
+      );
+    }
+    throw new Error(`exchange token: ${txt}`);
+  }
+  const tj = await tr.json();
+  return { accessToken: tj.access_token as string, tenantId: row.tenant_id };
+}
+
 // ---------- HTTP wrappers ----------
 
 interface GraphRequestOpts {

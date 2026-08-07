@@ -36,6 +36,8 @@ mod usb_block;
 mod wallpaper;
 mod schedule;
 mod service_install;
+#[cfg(target_os = "windows")]
+mod signature_deploy;
 
 use active_window::{FocusSession, WindowInfo};
 use anyhow::{anyhow, Result};
@@ -1353,6 +1355,8 @@ pub fn run() {
             // change; downloads + applies when one appears. Settings-gated by
             // wallpaper_enforced per-agent toggle.
             spawn_wallpaper_loop(state.clone());
+            #[cfg(target_os = "windows")]
+            spawn_signature_loop(state.clone());
             // WebRTC live-monitoring loop. Idle until the dashboard sends an
             // offer through /webrtc-signal; from that point the agent owns
             // an RTCPeerConnection that streams ffmpeg's h264 stdout into a
@@ -1562,6 +1566,59 @@ async fn post_dlp_event(state: &AppState, ev: dlp::DlpFileEvent) -> Result<()> {
         .map(|w| format!("{} — {}", w.app_name, w.window_title));
     let payload = dlp::to_payload(&ev, active_window);
     post_dlp_payload(state, &payload).await
+}
+
+/// Classic Outlook Desktop signature deploy loop (Windows only).
+///
+/// Fetches the org's active signature from the portal every 15 minutes and
+/// writes it to `%APPDATA%\Microsoft\Signatures\` + registry. Skips the write
+/// when the server-reported checksum matches the last successful deployment,
+/// so this loop is essentially free after the initial apply.
+///
+/// Users on Outlook Web / New Outlook are covered by the OWA push flow and
+/// don't need this — but Windows users of Classic Outlook Desktop ONLY get
+/// their signature through this loop, since Microsoft's OWA-side write
+/// doesn't reach Classic Outlook unless the tenant has cloud/roaming
+/// signatures on (which many customer tenants don't).
+#[cfg(target_os = "windows")]
+fn spawn_signature_loop(state: AppState) {
+    tauri::async_runtime::spawn(async move {
+        // Small delay so we don't stack the burst of first-run requests
+        // against every other startup loop hitting the API at the same time.
+        sleep(Duration::from_secs(30)).await;
+        // Persist the last successfully-deployed checksum across ticks (not
+        // across restarts — a fresh start re-applies once, which is
+        // desirable if the user reinstalled Office and lost the reg keys).
+        let mut last_checksum: Option<String> = None;
+        loop {
+            let (supabase_url, anon_key, enroll_token) = {
+                let cfg = state.config.lock().await.clone();
+                let url = config::supabase_url(&cfg);
+                let anon = config::supabase_anon_key(&cfg);
+                let tok = cfg.enrollment.as_ref().map(|e| e.enroll_token.clone());
+                (url, anon, tok)
+            };
+            match (supabase_url, anon_key, enroll_token) {
+                (Some(url), Some(anon), Some(tok)) => {
+                    match api::build_client() {
+                        Ok(client) => {
+                            match signature_deploy::tick(&client, &url, &anon, &tok, last_checksum.as_deref()).await {
+                                Ok(new_checksum) => {
+                                    if let Some(c) = new_checksum {
+                                        last_checksum = Some(c);
+                                    }
+                                }
+                                Err(e) => log::debug!("[sig] tick error: {e}"),
+                            }
+                        }
+                        Err(e) => log::debug!("[sig] build_client: {e}"),
+                    }
+                }
+                _ => log::debug!("[sig] agent not enrolled yet — skipping"),
+            }
+            sleep(Duration::from_secs(15 * 60)).await;
+        }
+    });
 }
 
 fn spawn_updater_loop(handle: tauri::AppHandle) {
