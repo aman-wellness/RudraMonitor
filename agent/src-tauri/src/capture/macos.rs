@@ -14,11 +14,19 @@
 //      than queuing and growing memory).
 //
 // Permission: ScreenCaptureKit requires the Screen Recording TCC
-// privilege. If the user hasn't granted it via System Settings →
-// Privacy & Security → Screen Recording, SCShareableContent::get()
-// errors out and we bubble the error up — caller falls back to the
-// ffmpeg path which has the same requirement and will display the
-// same TCC prompt.
+// privilege granted to THIS binary. If it hasn't been granted via
+// System Settings → Privacy & Security → Screen Recording,
+// SCShareableContent::get() errors and the live session produces zero
+// frames. There is NO ffmpeg capture fallback on macOS — the WHIP pump
+// uses SCK exclusively here — so we proactively preflight and REQUEST
+// the permission at startup via ensure_screen_recording_permission()
+// below, which surfaces the system prompt so an operator can grant it
+// during setup instead of hitting a silent black stream.
+//
+// Caveat: TCC keys the grant to the code-signing identity. An ad-hoc /
+// unsigned build gets a fresh identity on every auto-update, so the
+// grant must be re-approved after each update until the agent ships
+// with a stable Developer ID signature.
 
 use super::{Capturer, Frame};
 use anyhow::{anyhow, Context, Result};
@@ -42,6 +50,44 @@ use std::sync::{
 };
 use std::time::Instant;
 use tokio::sync::mpsc;
+
+// Screen Recording TCC gate. Both ScreenCaptureKit and avfoundation
+// require this privilege granted to the running binary. CoreGraphics
+// exposes a preflight (non-prompting check) and a request (shows the
+// system prompt once per code-signing identity). Available macOS 10.15+.
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
+}
+
+/// True if Screen Recording is already granted (no prompt shown).
+#[allow(dead_code)]
+pub fn has_screen_recording_permission() -> bool {
+    unsafe { CGPreflightScreenCaptureAccess() }
+}
+
+/// Preflight, and if not yet granted, ask macOS to show the Screen
+/// Recording prompt. Returns whether it is granted afterwards. Safe to
+/// call repeatedly — the OS only shows the prompt once per identity.
+pub fn ensure_screen_recording_permission() -> bool {
+    if unsafe { CGPreflightScreenCaptureAccess() } {
+        log::info!("sck: Screen Recording permission already granted");
+        return true;
+    }
+    log::warn!("sck: Screen Recording permission missing — requesting (system prompt)…");
+    let granted = unsafe { CGRequestScreenCaptureAccess() };
+    if granted {
+        log::info!("sck: Screen Recording permission granted");
+    } else {
+        log::warn!(
+            "sck: Screen Recording still NOT granted — live view will show no frames until the \
+             user enables it in System Settings → Privacy & Security → Screen Recording, then \
+             relaunches the agent"
+        );
+    }
+    granted
+}
 
 pub struct ScreenCaptureKitCapturer {
     width: u32,
