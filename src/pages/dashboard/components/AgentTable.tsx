@@ -1,10 +1,49 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useAgents } from '@/lib/dataHooks';
+import { useAgents, useProductivityPerAgent, useActivityLogs } from '@/lib/dataHooks';
+
+const formatActive = (seconds: number) => {
+  const m = Math.floor(seconds / 60);
+  if (m < 60) return `0h ${m}m`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+};
+const formatIdle = (seconds: number) => `${Math.round(seconds / 60)}m`;
 
 export default function AgentTable() {
   const navigate = useNavigate();
-  const { agents, loading } = useAgents();
+  const { agents: rawAgents, loading } = useAgents();
+  // useAgents hardcodes productivity/activeHours/idle/apps to 0/empty because
+  // it doesn't join activity_logs. Merge in the real per-agent stats (24h)
+  // and derive each agent's most-recent apps from recent activity — otherwise
+  // this table shows 0% / 0h 0m / "-" for every agent even when reporting.
+  const { byAgent: productivityByAgent } = useProductivityPerAgent(24);
+  const { rows: recentActivity } = useActivityLogs({ sinceHours: 24, limit: 500 });
+
+  const recentAppsByAgent = useMemo(() => {
+    const out: Record<string, string[]> = {};
+    for (const r of recentActivity) {
+      if (r.activity_type !== 'app' || !r.application_name) continue;
+      const list = out[r.agent_id] ?? (out[r.agent_id] = []);
+      // rows arrive newest-first; keep first 3 distinct apps per agent.
+      if (list.length < 3 && !list.includes(r.application_name)) list.push(r.application_name);
+    }
+    return out;
+  }, [recentActivity]);
+
+  const agents = useMemo(
+    () => rawAgents.map((a) => {
+      const p = productivityByAgent[a.id];
+      return {
+        ...a,
+        productivity: p?.productivity_pct ?? a.productivity,
+        activeHours: p ? formatActive(p.active_seconds ?? 0) : a.activeHours,
+        idleTime: p ? formatIdle(p.idle_seconds ?? 0) : a.idleTime,
+        applications: recentAppsByAgent[a.id] ?? a.applications,
+      };
+    }),
+    [rawAgents, productivityByAgent, recentAppsByAgent],
+  );
   const [filter, setFilter] = useState<'all' | 'online' | 'offline' | 'idle'>('all');
   const [search, setSearch] = useState('');
 
@@ -181,22 +220,24 @@ export default function AgentTable() {
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap gap-1.5">
-                    {agent.status === 'offline' ? (
+                    {agent.status === 'offline' || agent.applications.length === 0 ? (
                       <span className="text-xs text-gray-600">-</span>
                     ) : (
-                      agent.applications.slice(0, 2).map((app) => (
-                        <span
-                          key={app}
-                          className="px-2 py-0.5 bg-dark-700 rounded text-xs text-gray-400"
-                        >
-                          {app}
-                        </span>
-                      ))
-                    )}
-                    {agent.applications.length > 2 && (
-                      <span className="px-2 py-0.5 bg-dark-700 rounded text-xs text-gray-500">
-                        +{agent.applications.length - 2}
-                      </span>
+                      <>
+                        {agent.applications.slice(0, 2).map((app) => (
+                          <span
+                            key={app}
+                            className="px-2 py-0.5 bg-dark-700 rounded text-xs text-gray-400"
+                          >
+                            {app}
+                          </span>
+                        ))}
+                        {agent.applications.length > 2 && (
+                          <span className="px-2 py-0.5 bg-dark-700 rounded text-xs text-gray-500">
+                            +{agent.applications.length - 2}
+                          </span>
+                        )}
+                      </>
                     )}
                   </div>
                 </td>

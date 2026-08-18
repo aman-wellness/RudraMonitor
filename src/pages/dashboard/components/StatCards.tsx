@@ -86,16 +86,6 @@ export default function StatCards() {
                 />
               </span>
             </div>
-            <span
-              className={`flex items-center gap-1 text-xs font-medium ${
-                stat.trend === 'up' ? 'text-emerald-400' : 'text-amber-400'
-              }`}
-            >
-              <span className="w-4 h-4 flex items-center justify-center">
-                <i className={stat.trend === 'up' ? 'ri-arrow-up-line' : 'ri-arrow-down-line'} />
-              </span>
-              {stat.trend === 'down' ? 'Down' : 'Up'}
-            </span>
           </div>
           <p className="text-2xl md:text-3xl font-poppins font-bold text-white mb-1">
             {stat.value}

@@ -4,18 +4,45 @@ import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import Breadcrumb from '@/components/Breadcrumb';
 import { useAgents, useLatestSystemMetrics } from '@/lib/dataHooks';
 
-// Adapter shape preserved so the existing JSX below stays unchanged.
-// Network/temp/uptime/processes aren't yet collected by the agent — placeholders for now.
-type LegacyMetrics = { cpu: number; memory: number; disk: number; uptime: string; network: number; temp: number; processes: number };
+// Live per-agent metrics, derived from the latest system_metrics row the
+// agent actually pushed (CPU/RAM/disk/network/battery every 60s). `fresh`
+// is false when the newest sample is stale (agent asleep/offline), so the
+// UI never presents an old reading as if it were current.
+type LiveMetrics = {
+  cpu: number;
+  memory: number;
+  disk: number;
+  battery: number | null;
+  network: string | null;   // raw agent string, e.g. "↓1.2 ↑0.3 Mbps"
+  down: number;             // parsed Mbps
+  up: number;               // parsed Mbps
+  recordedAt: string | null;
+  ageMs: number | null;
+  fresh: boolean;           // has a sample newer than STALE_AFTER_MS
+};
 
-const services = [
-  { name: 'Agent Service', status: 'running', uptime: '99.9%', icon: 'ri-shield-check-line' },
-  { name: 'Screenshot Engine', status: 'running', uptime: '99.8%', icon: 'ri-image-line' },
-  { name: 'Alert Monitor', status: 'running', uptime: '99.9%', icon: 'ri-notification-3-line' },
-  { name: 'Sync Service', status: 'running', uptime: '99.6%', icon: 'ri-refresh-line' },
-];
+// Agent pushes metrics every 60s (METRICS_INTERVAL_SECS). Anything older
+// than 3 min means the agent isn't currently reporting → treat as no live data.
+const STALE_AFTER_MS = 3 * 60 * 1000;
 
-const healthTabs = ['Overview', 'Agents', 'Services', 'Network'] as const;
+// Pull the two Mbps numbers out of the agent's network_speed string.
+const parseNet = (s: string | null): { down: number; up: number } => {
+  if (!s) return { down: 0, up: 0 };
+  const nums = (s.match(/[\d.]+/g) ?? []).map(Number);
+  return { down: nums[0] ?? 0, up: nums[1] ?? 0 };
+};
+
+const formatAge = (ageMs: number | null): string => {
+  if (ageMs === null) return 'never';
+  const s = Math.floor(ageMs / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  return `${h}h ago`;
+};
+
+const healthTabs = ['Overview', 'Agents', 'Network'] as const;
 type HealthTab = (typeof healthTabs)[number];
 
 export default function SystemHealthPage() {
@@ -25,18 +52,26 @@ export default function SystemHealthPage() {
   const { agents } = useAgents();
   const { byAgent } = useLatestSystemMetrics();
 
-  const systemMetrics: Record<string, LegacyMetrics> = useMemo(() => {
-    const out: Record<string, LegacyMetrics> = {};
+  const systemMetrics: Record<string, LiveMetrics> = useMemo(() => {
+    const out: Record<string, LiveMetrics> = {};
+    const now = Date.now();
     for (const a of agents) {
       const m = byAgent[a.id];
+      const recordedAt = m?.recorded_at ?? null;
+      const ageMs = recordedAt ? now - new Date(recordedAt).getTime() : null;
+      const fresh = !!m && ageMs !== null && ageMs <= STALE_AFTER_MS;
+      const { down, up } = parseNet(m?.network_speed ?? null);
       out[a.id] = {
         cpu: m?.cpu_usage ?? 0,
         memory: m?.ram_usage ?? 0,
         disk: m?.disk_usage ?? 0,
-        uptime: m ? '—' : 'Offline',
-        network: 0,
-        temp: 0,
-        processes: 0,
+        battery: m?.battery_level ?? null,
+        network: m?.network_speed ?? null,
+        down,
+        up,
+        recordedAt,
+        ageMs,
+        fresh,
       };
     }
     return out;
@@ -46,16 +81,18 @@ export default function SystemHealthPage() {
     search === '' || a.name.toLowerCase().includes(search.toLowerCase()) || a.machine.toLowerCase().includes(search.toLowerCase())
   );
 
-  const onlineAgents = agents.filter((a) => a.status !== 'offline');
+  // "Reporting" = agent has a fresh (<3 min) hardware sample. Averages and
+  // critical detection only consider these, so stale readings never skew them.
+  const reportingAgents = agents.filter((a) => systemMetrics[a.id]?.fresh);
   const criticalAgents = agents.filter((a) => {
     const m = systemMetrics[a.id];
-    return m && (m.cpu > 70 || m.memory > 75 || m.disk > 80);
+    return m?.fresh && (m.cpu > 70 || m.memory > 75 || m.disk > 80);
   });
 
   const safeAvg = (vals: number[]) => (vals.length === 0 ? 0 : Math.round(vals.reduce((a, b) => a + b, 0) / vals.length));
-  const avgCpu = safeAvg(onlineAgents.map((a) => systemMetrics[a.id]?.cpu || 0));
-  const avgMemory = safeAvg(onlineAgents.map((a) => systemMetrics[a.id]?.memory || 0));
-  const avgDisk = safeAvg(onlineAgents.map((a) => systemMetrics[a.id]?.disk || 0));
+  const avgCpu = safeAvg(reportingAgents.map((a) => systemMetrics[a.id].cpu));
+  const avgMemory = safeAvg(reportingAgents.map((a) => systemMetrics[a.id].memory));
+  const avgDisk = safeAvg(reportingAgents.map((a) => systemMetrics[a.id].disk));
 
   const getBarColor = (val: number) => {
     if (val > 75) return 'bg-red-500';
@@ -63,10 +100,10 @@ export default function SystemHealthPage() {
     return 'bg-emerald-500';
   };
 
-  const getHealthStatus = (m: LegacyMetrics | undefined) => {
-    if (!m || m.cpu === 0) return { label: 'Offline', class: 'bg-gray-500/15 text-gray-400' };
+  const getHealthStatus = (m: LiveMetrics | undefined) => {
+    if (!m || !m.fresh) return { label: 'Offline', class: 'bg-gray-500/15 text-gray-400' };
     const avg = (m.cpu + m.memory + m.disk) / 3;
-    if (avg > 70 || m.cpu > 80 || m.temp > 70) return { label: 'Critical', class: 'bg-red-500/15 text-red-400' };
+    if (avg > 70 || m.cpu > 80) return { label: 'Critical', class: 'bg-red-500/15 text-red-400' };
     if (avg > 50 || m.cpu > 60) return { label: 'Warning', class: 'bg-amber-500/15 text-amber-400' };
     return { label: 'Healthy', class: 'bg-emerald-500/15 text-emerald-400' };
   };
@@ -98,7 +135,7 @@ export default function SystemHealthPage() {
         {tab === 'Overview' && (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
             {[
-              { label: 'Online Agents', value: String(onlineAgents.length), icon: 'ri-wifi-line', color: 'emerald' },
+              { label: 'Reporting Agents', value: String(reportingAgents.length), icon: 'ri-wifi-line', color: 'emerald' },
               { label: 'Critical', value: String(criticalAgents.length), icon: 'ri-error-warning-line', color: 'red' },
               { label: 'Avg CPU', value: `${avgCpu}%`, icon: 'ri-cpu-line', color: 'amber' },
               { label: 'Avg Memory', value: `${avgMemory}%`, icon: 'ri-database-2-line', color: 'teal' },
@@ -157,24 +194,24 @@ export default function SystemHealthPage() {
               </div>
             </div>
 
-            {/* Services Status */}
+            {/* Fleet reporting status — all derived from real agent samples */}
             <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
-              <h3 className="text-sm font-semibold text-white mb-4">Core Services</h3>
+              <h3 className="text-sm font-semibold text-white mb-4">Fleet Status</h3>
               <div className="space-y-2">
-                {services.map((svc) => (
-                  <div key={svc.name} className="flex items-center justify-between bg-dark-900 rounded-lg border border-dark-700 p-3">
+                {[
+                  { label: 'Reporting (live hardware data)', value: reportingAgents.length, cls: 'bg-emerald-500/15 text-emerald-400', icon: 'ri-wifi-line' },
+                  { label: 'Stale / not reporting', value: agents.length - reportingAgents.length, cls: 'bg-gray-500/15 text-gray-400', icon: 'ri-wifi-off-line' },
+                  { label: 'Critical (CPU/RAM/disk high)', value: criticalAgents.length, cls: 'bg-red-500/15 text-red-400', icon: 'ri-error-warning-line' },
+                  { label: 'Total agents', value: agents.length, cls: 'bg-dark-700 text-gray-300', icon: 'ri-team-line' },
+                ].map((row) => (
+                  <div key={row.label} className="flex items-center justify-between bg-dark-900 rounded-lg border border-dark-700 p-3">
                     <div className="flex items-center gap-3">
                       <span className="w-8 h-8 rounded-lg bg-dark-700 flex items-center justify-center">
-                        <span className="w-4 h-4 flex items-center justify-center"><i className={`${svc.icon} text-gray-400 text-sm`} /></span>
+                        <span className="w-4 h-4 flex items-center justify-center"><i className={`${row.icon} text-gray-400 text-sm`} /></span>
                       </span>
-                      <div>
-                        <p className="text-sm text-white font-medium">{svc.name}</p>
-                        <p className="text-[11px] text-gray-500">Uptime: {svc.uptime}</p>
-                      </div>
+                      <p className="text-sm text-white font-medium">{row.label}</p>
                     </div>
-                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${svc.status === 'running' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-400'}`}>
-                      {svc.status === 'running' ? 'Running' : 'Maintenance'}
-                    </span>
+                    <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold ${row.cls}`}>{row.value}</span>
                   </div>
                 ))}
               </div>
@@ -261,8 +298,8 @@ export default function SystemHealthPage() {
                       <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Memory</th>
                       <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Disk</th>
                       <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Network</th>
-                      <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Temp</th>
-                      <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Uptime</th>
+                      <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Battery</th>
+                      <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Last Seen</th>
                       <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Health</th>
                     </tr>
                   </thead>
@@ -290,32 +327,38 @@ export default function SystemHealthPage() {
                             </span>
                           </td>
                           <td className="px-4 py-3">
-                            <div className="flex items-center gap-2">
-                              <div className="w-14 h-2 bg-dark-700 rounded-full overflow-hidden">
-                                <div className={`h-full rounded-full ${getBarColor(m?.cpu || 0)}`} style={{ width: `${m?.cpu || 0}%` }} />
+                            {m?.fresh ? (
+                              <div className="flex items-center gap-2">
+                                <div className="w-14 h-2 bg-dark-700 rounded-full overflow-hidden">
+                                  <div className={`h-full rounded-full ${getBarColor(m.cpu)}`} style={{ width: `${m.cpu}%` }} />
+                                </div>
+                                <span className="text-xs text-gray-300">{m.cpu}%</span>
                               </div>
-                              <span className="text-xs text-gray-300">{m?.cpu || 0}%</span>
-                            </div>
+                            ) : <span className="text-xs text-gray-600">—</span>}
                           </td>
                           <td className="px-4 py-3">
-                            <div className="flex items-center gap-2">
-                              <div className="w-14 h-2 bg-dark-700 rounded-full overflow-hidden">
-                                <div className={`h-full rounded-full ${getBarColor(m?.memory || 0)}`} style={{ width: `${m?.memory || 0}%` }} />
+                            {m?.fresh ? (
+                              <div className="flex items-center gap-2">
+                                <div className="w-14 h-2 bg-dark-700 rounded-full overflow-hidden">
+                                  <div className={`h-full rounded-full ${getBarColor(m.memory)}`} style={{ width: `${m.memory}%` }} />
+                                </div>
+                                <span className="text-xs text-gray-300">{m.memory}%</span>
                               </div>
-                              <span className="text-xs text-gray-300">{m?.memory || 0}%</span>
-                            </div>
+                            ) : <span className="text-xs text-gray-600">—</span>}
                           </td>
                           <td className="px-4 py-3">
-                            <div className="flex items-center gap-2">
-                              <div className="w-14 h-2 bg-dark-700 rounded-full overflow-hidden">
-                                <div className={`h-full rounded-full ${getBarColor(m?.disk || 0)}`} style={{ width: `${m?.disk || 0}%` }} />
+                            {m?.fresh ? (
+                              <div className="flex items-center gap-2">
+                                <div className="w-14 h-2 bg-dark-700 rounded-full overflow-hidden">
+                                  <div className={`h-full rounded-full ${getBarColor(m.disk)}`} style={{ width: `${m.disk}%` }} />
+                                </div>
+                                <span className="text-xs text-gray-300">{m.disk}%</span>
                               </div>
-                              <span className="text-xs text-gray-300">{m?.disk || 0}%</span>
-                            </div>
+                            ) : <span className="text-xs text-gray-600">—</span>}
                           </td>
-                          <td className="px-4 py-3 text-xs text-gray-300">{m?.network || 0} Mbps</td>
-                          <td className="px-4 py-3 text-xs text-gray-300">{m?.temp || 0}°C</td>
-                          <td className="px-4 py-3 text-xs text-gray-300">{m?.uptime || '-'}</td>
+                          <td className="px-4 py-3 text-xs text-gray-300">{m?.fresh && m.network ? m.network : <span className="text-gray-600">—</span>}</td>
+                          <td className="px-4 py-3 text-xs text-gray-300">{m?.fresh && m.battery != null ? `${m.battery}%` : <span className="text-gray-600">—</span>}</td>
+                          <td className="px-4 py-3 text-xs text-gray-400">{formatAge(m?.ageMs ?? null)}</td>
                           <td className="px-4 py-3">
                             <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${h.class}`}>{h.label}</span>
                           </td>
@@ -335,47 +378,6 @@ export default function SystemHealthPage() {
           </div>
         )}
 
-        {/* SERVICES TAB */}
-        {tab === 'Services' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {services.map((svc) => (
-              <div key={svc.name} className="bg-dark-800 border border-dark-700 rounded-xl p-5">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-3">
-                    <span className="w-10 h-10 rounded-lg bg-dark-700 flex items-center justify-center">
-                      <span className="w-5 h-5 flex items-center justify-center"><i className={`${svc.icon} text-gray-300 text-lg`} /></span>
-                    </span>
-                    <div>
-                      <h3 className="text-sm font-semibold text-white">{svc.name}</h3>
-                      <p className="text-[11px] text-gray-500">Core service</p>
-                    </div>
-                  </div>
-                  <span className={`px-2.5 py-1 rounded-full text-[10px] font-medium ${svc.status === 'running' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-400'}`}>
-                    {svc.status === 'running' ? 'Running' : 'Maintenance'}
-                  </span>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-4">
-                  <div className="bg-dark-900 rounded-lg border border-dark-700 p-2.5 text-center">
-                    <p className="text-xs font-bold text-white">{svc.uptime}</p>
-                    <p className="text-[10px] text-gray-500 mt-0.5">Uptime</p>
-                  </div>
-                  <div className="bg-dark-900 rounded-lg border border-dark-700 p-2.5 text-center">
-                    <p className="text-xs font-bold text-white">0ms</p>
-                    <p className="text-[10px] text-gray-500 mt-0.5">Latency</p>
-                  </div>
-                  <div className="bg-dark-900 rounded-lg border border-dark-700 p-2.5 text-center">
-                    <p className="text-xs font-bold text-white">OK</p>
-                    <p className="text-[10px] text-gray-500 mt-0.5">Health</p>
-                  </div>
-                </div>
-                <div className="w-full bg-dark-700 rounded-full h-2">
-                  <div className="bg-emerald-500 h-2 rounded-full" style={{ width: svc.uptime }} />
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
         {/* NETWORK TAB */}
         {tab === 'Network' && (
           <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
@@ -388,15 +390,13 @@ export default function SystemHealthPage() {
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">IP Address</th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Download</th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Upload</th>
-                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Latency</th>
+                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Last Seen</th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Status</th>
                   </tr>
                 </thead>
                 <tbody>
                   {agents.map((a) => {
                     const m = systemMetrics[a.id];
-                    const down = (m?.network || 0) * 2.3;
-                    const up = (m?.network || 0) * 0.8;
                     return (
                       <tr key={a.id} className="border-b border-dark-700/50 hover:bg-dark-700/30 transition-colors">
                         <td className="px-4 py-3">
@@ -408,9 +408,9 @@ export default function SystemHealthPage() {
                           </div>
                         </td>
                         <td className="px-4 py-3 text-sm text-gray-300">{a.ipAddress}</td>
-                        <td className="px-4 py-3 text-sm text-gray-300">{down.toFixed(1)} Mbps</td>
-                        <td className="px-4 py-3 text-sm text-gray-300">{up.toFixed(1)} Mbps</td>
-                        <td className="px-4 py-3 text-sm text-gray-300">{(Math.random() * 40 + 10).toFixed(0)} ms</td>
+                        <td className="px-4 py-3 text-sm text-gray-300">{m?.fresh ? `${m.down.toFixed(1)} Mbps` : '—'}</td>
+                        <td className="px-4 py-3 text-sm text-gray-300">{m?.fresh ? `${m.up.toFixed(1)} Mbps` : '—'}</td>
+                        <td className="px-4 py-3 text-sm text-gray-400">{formatAge(m?.ageMs ?? null)}</td>
                         <td className="px-4 py-3">
                           <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${a.status === 'online' ? 'bg-emerald-500/15 text-emerald-400' : a.status === 'idle' ? 'bg-amber-500/15 text-amber-400' : 'bg-red-500/15 text-red-400'}`}>
                             {a.status === 'online' ? 'Connected' : a.status === 'idle' ? 'Idle' : 'Disconnected'}

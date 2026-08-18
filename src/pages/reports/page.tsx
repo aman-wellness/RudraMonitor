@@ -246,7 +246,7 @@ export default function ReportsPage() {
     switch (tab) {
       case 'productivity':
         return {
-          headers: ['Agent Name', 'Department', 'Machine', 'OS', 'Status', 'Productivity %', 'Efficiency Score', 'Active Hours', 'Idle Time', 'Total Session', 'Total Events', 'Alerts', 'CPU %', 'RAM %', 'Disk %'],
+          headers: ['Agent Name', 'Department', 'Machine', 'OS', 'Status', 'Productivity %', 'Active Hours', 'Idle Time', 'Total Session', 'Total Events', 'Alerts', 'CPU %', 'RAM %', 'Disk %'],
           rows: data.map((a) => {
             const c = activityCounts[a.id] || { appSwitches: 0, browserEvents: 0, screenshots: 0, videos: 0, alerts: 0 };
             const t = timeData[a.id] || { session: '-', breaks: '-' };
@@ -259,7 +259,6 @@ export default function ReportsPage() {
               a.os,
               a.status,
               String(a.productivity),
-              String(Math.round(a.productivity * 0.9)),
               a.activeHours,
               a.idleTime,
               t.session,
@@ -699,8 +698,6 @@ export default function ReportsPage() {
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Productivity</th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Active Hours</th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Idle Time</th>
-                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Efficiency</th>
-                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Trend</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -753,20 +750,6 @@ export default function ReportsPage() {
                       </td>
                       <td className="px-4 py-3 text-sm text-gray-300">{agent.activeHours}</td>
                       <td className="px-4 py-3 text-sm text-gray-300">{agent.idleTime}</td>
-                      <td className="px-4 py-3">
-                        <span className={`text-xs font-medium ${
-                          agent.productivity >= 80 ? 'text-emerald-400' :
-                          agent.productivity >= 60 ? 'text-amber-400' : 'text-red-400'
-                        }`}>
-                          {Math.round(agent.productivity * 0.9)}%
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="flex items-center gap-1 text-xs text-emerald-400">
-                          <span className="w-3 h-3 flex items-center justify-center"><i className="ri-arrow-up-line" /></span>
-                          +{Math.floor(Math.random() * 8) + 1}%
-                        </span>
-                      </td>
                     </tr>
                   ))}
                 </tbody>
