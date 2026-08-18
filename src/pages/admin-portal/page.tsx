@@ -1662,6 +1662,7 @@ function SubscriptionTab({
       <div className="pt-2">
         <PlanGrid
           currentPlanCode={currentPlanCode}
+          lockCurrency="INR"
           disableCtas={!!pendingReq}
           ctaLabelFor={(planCode, isCurrent) => {
             if (isCurrent) return 'Active Plan';

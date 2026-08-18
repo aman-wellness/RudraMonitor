@@ -66,6 +66,11 @@ export interface PlanGridProps {
    */
   onAddonImmediate?: (addonCode: string, seats: number) => void;
   defaultCurrency?: Currency;
+  /**
+   * When set, the grid is locked to this currency and the INR/USD toggle
+   * is hidden. Used by /subscription, which prices in INR only.
+   */
+  lockCurrency?: Currency;
   defaultCycle?: Cycle;
   defaultSeats?: number;
 }
@@ -95,10 +100,11 @@ export default function PlanGrid({
   onSelect,
   onAddonImmediate,
   defaultCurrency = 'INR',
+  lockCurrency,
   defaultCycle = 'monthly',
   defaultSeats = 10,
 }: PlanGridProps) {
-  const [currency, setCurrency] = useState<Currency>(defaultCurrency);
+  const [currency, setCurrency] = useState<Currency>(lockCurrency ?? defaultCurrency);
   const [cycle, setCycle] = useState<Cycle>(defaultCycle);
   const [seats, setSeats] = useState(defaultSeats);
   const [selectedAddons, setSelectedAddons] = useState<Record<string, Set<string>>>({});
@@ -231,14 +237,16 @@ export default function PlanGrid({
     <div className="space-y-6">
       {/* Toggles + seat picker */}
       <div className="flex flex-wrap items-center justify-center gap-3">
-        <div className="inline-flex items-center gap-1 bg-dark-800 border border-dark-700 rounded-full p-1">
-          <button onClick={() => setCurrency('INR')} className={`px-4 py-1.5 rounded-full text-xs font-medium transition-all ${
-            currency === 'INR' ? 'bg-emerald-500 text-white' : 'text-gray-400 hover:text-white'
-          }`}>₹ INR</button>
-          <button onClick={() => setCurrency('USD')} className={`px-4 py-1.5 rounded-full text-xs font-medium transition-all ${
-            currency === 'USD' ? 'bg-emerald-500 text-white' : 'text-gray-400 hover:text-white'
-          }`}>$ USD</button>
-        </div>
+        {!lockCurrency && (
+          <div className="inline-flex items-center gap-1 bg-dark-800 border border-dark-700 rounded-full p-1">
+            <button onClick={() => setCurrency('INR')} className={`px-4 py-1.5 rounded-full text-xs font-medium transition-all ${
+              currency === 'INR' ? 'bg-emerald-500 text-white' : 'text-gray-400 hover:text-white'
+            }`}>₹ INR</button>
+            <button onClick={() => setCurrency('USD')} className={`px-4 py-1.5 rounded-full text-xs font-medium transition-all ${
+              currency === 'USD' ? 'bg-emerald-500 text-white' : 'text-gray-400 hover:text-white'
+            }`}>$ USD</button>
+          </div>
+        )}
 
         <div className="inline-flex items-center gap-1 bg-dark-800 border border-dark-700 rounded-full p-1">
           <button onClick={() => setCycle('monthly')} className={`px-4 py-1.5 rounded-full text-xs font-medium transition-all ${

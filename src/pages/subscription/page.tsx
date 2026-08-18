@@ -8,7 +8,7 @@ import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import { supabase } from '@/lib/supabase';
 import { useFeatures } from '@/lib/useFeatures';
 import { useAuth } from '@/context/AuthContext';
-import PlanGrid, { type Currency } from '@/components/PlanGrid';
+import PlanGrid from '@/components/PlanGrid';
 
 type TrialReq = { id: string; status: 'pending' | 'approved' | 'denied' | 'cancelled'; requested_at: string; decision_note: string | null };
 
@@ -106,11 +106,6 @@ export default function SubscriptionPage() {
     }
   };
 
-  // Default INR for Indian customers; USD otherwise. country_code lives on
-  // the org row but isn't on the typed shape — read defensively.
-  const country = String((organization as { country_code?: string } | null)?.country_code ?? '').toUpperCase();
-  const defaultCurrency: Currency = country === 'IN' ? 'INR' : 'USD';
-
   const trialDaysLeft = (() => {
     if (features.subscription_status !== 'trial' || !features.trial_ends_at) return null;
     const diff = new Date(features.trial_ends_at).getTime() - Date.now();
@@ -167,7 +162,7 @@ export default function SubscriptionPage() {
 
         <PlanGrid
           currentPlanCode={currentPlanCode}
-          defaultCurrency={defaultCurrency}
+          lockCurrency="INR"
           onSelect={({ planCode, seats, addons, currency }) => {
             if (planCode === 'enterprise') {
               navigate('/#contact');
