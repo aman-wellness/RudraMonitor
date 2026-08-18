@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
+import Breadcrumb from '@/components/Breadcrumb';
 import { useAlerts } from '@/lib/dataHooks';
 
 const alertTabs = ['All', 'Error', 'Warning', 'Info'] as const;
@@ -71,14 +72,12 @@ export default function AlertsPage() {
   return (
     <DashboardLayout>
       <div className="space-y-5">
-        <div className="flex items-center gap-2 text-xs text-gray-500">
-          <span className="flex items-center gap-1">
-            <span className="w-3 h-3 flex items-center justify-center"><i className="ri-dashboard-line" /></span>
-            Dashboard
-          </span>
-          <i className="ri-arrow-right-s-line text-gray-600" />
-          <span className="text-white font-medium">Alerts</span>
-        </div>
+        <Breadcrumb
+          items={[
+            { label: 'Dashboard', icon: 'ri-dashboard-line', to: '/dashboard' },
+            { label: 'Alerts' },
+          ]}
+        />
 
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div>

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
+import Breadcrumb from '@/components/Breadcrumb';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { useAgents, useOrgMembers } from '@/lib/dataHooks';
@@ -429,14 +430,12 @@ export default function AdminPortalPage() {
           </div>
         )}
         {/* Breadcrumb */}
-        <div className="flex items-center gap-2 text-xs text-gray-500">
-          <span className="flex items-center gap-1">
-            <span className="w-3 h-3 flex items-center justify-center"><i className="ri-dashboard-line" /></span>
-            Dashboard
-          </span>
-          <i className="ri-arrow-right-s-line text-gray-600" />
-          <span className="text-white font-medium">Admin Portal</span>
-        </div>
+        <Breadcrumb
+          items={[
+            { label: 'Dashboard', icon: 'ri-dashboard-line', to: '/dashboard' },
+            { label: 'Admin Portal' },
+          ]}
+        />
 
         {/* Header */}
         <div>

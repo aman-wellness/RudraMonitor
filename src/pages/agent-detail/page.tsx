@@ -1,6 +1,7 @@
 import { useParams } from 'react-router-dom';
 import { useEffect, useMemo, useState } from 'react';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
+import Breadcrumb from '@/components/Breadcrumb';
 import AgentHeader from './components/AgentHeader';
 import DateFilter from './components/DateFilter';
 import AgentStatCards from './components/AgentStatCards';
@@ -195,19 +196,13 @@ export default function AgentDetailPage() {
   return (
     <DashboardLayout>
       <div className="space-y-4 min-w-0 max-w-full overflow-x-hidden">
-        <div className="flex items-center gap-2 text-xs text-gray-500">
-          <span className="flex items-center gap-1">
-            <span className="w-3 h-3 flex items-center justify-center"><i className="ri-dashboard-line" /></span>
-            Dashboard
-          </span>
-          <i className="ri-arrow-right-s-line text-gray-600" />
-          <span className="flex items-center gap-1">
-            <span className="w-3 h-3 flex items-center justify-center"><i className="ri-computer-line" /></span>
-            Agents
-          </span>
-          <i className="ri-arrow-right-s-line text-gray-600" />
-          <span className="text-white font-medium">{agent.machine}</span>
-        </div>
+        <Breadcrumb
+          items={[
+            { label: 'Dashboard', icon: 'ri-dashboard-line', to: '/dashboard' },
+            { label: 'Agents', icon: 'ri-computer-line', to: '/agents' },
+            { label: agent.machine },
+          ]}
+        />
 
         <AgentHeader
           agentId={agent.id}
