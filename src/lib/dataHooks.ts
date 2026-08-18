@@ -770,7 +770,7 @@ export type PerAgentAgg = {
   productivity_pct: number;
 };
 
-export function useProductivityPerAgent(sinceHours: number) {
+export function useProductivityPerAgent(sinceHours: number, untilHours = 0) {
   const { organization } = useAuth();
   const [byAgent, setByAgent] = useState<Record<string, PerAgentAgg>>({});
   const [loading, setLoading] = useState(true);
@@ -783,9 +783,11 @@ export function useProductivityPerAgent(sinceHours: number) {
     }
     setLoading(true);
     const since = new Date(Date.now() - sinceHours * 3600 * 1000).toISOString();
+    const until = new Date(Date.now() - untilHours * 3600 * 1000).toISOString();
     const { data, error } = await supabase.rpc('org_productivity_per_agent', {
       p_org_id: organization.id,
       p_since: since,
+      p_until: until,
     });
     if (!error && data) {
       type Raw = Omit<PerAgentAgg, 'productivity_pct'> & { unproductive_seconds?: number | string };
@@ -827,7 +829,7 @@ export function useProductivityPerAgent(sinceHours: number) {
       setByAgent(map);
     }
     setLoading(false);
-  }, [organization, sinceHours]);
+  }, [organization, sinceHours, untilHours]);
 
   useEffect(() => {
     void refresh();
