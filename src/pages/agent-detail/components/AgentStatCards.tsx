@@ -52,7 +52,7 @@ export default function AgentStatCards({
             Logins
           </p>
           <p className="text-2xl font-poppins font-bold text-white">{logins}</p>
-          <p className="text-[10px] text-gray-500 mt-0.5">login: {logins} unlock: 0 wake: 0</p>
+          <p className="text-[10px] text-gray-500 mt-0.5">agent sign-ins in this window</p>
         </div>
 
         <div className="bg-dark-800 border border-dark-700 rounded-xl p-3 md:p-4">
@@ -61,7 +61,7 @@ export default function AgentStatCards({
             Logouts
           </p>
           <p className="text-2xl font-poppins font-bold text-white">{logouts}</p>
-          <p className="text-[10px] text-gray-500 mt-0.5">logout: {logouts} lock: 0 sleep: 0</p>
+          <p className="text-[10px] text-gray-500 mt-0.5">sessions ended{stillActive ? ' (1 still open)' : ''}</p>
         </div>
 
         <div className="bg-dark-800 border border-dark-700 rounded-xl p-3 md:p-4">
@@ -109,13 +109,13 @@ export default function AgentStatCards({
         </div>
       </div>
 
-      {logins === 0 && logouts === 0 && (
+      {logins === 0 && (
         <div className="bg-dark-800/50 border border-dark-700/50 rounded-lg p-3 flex items-start gap-2">
           <span className="w-4 h-4 flex items-center justify-center text-blue-400 mt-0.5 flex-shrink-0">
             <i className="ri-information-line" />
           </span>
           <p className="text-xs text-gray-500">
-            <span className="text-white font-medium">No login/logout events recorded in this window.</span> This agent may be running an older agent version that doesn&apos;t emit system events, or the agent hasn&apos;t been restarted/locked/unlocked during the selected period. System-on time above is approximated from first—last activity span.
+            <span className="text-white font-medium">No agent sign-in recorded in this window.</span> The agent was likely already running before the window started (it emits a sign-in event only on launch). System-on time above is derived from the first—last activity span.
           </p>
         </div>
       )}

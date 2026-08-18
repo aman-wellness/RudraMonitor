@@ -10,7 +10,10 @@ export default function BottomTabs({ active, onChange, counts }: Props) {
   return (
     <div className="flex items-center gap-1 bg-dark-900 rounded-lg p-1 overflow-x-auto">
       {detailBottomTabs.map((tab) => {
-        const count = counts[tab.id] ?? tab.count;
+        // Badge shows the REAL count from props only. Never fall back to
+        // the mock `tab.count` literals (33/97/…) — those are placeholders
+        // in the tab definition, not data.
+        const count = counts[tab.id] ?? null;
         const isActive = active === tab.id;
         return (
           <button

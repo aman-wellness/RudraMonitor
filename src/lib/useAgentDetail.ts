@@ -432,8 +432,17 @@ function buildDetail(
     firstLogin: formatDateTime(firstActivity),
     lastActivity: formatDateTime(lastActivity),
     stillActive: status === 'online',
-    logins: sessions.length || (activity.length > 0 ? 1 : 0),
-    logouts: 0,
+    // Real count of session_start rows the agent emitted in this window
+    // (spawn_session_start in the agent). No synthetic fallback — if the
+    // agent was already running before the window started there may be 0,
+    // which the "no login events" hint below explains honestly.
+    logins: sessions.length,
+    // Ended sessions, derived from real session boundaries: every launch
+    // emits a session_start, so a new one means the prior session ended.
+    // logouts = sessions started − the one still open (if agent is online).
+    // Captures every restart (graceful or not) without needing a separate
+    // shutdown event the OS often never lets us send.
+    logouts: Math.max(0, sessions.length - (status === 'online' ? 1 : 0)),
     systemOn: formatHM(systemOnSec),
     activeWorked: formatHM(totalActiveSec),
     screenshotsEnabled: (agentRow.screenshots_enabled as boolean | undefined) ?? true,

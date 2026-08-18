@@ -21,7 +21,7 @@ export default function QuickStats({
     { label: 'SITES VISITED', value: String(sitesVisited), sub: 'unique', icon: 'ri-global-line', color: 'text-teal-400' },
     { label: 'SCREENSHOTS', value: String(screenshotsCount), sub: 'captured', icon: 'ri-image-line', color: 'text-amber-400' },
     { label: 'ALERTS', value: String(alertsCount), sub: 'triggered', icon: 'ri-notification-3-line', color: 'text-red-400' },
-    { label: 'SESSIONS', value: String(sessionsCount), sub: 'total', icon: 'ri-stack-line', color: 'text-blue-400' },
+    { label: 'EVENTS', value: String(sessionsCount), sub: 'app + browser', icon: 'ri-stack-line', color: 'text-blue-400' },
   ];
 
   return (
