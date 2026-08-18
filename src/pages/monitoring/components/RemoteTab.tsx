@@ -293,11 +293,13 @@ function EmptyState() {
           <i className="ri-remote-control-2-line text-3xl" />
         </span>
         <p className="text-sm text-gray-400">
-          Pick an online agent and click <strong>Start Remote Session</strong> to request remote control.
+          Pick an online agent and click <strong>Start Remote Session</strong> to connect.
         </p>
         <p className="text-[11px] text-gray-600 mt-2">
-          The employee will see a consent prompt on their machine. Approval lasts 8 hours by default
-          (configurable per-agent in Admin → Integrations).
+          Unattended access is on by default — the session connects without a per-session prompt
+          (consent is covered by your acceptable-use policy). To require an on-screen approval for a
+          specific org or agent instead, add a <code className="text-gray-400">remote_permissions</code>
+          row with <code className="text-gray-400">require_consent = true</code>.
         </p>
       </div>
     </div>

@@ -221,9 +221,15 @@ pub async fn start(server_host: &str, session_token: &str) -> Result<HostHandle>
         log::warn!("rustdesk_host: --password failed: {e} (continuing — admin will need to read RustDesk's UI password)");
     }
 
-    // 4. Spawn the long-running host. Detached pipes — RustDesk is a
-    //    Flutter GUI, not a CLI; piped output risks buffer deadlock.
+    // 4. Spawn the long-running host in HEADLESS server mode. `--server`
+    //    runs only RustDesk's background incoming-connection service — it
+    //    registers the ID with hbbs and accepts password-authenticated
+    //    sessions WITHOUT opening the Flutter GUI window. Previously we
+    //    spawned the bare binary, which popped the full RustDesk window on
+    //    the employee's screen (very visible on macOS). Detached pipes —
+    //    piped output risks buffer deadlock on the Flutter runtime.
     let mut cmd = Command::new(&bin);
+    cmd.arg("--server");
     cmd.stdout(std::process::Stdio::null())
        .stderr(std::process::Stdio::null());
     #[cfg(windows)]

@@ -111,8 +111,13 @@ Deno.serve(async (req) => {
   };
   const perAgent = (permRows ?? []).find((p) => (p as Perm).agent_id === agentId) as Perm | undefined;
   const orgDefault = (permRows ?? []).find((p) => (p as Perm).agent_id === null) as Perm | undefined;
+  // Managed-deployment default: unattended access (no per-session consent
+  // popup). Consent is handled at the acceptable-use-policy level, so an
+  // org with no explicit remote_permissions row auto-approves. To require
+  // a per-session prompt for a specific org/agent, insert a
+  // remote_permissions row with require_consent = true.
   const policy = perAgent ?? orgDefault ?? {
-    enabled: true, require_consent: true, consent_ttl_hours: 0,
+    enabled: true, require_consent: false, consent_ttl_hours: 0,
     trusted_admins: null, trusted_until: null, agent_id: null,
   };
   if (!policy.enabled) {
