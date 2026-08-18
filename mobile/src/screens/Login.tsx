@@ -129,9 +129,9 @@ export default function Login() {
             display: "flex", alignItems: "center", justifyContent: "center",
             fontSize: 32,
           }}>📷</div>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 600 }}>Wellness Extract Invoice</h1>
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 600 }}>Rudrans Invoice</h1>
           <p style={{ margin: "6px 0 0", fontSize: 13, color: "#9ba3af" }}>
-            Sign in with your Wellness Extract account
+            Sign in with your Rudrans account
           </p>
         </div>
 

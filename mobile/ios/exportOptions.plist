@@ -8,7 +8,7 @@ developer's machine or the CI runner.
 - method=app-store  → produces an .ipa signed with the Apple
   Distribution cert + App Store provisioning profile, ready for
   `xcrun altool --upload-app` to push to App Store Connect.
-- teamID pinned to the Wellness Extract Pvt. Ltd. account so
+- teamID pinned to the Rudrans Pvt. Ltd. account so
   automatic signing picks the right team even if a machine has
   multiple Apple IDs logged in.
 - uploadBitcode=false → Apple deprecated bitcode in Xcode 14; leaving

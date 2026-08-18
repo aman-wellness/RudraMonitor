@@ -32,7 +32,7 @@ export default function Settings() {
   };
 
   const signOut = async () => {
-    if (!confirm("Sign out of Wellness Extract Invoice?")) return;
+    if (!confirm("Sign out of Rudrans Invoice?")) return;
     setBusy(true);
     try {
       await clearCredentials();
@@ -51,7 +51,7 @@ export default function Settings() {
     }
     // Enabling — we need to re-prompt password since we don't keep it
     // in memory after the initial login.
-    const pw = prompt("Re-enter your Wellness Extract password to enable Face ID / fingerprint quick-unlock:");
+    const pw = prompt("Re-enter your Rudrans password to enable Face ID / fingerprint quick-unlock:");
     if (!pw || !email) return;
     const r = await saveCredentials(email, pw);
     if (r.ok) setBioOn(true);
@@ -157,7 +157,7 @@ export default function Settings() {
         </Card>
 
         <p style={{ marginTop: 8, fontSize: 11, color: "#6b7280", textAlign: "center" }}>
-          Wellness Extract Invoice · v0.1.0
+          Rudrans Invoice · v0.1.0
         </p>
       </div>
     </div>

@@ -22,7 +22,7 @@ export default function Architecture() {
   return (
     <DocsLayout
       title="Backend / Frontend Architecture"
-      subtitle="Internal engineering reference for the Wellness Extract platform."
+      subtitle="Internal engineering reference for the Rudrans platform."
       sections={sections}
       accent="cyan"
     >
@@ -245,7 +245,7 @@ export default function Architecture() {
             <><code>integrations.ts</code> — cached reads from public.integrations</>,
             <><code>graph.ts</code> — Microsoft Graph token mint + paged fetch (per-org)</>,
             <><code>google.ts</code> — Google OAuth refresh-token mint + Admin SDK helpers</>,
-            <><code>graph-email.ts</code> — sendGraphEmail with M365 → Gmail → Wellness Extract-fallback routing</>,
+            <><code>graph-email.ts</code> — sendGraphEmail with M365 → Gmail → Rudrans-fallback routing</>,
             <><code>hmac-token.ts</code> — HMAC-signed magic-link tokens (cred request flow)</>,
             <><code>auth-org.ts</code> — resolveWriterOrgId() helper (owner OR admin gating)</>,
           ]} />
@@ -339,7 +339,7 @@ create policy XXX_write on public.XXX
           <Bullets items={[
             'signInWithOAuth → redirect to provider consent screen',
             'Provider redirects back to /auth/v1/callback?code=...',
-            'GoTrue exchanges code for tokens, mints Wellness Extract session JWT, redirects to /post-login',
+            'GoTrue exchanges code for tokens, mints Rudrans session JWT, redirects to /post-login',
             'PostLogin route reads role and sends user to right dashboard',
           ]} />
         </Sub>
@@ -384,7 +384,7 @@ create policy XXX_write on public.XXX
           <Bullets items={[
             'Tier 1: per-org M365 mailbox (em_sender_email + org_integrations.tenant_id with Mail.Send scope)',
             'Tier 2: per-org Gmail (em_sender_email + Google OAuth gmail.send scope)',
-            'Tier 3: fallback to Wellness Extract mailbox (Microsoft tenant + AUTH_EMAIL_FROM)',
+            'Tier 3: fallback to Rudrans mailbox (Microsoft tenant + AUTH_EMAIL_FROM)',
           ]} />
         </Sub>
         <P>Customer-facing emails (cred delivery, offboarding NOC, manager approval) automatically use Tier 1 or 2 if configured. System emails (signup, password reset) use Tier 3.</P>

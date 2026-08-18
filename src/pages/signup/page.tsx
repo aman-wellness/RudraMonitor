@@ -189,11 +189,11 @@ export default function Signup() {
           <Link to="/" className="inline-flex items-center gap-3">
             <img
               src="https://public.readdy.ai/ai/img_res/30434500-ce14-4d0b-944f-490cb4702e27.png"
-              alt="Wellness Extract Logo"
+              alt="Rudrans Logo"
               className="h-10 w-10 object-contain"
             />
             <span className="text-white font-poppins font-bold text-xl">
-              Wellness Extract
+              Rudrans
             </span>
           </Link>
         </div>
@@ -516,7 +516,7 @@ export default function Signup() {
 
         {/* Footer */}
         <p className="text-xs text-gray-600 text-center mt-6">
-          &copy; 2025 Wellness Extract. All rights reserved.
+          &copy; 2025 Rudrans. All rights reserved.
         </p>
       </div>
     </div>

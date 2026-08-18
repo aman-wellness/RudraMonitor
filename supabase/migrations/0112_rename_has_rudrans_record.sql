@@ -1,5 +1,5 @@
 -- 0112_rename_has_rudrans_record.sql
--- Brand rebrand: "Rudrans" → "Wellness Extract". Renames the computed alias
+-- Brand rebrand: "Rudrans" → "Rudrans". Renames the computed alias
 -- `has_rudrans_record` to `has_we_record` in v_org_users. Since this is a
 -- view-level alias (not a real column), the change is a CREATE OR REPLACE
 -- VIEW with the new name — no data migration required.

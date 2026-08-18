@@ -23,7 +23,7 @@ export default function SuperAdminGuide() {
   return (
     <DocsLayout
       title="Super Admin Guide"
-      subtitle="Internal documentation for Wellness Extract platform operators — how every part of the super-admin portal works."
+      subtitle="Internal documentation for Rudrans platform operators — how every part of the super-admin portal works."
       sections={sections}
       accent="violet"
     >
@@ -109,7 +109,7 @@ export default function SuperAdminGuide() {
             'Edit profile (legal name, GST, PAN, address, support email)',
             'Set commission rate (default 20%, overridable per-partner)',
             'See their customers + MRR routed through them',
-            'Generate next monthly Wellness Extract-to-partner invoice',
+            'Generate next monthly Rudrans-to-partner invoice',
           ]} />
         </Sub>
       </Section>
@@ -128,7 +128,7 @@ export default function SuperAdminGuide() {
         <P>Path: <code className="text-violet-300">/admin/invoices</code>.</P>
         <Sub title="6.1 Invoice list">
           <Bullets items={[
-            'Customer invoices (raised by Wellness Extract or by partners on behalf of customers).',
+            'Customer invoices (raised by Rudrans or by partners on behalf of customers).',
             'Status: pending / paid / overdue / cancelled.',
             'Search by invoice number, org name, partner.',
           ]} />
@@ -164,7 +164,7 @@ export default function SuperAdminGuide() {
         <Sub title="Categories">
           <Bullets items={[
             <><strong>Auth & OAuth</strong> — Google + Microsoft OAuth client IDs and secrets, "Sync to Supabase Auth" button to push to Cloud Auth config.</>,
-            <><strong>Email</strong> — Microsoft tenant + client + secret for sending platform mail (Wellness Extract mailbox).</>,
+            <><strong>Email</strong> — Microsoft tenant + client + secret for sending platform mail (Rudrans mailbox).</>,
             <><strong>AI</strong> — Anthropic API key (Claude Haiku 4.5 primary), OpenAI key (GPT-4o-mini fallback).</>,
             <><strong>Billing</strong> — Razorpay key id + secret, GST lookup API key.</>,
             <><strong>Employee Management</strong> — Multi-tenant directory app client id + secret, Google service-account email + private key + client id.</>,

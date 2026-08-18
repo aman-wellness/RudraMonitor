@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fully uninstall the Security Assistant / Wellness Extract endpoint agent
+# Fully uninstall the Security Assistant / Rudrans endpoint agent
 # from a macOS machine. Removes:
 #   - LaunchAgent autostart plist (~/Library/LaunchAgents/com.wellnessextract.agent.plist)
 #   - Running agent + guardian + ffmpeg helper processes

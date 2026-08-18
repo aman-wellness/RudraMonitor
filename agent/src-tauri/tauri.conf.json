@@ -31,8 +31,8 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "publisher": "Wellness Extract Pvt. Ltd.",
-    "copyright": "© 2026 Wellness Extract Pvt. Ltd. All rights reserved.",
+    "publisher": "Rudrans Pvt. Ltd.",
+    "copyright": "© 2026 Rudrans Pvt. Ltd. All rights reserved.",
     "homepage": "https://wellnessextract.com",
     "targets": ["app", "dmg", "msi", "nsis", "deb", "appimage"],
     "icon": [

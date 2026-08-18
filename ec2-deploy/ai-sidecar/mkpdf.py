@@ -7,7 +7,7 @@ lines = [
   "Invoice Number: INV-2026-0042",
   "Issue Date: 2026-06-10",
   "Due Date: 2026-07-10", "",
-  "Bill to: Wellness Extract Pvt Ltd", "",
+  "Bill to: Rudrans Pvt Ltd", "",
   "Service: Creative Cloud All Apps",
   "Period: 2026-06-10 to 2026-07-10", "",
   "Subtotal: USD 54.99",

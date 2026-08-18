@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "iOS + Android camera-first companion to the Wellness Extract Auto-Invoice web dashboard. Tap shutter → Claude extracts fields → row lands in the same credential_invoices table the web reads.",
+  "description": "iOS + Android camera-first companion to the Rudrans Auto-Invoice web dashboard. Tap shutter → Claude extracts fields → row lands in the same credential_invoices table the web reads.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

@@ -157,7 +157,7 @@ export default function EmployeesIntegrations() {
     const clientId = (import.meta.env.VITE_GOOGLE_OAUTH_CLIENT_ID as string | undefined) || '';
     const redirect = window.location.origin + '/employees/integrations';
     if (!clientId) {
-      setMsg({ kind: 'err', text: 'VITE_GOOGLE_OAUTH_CLIENT_ID missing in .env — Wellness Extract setup incomplete' });
+      setMsg({ kind: 'err', text: 'VITE_GOOGLE_OAUTH_CLIENT_ID missing in .env — Rudrans setup incomplete' });
       return;
     }
     const state = crypto.randomUUID();
@@ -201,7 +201,7 @@ export default function EmployeesIntegrations() {
     const label = provider === 'm365' ? 'Microsoft 365' : 'Google Workspace';
     if (!confirm(
       `Disconnect ${label}?\n\n` +
-      `This wipes ALL synced users, groups, and team memberships for ${label} from Wellness Extract. ` +
+      `This wipes ALL synced users, groups, and team memberships for ${label} from Rudrans. ` +
       `Reconnecting and re-syncing will re-populate them. Continue?`,
     )) return;
     setBusy(provider === 'm365' ? 'disconnect-m365' : 'disconnect-google');
@@ -223,7 +223,7 @@ export default function EmployeesIntegrations() {
             Directory Integrations
           </h1>
           <p className="text-sm text-gray-400">
-            Connect Microsoft 365 and Google Workspace. Once connected, users, groups, teams, and shared mailboxes sync into Wellness Extract and every change you make here flows back to the provider.
+            Connect Microsoft 365 and Google Workspace. Once connected, users, groups, teams, and shared mailboxes sync into Rudrans and every change you make here flows back to the provider.
           </p>
         </header>
 
@@ -461,10 +461,10 @@ function SenderMailboxCard({ m365Connected }: { m365Connected: boolean }) {
           <details className="mt-2">
             <summary className="cursor-pointer text-[11px] text-gray-500 hover:text-cyan-400">Required Microsoft Graph permission</summary>
             <div className="mt-2 text-[11px] text-gray-400 leading-relaxed">
-              For Wellness Extract to send mail FROM this mailbox, your Microsoft 365 admin must grant the application permission
+              For Rudrans to send mail FROM this mailbox, your Microsoft 365 admin must grant the application permission
               <strong className="text-white"> Mail.Send </strong>(scoped to this mailbox via RBAC if possible) and complete the admin consent flow again.
               Once granted, all credential request and offboarding emails will appear to come from{' '}
-              <strong className="text-white">{saved.email || 'this mailbox'}</strong> instead of the default Wellness Extract address.
+              <strong className="text-white">{saved.email || 'this mailbox'}</strong> instead of the default Rudrans address.
             </div>
           </details>
         </div>
@@ -587,7 +587,7 @@ function SetupInfo({ provider }: { provider: 'm365' | 'google' }) {
         </ol>
         {!setupReady ? (
           <div className="px-2.5 py-2 rounded bg-rose-500/10 border border-rose-500/30 text-rose-300">
-            ⚠ Google service-account Client ID not configured by Wellness Extract yet. Contact support — we need to set <code className="px-1 bg-rose-500/15 rounded">GOOGLE_SA_CLIENT_ID</code> in /admin/integrations.
+            ⚠ Google service-account Client ID not configured by Rudrans yet. Contact support — we need to set <code className="px-1 bg-rose-500/15 rounded">GOOGLE_SA_CLIENT_ID</code> in /admin/integrations.
           </div>
         ) : (
           <>

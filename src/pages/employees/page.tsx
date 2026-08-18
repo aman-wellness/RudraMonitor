@@ -4,7 +4,7 @@ import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import { supabase } from '@/lib/supabase';
 
 // Row shape from the v_org_users view. row_id is synthetic: 'dir:<uuid>' for
-// directory-sourced rows and 'emp:<uuid>' for Wellness Extract-only rows.
+// directory-sourced rows and 'emp:<uuid>' for Rudrans-only rows.
 type Employee = {
   row_id: string;
   org_id: string;
@@ -148,7 +148,7 @@ export default function EmployeesList() {
                     <td className="px-4 py-3 text-white">
                       {e.display_name}
                       {!e.has_we_record && (
-                        <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-gray-500/15 text-gray-400" title="Synced from M365/Google — not provisioned through Wellness Extract">synced</span>
+                        <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-gray-500/15 text-gray-400" title="Synced from M365/Google — not provisioned through Rudrans">synced</span>
                       )}
                     </td>
                     <td className="px-4 py-3 text-gray-300">{e.work_email ?? '—'}</td>
@@ -247,7 +247,7 @@ export default function EmployeesList() {
                       method: 'POST',
                       headers: { Authorization: `Bearer ${session?.access_token}`, 'Content-Type': 'application/json' },
                       body: JSON.stringify({
-                        // Prefer employee_id when we have one (Wellness Extract record exists);
+                        // Prefer employee_id when we have one (Rudrans record exists);
                         // otherwise identify the user by their cloud directory id.
                         ...(confirmDelete.employee_id
                           ? { employee_id: confirmDelete.employee_id }
@@ -340,7 +340,7 @@ function AddEmployeeMenu() {
 
 // ============== Edit employee modal ==============
 //
-// Lets admins set HR-side fields on any user surfaced in /employees — Wellness Extract
+// Lets admins set HR-side fields on any user surfaced in /employees — Rudrans
 // or directory-synced. For directory-only rows the edge fn auto-creates an
 // employees row so the manager_id FK + future credential assignments have
 // something to reference. work_email is read-only (source-of-truth is the
@@ -390,7 +390,7 @@ function EditEmployeeModal({
   // Pull the long-form contact fields straight from `employees`. They're not
   // on v_org_users to keep the list query lean, but the edit modal needs
   // them so the customer can review + edit what's currently on the M365
-  // user's contact form. If the employee doesn't have a Wellness Extract row yet
+  // user's contact form. If the employee doesn't have a Rudrans row yet
   // (directory-only), seed from directory_users instead.
   useEffect(() => {
     let cancelled = false;
@@ -554,7 +554,7 @@ function EditEmployeeModal({
               ))}
             </select>
             <p className="text-[11px] text-gray-500 mt-1">
-              Any directory user can be picked. We'll auto-create their Wellness Extract record on save.
+              Any directory user can be picked. We'll auto-create their Rudrans record on save.
               {employee.m365_user_id && <span className="text-sky-300"> Manager will also be set on this user in Microsoft 365.</span>}
             </p>
           </label>

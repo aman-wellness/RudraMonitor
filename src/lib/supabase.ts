@@ -110,7 +110,7 @@ export type Plan = {
   seat_count: number;
   price_inr: number;          // Customer-facing list price (used for invoicing/GST)
   price_usd: number | null;   // Website-facing list price (marketing site)
-  partner_price_inr: number;  // Wholesale price Wellness Extract charges partners
+  partner_price_inr: number;  // Wholesale price Rudrans charges partners
   billing_cycle: 'monthly' | 'yearly';
   is_active: boolean;
   created_at: string;

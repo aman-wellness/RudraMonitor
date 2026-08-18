@@ -55,14 +55,14 @@ export default function DocsLayout({
             <span className="w-8 h-8 rounded-lg bg-emerald-500/15 text-emerald-400 flex items-center justify-center">
               <i className="ri-shield-check-line text-lg" />
             </span>
-            <span className="text-white font-poppins font-bold text-lg">Wellness Extract</span>
+            <span className="text-white font-poppins font-bold text-lg">Rudrans</span>
             <span className="text-gray-500 text-xs ml-2 hidden sm:inline">Documentation</span>
           </Link>
           <nav className="flex items-center gap-3 text-xs">
             <Link to="/docs/user-guide" className={loc.pathname === '/docs/user-guide' ? 'text-emerald-400' : 'text-gray-400 hover:text-white'}>User Guide</Link>
             <Link to="/docs/integrations" className={loc.pathname === '/docs/integrations' ? 'text-cyan-400' : 'text-gray-400 hover:text-white'}>Integrations</Link>
             <Link to="/docs/partner-guide" className={loc.pathname === '/docs/partner-guide' ? 'text-violet-400' : 'text-gray-400 hover:text-white'}>Partner Guide</Link>
-            <Link to="/" className="text-gray-400 hover:text-white">← Back to Wellness Extract</Link>
+            <Link to="/" className="text-gray-400 hover:text-white">← Back to Rudrans</Link>
           </nav>
         </div>
       </header>

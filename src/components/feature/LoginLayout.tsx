@@ -12,7 +12,7 @@ export type LoginAccent = 'indigo' | 'violet' | 'purple' | 'emerald';
 
 interface Props {
   accent?: LoginAccent;
-  brandLabel?: string;            // e.g. "Wellness Extract" or "Wellness Extract Partners"
+  brandLabel?: string;            // e.g. "Rudrans" or "Rudrans Partners"
   brandIcon?: string;             // remix icon class for the small square logo
   illustrationUrl?: string;       // remote SVG; safe to omit for minimal pages
   illustrationCaption?: string;
@@ -35,7 +35,7 @@ const ACCENTS: Record<LoginAccent, { bg: string; ring: string; chip: string; gra
 
 export default function LoginLayout({
   accent = 'indigo',
-  brandLabel = 'Wellness Extract',
+  brandLabel = 'Rudrans',
   brandIcon = 'ri-shield-check-line',
   illustrationUrl,
   illustrationCaption,

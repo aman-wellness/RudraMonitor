@@ -26,7 +26,7 @@ export default function SignupSuccess() {
           <div className="text-left text-xs space-y-2 mb-6 bg-dark-800/60 border border-dark-700 rounded-lg p-4">
             <p className="font-medium text-gray-300 flex items-center gap-1.5">
               <i className="ri-arrow-right-circle-line text-emerald-400" />
-              Open the email titled <span className="text-white">&quot;Welcome to Wellness Extract&quot;</span>
+              Open the email titled <span className="text-white">&quot;Welcome to Rudrans&quot;</span>
             </p>
             <p className="font-medium text-gray-300 flex items-center gap-1.5">
               <i className="ri-arrow-right-circle-line text-emerald-400" />

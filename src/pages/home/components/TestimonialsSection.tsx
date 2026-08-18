@@ -42,7 +42,7 @@ export default function TestimonialsSection() {
             What Our Clients Say
           </h2>
           <p className="text-sm md:text-base text-gray-400 max-w-2xl mx-auto">
-            See why businesses trust Wellness Extract for their employee monitoring needs
+            See why businesses trust Rudrans for their employee monitoring needs
           </p>
         </div>
 

@@ -1,7 +1,7 @@
-# TrackForce - Employee Monitoring SaaS Tool
+# Rudrans - Employee Monitoring SaaS Tool
 
 ## 1. Project Description
-**TrackForce** ek cloud-based employee monitoring SaaS tool hai jo Windows, macOS, aur Ubuntu systems ko real-time mein monitor karta hai. Iska target audience IT heads, HR managers, aur business owners hain jo apni team ki productivity track karna chahte hain. Core value: complete visibility into employee activities, AI-powered insights, aur enterprise-grade security.
+**Rudrans** ek cloud-based employee monitoring SaaS tool hai jo Windows, macOS, aur Ubuntu systems ko real-time mein monitor karta hai. Iska target audience IT heads, HR managers, aur business owners hain jo apni team ki productivity track karna chahte hain. Core value: complete visibility into employee activities, AI-powered insights, aur enterprise-grade security.
 
 ## 2. Page Structure
 - `/` - Landing Page (Marketing Homepage)

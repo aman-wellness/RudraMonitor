@@ -7,7 +7,7 @@
 //   4. Finish            — success screen with Show password
 //
 // All M365-side fields go straight into Microsoft Graph via provision-employee.
-// Wellness Extract-side metadata (department, manager, DOJ, employee code, personal email)
+// Rudrans-side metadata (department, manager, DOJ, employee code, personal email)
 // is collected on the Optional step before review.
 
 import { useCallback, useEffect, useState } from 'react';
@@ -47,7 +47,7 @@ interface FormState {
   usage_location: string;     // ISO-2
   selected_skus: Set<string>; // sku_id
 
-  // Optional Wellness Extract-side metadata
+  // Optional Rudrans-side metadata
   designation: string;
   department_id: string;
   manager_id: string;
@@ -403,7 +403,7 @@ export default function NewM365User() {
             {step === 'optional' && (
               <>
                 <h2 className="text-lg text-white font-semibold mb-1">Optional settings</h2>
-                <p className="text-xs text-gray-400 mb-3">These are stored in Wellness Extract for org context; Microsoft doesn't need them.</p>
+                <p className="text-xs text-gray-400 mb-3">These are stored in Rudrans for org context; Microsoft doesn't need them.</p>
 
                 <Field label="Job title">
                   <Input value={form.designation} onChange={(v) => onChange('designation', v)} placeholder="Software Engineer" />
@@ -536,7 +536,7 @@ function FinishScreen({
           </p>
           {result.employee_insert_error && (
             <>
-              <p className="text-xs uppercase tracking-wider text-rose-400 mt-3 mb-1">Wellness Extract DB error</p>
+              <p className="text-xs uppercase tracking-wider text-rose-400 mt-3 mb-1">Rudrans DB error</p>
               <p className="text-sm text-rose-200 break-words whitespace-pre-wrap">{result.employee_insert_error}</p>
             </>
           )}

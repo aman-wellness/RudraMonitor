@@ -139,7 +139,7 @@ export default function PartnerProfile() {
         </div>
         <p className="text-[11px] text-gray-500 mt-4 max-w-xl">
           <i className="ri-information-line mr-1" />
-          Your name, billing email, status and commission rate are managed by Wellness Extract admins. To change any of these, contact <a href="mailto:itsupport@wellnessextract.com" className="text-violet-400">itsupport@wellnessextract.com</a>.
+          Your name, billing email, status and commission rate are managed by Rudrans admins. To change any of these, contact <a href="mailto:itsupport@wellnessextract.com" className="text-violet-400">itsupport@wellnessextract.com</a>.
         </p>
       </section>
 

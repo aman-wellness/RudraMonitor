@@ -16,12 +16,12 @@ export default function PartnerGuide() {
   return (
     <DocsLayout
       title="Partner Portal Guide"
-      subtitle="A walkthrough of the Wellness Extract channel-partner programme and the Partner Portal."
+      subtitle="A walkthrough of the Rudrans channel-partner programme and the Partner Portal."
       sections={sections}
       accent="violet"
     >
       <Section id="overview" title="1. Programme overview">
-        <P>The Wellness Extract channel-partner programme lets MSPs and resellers bring their own customers onto the Wellness Extract platform and earn ongoing commission.</P>
+        <P>The Rudrans channel-partner programme lets MSPs and resellers bring their own customers onto the Rudrans platform and earn ongoing commission.</P>
         <KV k="Commission" v="20% of every successful customer subscription, lifetime" />
         <KV k="Billing currency" v="INR (Indian Rupees), via Razorpay or direct bank transfer" />
         <KV k="Onboarding time" v="Apply → approval → portal access in 1-2 business days" />
@@ -33,7 +33,7 @@ export default function PartnerGuide() {
           <Steps items={[
             <>Visit <code className="text-violet-300">https://ems.wellnessextract.com/partner-signup</code>.</>,
             <>Fill: legal entity, contact person, work email, phone, GST + PAN, address, expected customer volume, sales pitch.</>,
-            <>Submit. Wellness Extract super-admin reviews within 1-2 business days.</>,
+            <>Submit. Rudrans super-admin reviews within 1-2 business days.</>,
           ]} />
           <Shot caption="Partner application form" />
         </Sub>
@@ -65,14 +65,14 @@ export default function PartnerGuide() {
             <>Sidebar → <strong>Customers</strong> → <strong>+ New customer</strong>.</>,
             <>Fill organisation details: name, contact email, phone, GST (auto-pulls company info), PAN, address.</>,
             <>Pick the plan you're starting them on (Starter / Professional / EM Unlimited / custom).</>,
-            <>Save. Wellness Extract sends the customer an email invite. They set their password and start their 14-day trial.</>,
+            <>Save. Rudrans sends the customer an email invite. They set their password and start their 14-day trial.</>,
           ]} />
           <Shot caption="New customer modal with plan picker" />
         </Sub>
         <Sub title="4.2 Customer relationship">
           <Bullets items={[
             'The customer is permanently tagged with your partner_id.',
-            'Every invoice goes through you (Bill from your entity → customer; Wellness Extract bills you separately at the partner rate).',
+            'Every invoice goes through you (Bill from your entity → customer; Rudrans bills you separately at the partner rate).',
             'You can view their licenses and invoices but not their employee/credentials data — that stays org-scoped to the customer.',
           ]} />
         </Sub>
@@ -83,7 +83,7 @@ export default function PartnerGuide() {
         <KV k="Starter" v="₹ 53,999 / month · 5 agents · Productivity reports" />
         <KV k="Professional" v="₹ 2,10,000 / year · 25 agents · Reports + Screenshots + Video + AI alerts" />
         <KV k="EM Unlimited" v="₹ 8,500 / month · unlimited users · Employee Management suite only" />
-        <KV k="Enterprise" v="Custom · 100+ agents · Everything + DLP + dedicated support — talk to Wellness Extract for partner rate" />
+        <KV k="Enterprise" v="Custom · 100+ agents · Everything + DLP + dedicated support — talk to Rudrans for partner rate" />
         <Sub title="Add-ons">
           <Bullets items={[
             'Employee Management Unlimited — ₹ 8,500 / month on top of any monitoring plan',
@@ -108,14 +108,14 @@ export default function PartnerGuide() {
         <P>Two views in the sidebar:</P>
         <Sub title="Customer invoices">
           <Bullets items={[
-            'Every invoice you raised on your customers via Wellness Extract.',
+            'Every invoice you raised on your customers via Rudrans.',
             'Status: pending / paid / overdue.',
             'Download PDF, mark paid, resend to customer.',
           ]} />
         </Sub>
-        <Sub title="Wellness Extract invoices to you">
+        <Sub title="Rudrans invoices to you">
           <Bullets items={[
-            'Monthly bill from Wellness Extract for the partner-rate of all active customer subscriptions.',
+            'Monthly bill from Rudrans for the partner-rate of all active customer subscriptions.',
             'Auto-deducts your accrued commission before issuing the bill.',
             'Pay via Razorpay or NEFT.',
           ]} />

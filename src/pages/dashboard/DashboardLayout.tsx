@@ -325,11 +325,11 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
           <Link to="/" className="flex items-center gap-3">
             <img
               src="https://public.readdy.ai/ai/img_res/30434500-ce14-4d0b-944f-490cb4702e27.png"
-              alt="Wellness Extract"
+              alt="Rudrans"
               className="h-8 w-8 object-contain"
             />
             <span className="text-white font-poppins font-bold text-lg tracking-wide">
-              Wellness Extract
+              Rudrans
             </span>
           </Link>
         </div>
@@ -387,10 +387,10 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
           <Link to="/" className="flex items-center gap-3" onClick={() => setSidebarOpen(false)}>
             <img
               src="https://public.readdy.ai/ai/img_res/30434500-ce14-4d0b-944f-490cb4702e27.png"
-              alt="Wellness Extract"
+              alt="Rudrans"
               className="h-8 w-8 object-contain"
             />
-            <span className="text-white font-poppins font-bold text-lg">Wellness Extract</span>
+            <span className="text-white font-poppins font-bold text-lg">Rudrans</span>
           </Link>
           <button
             onClick={() => setSidebarOpen(false)}

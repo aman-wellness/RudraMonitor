@@ -1,7 +1,7 @@
 -- 0111_governance.sql
 -- Access & Communication Governance tool.
 --
--- Mirrors the static `we_governance_v1.0_FINAL.html` document (Wellness Extract
+-- Mirrors the static `we_governance_v1.0_FINAL.html` document (Rudrans
 -- internal, v1.0 June 2026) as a live, multi-tenant, editable feature at
 -- /governance. Every customer org gets their own pillar/channel/policy setup.
 --
