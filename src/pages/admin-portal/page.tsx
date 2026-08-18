@@ -1468,6 +1468,7 @@ function SubscriptionTab({
   plans: Plan[];
   currentPlanId: string | null;
 }) {
+  const navigate = useNavigate();
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [pendingReq, setPendingReq] = useState<{ plan_id: string; plan_name: string; created_at: string } | null>(null);

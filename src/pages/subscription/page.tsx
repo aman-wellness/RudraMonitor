@@ -186,6 +186,14 @@ export default function SubscriptionPage() {
         <p className="mt-8 text-center text-[11px] text-gray-500 max-w-3xl mx-auto leading-relaxed">
           Razorpay billing for the v2 plans is rolling out. Click <strong>Switch</strong> to be redirected
           to the secure checkout flow with your selected plan, seat count and add-ons pre-filled.
+          {' '}
+          <button
+            type="button"
+            onClick={() => navigate('/addon-seats')}
+            className="text-emerald-400 hover:text-emerald-300 underline"
+          >
+            Manage add-on seat assignments →
+          </button>
         </p>
       </div>
     </DashboardLayout>

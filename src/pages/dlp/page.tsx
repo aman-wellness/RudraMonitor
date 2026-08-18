@@ -127,16 +127,17 @@ function EventsTable({ rows, loading, mode }: { rows: (DlpEvent & { agents?: { a
             <th className="px-4 py-3 text-left">When</th>
             <th className="px-4 py-3 text-left">Agent</th>
             <th className="px-4 py-3 text-left">{mode === 'usb' ? 'Device' : 'Mail provider'}</th>
-            <th className="px-4 py-3 text-left">{mode === 'usb' ? 'File' : 'Recipient + File'}</th>
+            <th className="px-4 py-3 text-left">{mode === 'usb' ? 'File' : 'From → To'}</th>
+            <th className="px-4 py-3 text-left">{mode === 'usb' ? 'Size' : 'Attachment'}</th>
             <th className="px-4 py-3 text-left">Severity</th>
             <th className="px-4 py-3 text-left">AI Reason</th>
             <th className="px-4 py-3 text-left">Alert</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-dark-700">
-          {loading && <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-500 text-xs">Loading…</td></tr>}
+          {loading && <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-500 text-xs">Loading…</td></tr>}
           {!loading && rows.length === 0 && (
-            <tr><td colSpan={7} className="px-4 py-12 text-center">
+            <tr><td colSpan={8} className="px-4 py-12 text-center">
               <i className={`${mode === 'usb' ? 'ri-usb-line' : 'ri-mail-send-line'} text-3xl text-gray-600 block mb-2`} />
               <p className="text-sm text-gray-300">No {mode === 'usb' ? 'USB transfers' : 'email attachments'} captured yet.</p>
               <p className="text-[11px] text-gray-500 mt-1">DLP events appear here within seconds of detection.</p>
@@ -151,12 +152,31 @@ function EventsTable({ rows, loading, mode }: { rows: (DlpEvent & { agents?: { a
               <td className="px-4 py-3 text-gray-300">
                 {mode === 'usb'
                   ? <>{e.device_name ?? '—'}{e.device_serial && <div className="text-[10px] text-gray-500 font-mono">{e.device_serial}</div>}</>
-                  : <span className="capitalize">{e.mail_provider ?? '—'}</span>}
+                  : <>
+                      <span className="capitalize">{e.mail_provider ?? '—'}</span>
+                      {e.mail_url && <div className="text-[10px] text-gray-500 truncate max-w-[160px]">{mailHost(e.mail_url)}</div>}
+                    </>}
               </td>
-              <td className="px-4 py-3 text-gray-200 max-w-md truncate">
+              <td className="px-4 py-3 text-gray-200 max-w-xs">
                 {mode === 'usb'
-                  ? <>{e.file_name ?? e.file_path ?? '—'}{e.file_size_bytes && <span className="text-[10px] text-gray-500 ml-2">({formatBytes(e.file_size_bytes)})</span>}</>
-                  : <>{e.recipient_email && <div className="text-cyan-300">{e.recipient_email}</div>}{e.file_name && <div className="text-[11px] text-gray-400">📎 {e.file_name}</div>}</>}
+                  ? <span className="truncate block">{e.file_name ?? e.file_path ?? '—'}</span>
+                  : <>
+                      <div className="text-[11px]"><span className="text-gray-500">From </span><span className="text-gray-200 break-all">{e.sender_email ?? '—'}</span></div>
+                      <div className="text-[11px]"><span className="text-gray-500">To </span><span className="text-cyan-300 break-all">{e.recipient_email ?? '—'}</span></div>
+                    </>}
+              </td>
+              <td className="px-4 py-3 text-gray-300 text-[11px]">
+                {mode === 'usb'
+                  ? (e.file_size_bytes ? formatBytes(e.file_size_bytes) : '—')
+                  : (e.file_name
+                      ? <>📎 {e.file_name}
+                          {(e.file_size_bytes || e.file_mime) && (
+                            <div className="text-[10px] text-gray-500">
+                              {[e.file_size_bytes ? formatBytes(e.file_size_bytes) : null, e.file_mime].filter(Boolean).join(' · ')}
+                            </div>
+                          )}
+                        </>
+                      : '—')}
               </td>
               <td className="px-4 py-3">
                 {e.ai_severity ? (
@@ -342,6 +362,12 @@ function Toggle({ label, sub, checked, onChange, disabled }: { label: string; su
       </button>
     </label>
   );
+}
+
+// Show a compact host for a captured webmail URL (e.g. "mail.google.com")
+// rather than the full deep-link.
+function mailHost(url: string): string {
+  try { return new URL(url).host; } catch { return url; }
 }
 
 function formatBytes(n: number): string {

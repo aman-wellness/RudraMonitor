@@ -184,6 +184,7 @@ export type DlpEvent = {
   device_type: string | null;
   mail_provider: string | null;
   mail_url: string | null;
+  sender_email: string | null;
   recipient_email: string | null;
   file_path: string | null;
   file_name: string | null;
