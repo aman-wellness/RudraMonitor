@@ -4,8 +4,12 @@ import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import Breadcrumb from '@/components/Breadcrumb';
 import { useAlerts } from '@/lib/dataHooks';
 
-const alertTabs = ['All', 'Error', 'Warning', 'Info'] as const;
-type AlertTab = (typeof alertTabs)[number];
+// Turn a raw alert_type (e.g. "high_cpu") into a readable tab label.
+const prettyType = (t: string) =>
+  t
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .replace(/\b(Cpu|Ram|Usb|Ai|Dlp|Os)\b/g, (m) => m.toUpperCase());
 
 const formatRelative = (iso: string) => {
   const diff = Date.now() - new Date(iso).getTime();
@@ -21,15 +25,23 @@ const formatRelative = (iso: string) => {
 export default function AlertsPage() {
   const navigate = useNavigate();
   const { rows: allAlerts, loading, resolveAlert } = useAlerts({ sinceHours: 24 * 7 });
-  const [tab, setTab] = useState<AlertTab>('All');
+  const [tab, setTab] = useState<string>('All');
   const [search, setSearch] = useState('');
   const [resolvedOnly, setResolvedOnly] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [resolving, setResolving] = useState<string | null>(null);
 
+  // Tabs are derived from the alert_type values actually present (plus an
+  // "All" tab), so the filter always reflects real agent alerts instead of
+  // a hardcoded Error/Warning/Info list that never matched the data.
+  const alertTabs = useMemo(
+    () => ['All', ...Array.from(new Set(allAlerts.map((a) => a.alert_type).filter(Boolean))).sort()],
+    [allAlerts],
+  );
+
   const filtered = useMemo(() => {
     return allAlerts.filter((a) => {
-      const matchesTab = tab === 'All' || a.alert_type === tab.toLowerCase();
+      const matchesTab = tab === 'All' || a.alert_type === tab;
       const matchesSearch = search === ''
         || a.message.toLowerCase().includes(search.toLowerCase())
         || (a.agent_name ?? '').toLowerCase().includes(search.toLowerCase());
@@ -117,7 +129,7 @@ export default function AlertsPage() {
                 onClick={() => setTab(t)}
                 className={`px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap transition-all ${tab === t ? 'bg-dark-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}
               >
-                {t}
+                {t === 'All' ? 'All' : prettyType(t)}
               </button>
             ))}
           </div>
