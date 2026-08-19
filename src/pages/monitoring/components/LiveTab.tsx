@@ -155,18 +155,24 @@ export default function LiveTab() {
     if (h) await h.leave();
   };
 
+  const tone = status === 'live' ? 'var(--d-success)'
+    : status === 'connecting' ? 'var(--d-warning)'
+    : status === 'failed' ? 'var(--d-danger)'
+    : 'var(--d-neutral)';
+
   return (
-    <div className="space-y-4">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+    <div className="space-y-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <select
             value={selectedId ?? ''}
             onChange={(e) => setSelectedId(e.target.value || null)}
             disabled={onlineAgents.length === 0}
-            className="bg-dark-800 border border-dark-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+            className="filter-date disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ minWidth: 190 }}
           >
             <option value="">
-              {onlineAgents.length === 0 ? 'No online agents' : 'Select agent…'}
+              {onlineAgents.length === 0 ? 'No agents reporting' : 'Select agent…'}
             </option>
             {onlineAgents.map((a) => (
               <option key={a.id} value={a.id}>
@@ -175,30 +181,27 @@ export default function LiveTab() {
             ))}
           </select>
           {selectedId && (
-            <button
-              onClick={() => setSelectedId(null)}
-              className="px-2.5 py-1.5 text-xs rounded-md bg-rose-500/10 border border-rose-500/30 text-rose-300 hover:bg-rose-500/15"
-            >Stop</button>
+            <button onClick={() => setSelectedId(null)} className="chip chip-danger text-[10.5px]">
+              <i className="ri-stop-circle-line" />
+              Stop
+            </button>
           )}
         </div>
-        <span className={`inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full ${
-          status === 'live' ? 'bg-emerald-500/15 text-emerald-300'
-          : status === 'connecting' ? 'bg-amber-500/15 text-amber-300'
-          : status === 'failed' ? 'bg-red-500/15 text-red-300'
-          : 'bg-dark-800 text-gray-400'
-        }`}>
-          <span className={`w-1.5 h-1.5 rounded-full ${
-            status === 'live' ? 'bg-emerald-400 animate-pulse'
-            : status === 'connecting' ? 'bg-amber-400 animate-pulse'
-            : status === 'failed' ? 'bg-red-400'
-            : 'bg-gray-500'
-          }`} />
-          {status === 'live' ? 'Live' : status === 'connecting' ? 'Connecting…' : status === 'failed' ? (errorMsg ?? 'Failed') : 'Idle'}
+        {/* The status word comes from the room's actual state — 'live' only once
+            a video track has arrived, not when the socket connects. */}
+        <span className="inline-flex items-center gap-1.5 text-[11px]" style={{ color: tone }}>
+          <span
+            className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+              status === 'live' || status === 'connecting' ? 'animate-pulse' : ''
+            }`}
+            style={{ background: tone }}
+          />
+          {status === 'live' ? 'Live' : status === 'connecting' ? 'Connecting…' : status === 'failed' ? 'Failed' : 'Idle'}
         </span>
       </div>
 
-      <div className="aspect-video bg-dark-900 border border-dark-700 rounded-xl overflow-hidden relative">
-        {selectedId ? (
+      {selectedId ? (
+        <div className="panel aspect-video overflow-hidden relative">
           <>
             <video
               ref={videoRef}
@@ -216,24 +219,35 @@ export default function LiveTab() {
             <button
               type="button"
               onClick={() => { void videoRef.current?.requestFullscreen?.(); }}
-              className="absolute bottom-3 right-3 bg-black/70 hover:bg-black/90 text-white text-xs px-2.5 py-1.5 rounded-md flex items-center gap-1.5 transition-colors"
+              className="absolute bottom-2.5 right-2.5 text-white text-[11px] px-2 py-1 rounded-md flex items-center gap-1.5 transition-opacity hover:opacity-80"
+              style={{ background: 'rgba(0,0,0,0.7)' }}
               title="Fullscreen (or double-click the video)"
               aria-label="Enter fullscreen"
             >
-              <i className="ri-fullscreen-line text-sm" />
+              <i className="ri-fullscreen-line text-[13px]" />
               Fullscreen
             </button>
             {stats && (
-              <div className="absolute top-2 right-2 bg-black/70 text-[10px] font-mono text-emerald-300 px-2 py-1.5 rounded leading-tight space-y-0.5 pointer-events-none">
-                <div>fps: <span className="text-white">{stats.fps}</span> · {stats.width}×{stats.height}</div>
-                <div>bytes: <span className="text-white">{stats.bitrate.toLocaleString()}</span></div>
+              <div
+                className="absolute top-2 right-2 text-[10px] font-mono px-2 py-1.5 rounded leading-tight space-y-0.5 pointer-events-none"
+                style={{ background: 'rgba(0,0,0,0.7)', color: 'rgba(255,255,255,0.65)' }}
+              >
+                <div>{stats.width}×{stats.height} · <span className="text-white">{stats.fps}</span> fps</div>
+                <div>{stats.bitrate.toLocaleString()} bytes</div>
               </div>
             )}
             {status === 'connecting' && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <div className="text-center px-6">
-                  <p className="text-sm text-amber-300">Connecting to agent…</p>
-                  <p className="text-[11px] text-gray-400 mt-2 max-w-md mx-auto">
+                  <div
+                    className="w-9 h-9 rounded-full mx-auto mb-3 animate-spin"
+                    style={{
+                      border: '2px solid var(--d-line)',
+                      borderTopColor: 'var(--d-warning)',
+                    }}
+                  />
+                  <p className="text-[12.5px] t-warning">Connecting to agent…</p>
+                  <p className="text-[11px] t3 mt-1.5 max-w-md mx-auto leading-relaxed">
                     First Live View on a Windows machine after a fresh agent install can take 30-60 s
                     while Windows Defender scans the bundled encoder. Subsequent sessions start within 2-3 s.
                   </p>
@@ -241,23 +255,37 @@ export default function LiveTab() {
               </div>
             )}
             {status === 'failed' && (
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <p className="text-sm text-rose-300">{errorMsg ?? 'Connection failed'}</p>
+              <div className="absolute inset-0 flex items-center justify-center p-6">
+                <div className="text-center max-w-md">
+                  <i className="ri-error-warning-line text-[22px] t-danger block mb-2" />
+                  <p className="text-[12.5px] t-danger">Connection failed</p>
+                  {errorMsg && (
+                    <p className="text-[11px] t3 mt-1.5 leading-relaxed">{errorMsg}</p>
+                  )}
+                </div>
               </div>
             )}
           </>
-        ) : (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="text-center">
-              <span className="w-12 h-12 flex items-center justify-center mx-auto mb-3 text-gray-600">
-                <i className="ri-broadcast-line text-3xl" />
-              </span>
-              <p className="text-sm text-gray-400">Select an online agent above to start a live stream.</p>
-              <p className="text-[11px] text-gray-600 mt-1">Requires the agent on v0.2.52+ with Screen Recording permission granted.</p>
+        </div>
+      ) : (
+        <div className="panel p-10">
+          <div className="flex items-center justify-center">
+            <div className="text-center max-w-sm">
+              <i className="ri-broadcast-line text-[24px] t3 block mb-2" />
+              <p className="text-[12.5px] t2">
+                {onlineAgents.length === 0
+                  ? 'No agents are reporting right now'
+                  : 'Pick an agent above to start a live stream'}
+              </p>
+              <p className="text-[11px] t3 mt-1.5 leading-relaxed">
+                {onlineAgents.length === 0
+                  ? 'A live stream needs the agent running and checking in — enrolled but silent machines cannot be viewed.'
+                  : 'Requires the agent on v0.2.52+ with Screen Recording permission granted.'}
+              </p>
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

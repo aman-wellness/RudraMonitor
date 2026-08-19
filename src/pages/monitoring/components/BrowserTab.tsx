@@ -1,8 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useActivityLogs, useAgents, useProductivityRules, classify } from '@/lib/dataHooks';
 import CategoryBadge from '@/components/feature/CategoryBadge';
-
-type CategoryFilter = 'all' | 'productive' | 'unproductive' | 'neutral';
+import MonitorFilters, { type CategoryFilter } from './MonitorFilters';
+import { useRegisterRefresh } from './refreshBus';
+import { formatDurationShort } from '@/lib/labels';
+import { Bar } from '@/pages/dashboard/components/ui';
+import { C } from '@/pages/dashboard/components/chartKit';
 
 // Best-effort: window titles aren't true URLs. Pull a domain-like substring if present, otherwise
 // fall back to the full title so the row is still meaningful.
@@ -19,9 +22,10 @@ export default function BrowserTab() {
   const [search, setSearch] = useState('');
 
   const [limit, setLimit] = useState(200);
-  const { rows, loading } = useActivityLogs({ type: 'browser', agentId: agentFilter, sinceHours: 24, limit });
+  const { rows, loading, refresh } = useActivityLogs({ type: 'browser', agentId: agentFilter, sinceHours: 24, limit });
   const hasMore = rows.length >= limit;
   const { ruleMap, upsertRule } = useProductivityRules();
+  useRegisterRefresh(useCallback(() => { void refresh(); }, [refresh]));
 
   const aggregated = useMemo(() => {
     const map = new Map<string, {
@@ -69,23 +73,22 @@ export default function BrowserTab() {
     const matchSearch =
       search === '' ||
       log.url.toLowerCase().includes(search.toLowerCase()) ||
-      log.pageTitle.toLowerCase().includes(search.toLowerCase());
+      log.pageTitle.toLowerCase().includes(search.toLowerCase()) ||
+      log.agentName.toLowerCase().includes(search.toLowerCase());
     return matchCat && matchSearch;
   });
 
-  const catOptions: { value: CategoryFilter; label: string; color: string }[] = [
-    { value: 'all', label: 'All', color: 'bg-dark-700 text-white' },
-    { value: 'productive', label: 'Productive', color: 'bg-emerald-500/15 text-emerald-400' },
-    { value: 'unproductive', label: 'Unproductive', color: 'bg-red-500/15 text-red-400' },
-    { value: 'neutral', label: 'Neutral', color: 'bg-gray-500/15 text-gray-400' },
-  ];
+  const longest = Math.max(1, ...filtered.map((f) => f.timeSpentSec));
+  // The "page title" column showed r.url — the same string the Site column is
+  // derived from, so "reddit.com | https://reddit.com/r/x" on every row. Only
+  // worth its width when it carries something the host doesn't already say.
+  const hasPath = filtered.some((f) => {
+    const t = f.pageTitle.trim();
+    return t && t !== f.url && t.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '') !== f.url;
+  });
 
-  const formatTime = (sec: number) => {
-    const min = Math.round(sec / 60);
-    const h = Math.floor(min / 60);
-    const m = min % 60;
-    return h > 0 ? `${h}h ${m}m` : `${m}m`;
-  };
+  const showBar = !hasPath;
+
   const formatLast = (iso: string) => {
     try {
       return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -95,105 +98,106 @@ export default function BrowserTab() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-3">
-        <div className="flex items-center gap-2 flex-wrap">
-          {catOptions.map((c) => (
-            <button
-              key={c.value}
-              onClick={() => setCatFilter(c.value)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                catFilter === c.value ? c.color : 'text-gray-500 hover:text-gray-400 bg-dark-800'
-              }`}
-            >
-              {c.label}
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-2">
-          <select
-            value={agentFilter}
-            onChange={(e) => setAgentFilter(e.target.value)}
-            className="bg-dark-800 border border-dark-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none"
-          >
-            <option value="all">All Agents</option>
-            {agents.map((a) => (
-              <option key={a.id} value={a.id}>{a.name}</option>
-            ))}
-          </select>
-          <div className="flex items-center bg-dark-800 border border-dark-700 rounded-lg px-3 py-1.5">
-            <span className="w-4 h-4 flex items-center justify-center text-gray-500 mr-2">
-              <i className="ri-search-line text-sm" />
+    <div className="space-y-2.5">
+      <MonitorFilters
+        agents={agents}
+        agentFilter={agentFilter}
+        onAgentChange={setAgentFilter}
+        search={search}
+        onSearchChange={setSearch}
+        searchPlaceholder="Site, page, employee…"
+        category={catFilter}
+        onCategoryChange={setCatFilter}
+        count={
+          filtered.length > 0 ? (
+            <span className="text-[10.5px] t3 tnum">
+              {filtered.length} of {aggregated.length}
             </span>
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search URLs..."
-              className="bg-transparent text-xs text-white placeholder-gray-600 focus:outline-none w-32 md:w-40"
-            />
-          </div>
-        </div>
-      </div>
+          ) : null
+        }
+      />
 
-      <div className="bg-dark-800 border border-dark-700 rounded-xl overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[700px]">
-            <thead>
-              <tr className="border-b border-dark-700">
-                <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase tracking-wider">URL</th>
-                <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase tracking-wider">Page Title</th>
-                <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase tracking-wider">Agent</th>
-                <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase tracking-wider">Category</th>
-                <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase tracking-wider">Time Spent</th>
-                <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase tracking-wider">Visits</th>
-                <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase tracking-wider">Last Visit</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((log) => {
-                return (
-                  <tr key={log.key} className="border-b border-dark-700/50 hover:bg-dark-700/30 transition-colors">
-                    <td className="px-4 py-3"><span className="text-sm text-emerald-400 font-medium">{log.url}</span></td>
-                    <td className="px-4 py-3"><p className="text-sm text-gray-300 truncate max-w-[260px]" title={log.pageTitle}>{log.pageTitle}</p></td>
-                    <td className="px-4 py-3"><p className="text-sm text-white font-medium">{log.agentName || 'Unknown'}</p></td>
-                    <td className="px-4 py-3">
-                      <CategoryBadge value={log.category} onChange={(c) => upsertRule('host', log.url, c)} size="md" />
+      <div className="panel overflow-hidden">
+        {filtered.length === 0 ? (
+          <div className="p-8 text-center">
+            <i className="ri-global-line text-[22px] t3 block mb-2" />
+            <p className="text-[12.5px] t2">
+              {rows.length === 0 ? 'No browser activity in the last 24 hours' : 'Nothing matches these filters'}
+            </p>
+            {rows.length === 0 && (
+              <p className="text-[11px] t3 mt-1">
+                Rows appear as soon as an agent reports a browser tab.
+              </p>
+            )}
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="d-table" style={{ minWidth: 680 }}>
+              <thead>
+                <tr className="hair-b">
+                  <th style={{ width: hasPath ? '20%' : 190 }}>Site</th>
+                  {hasPath && <th>Page</th>}
+                  <th style={{ width: 150 }}>Employee</th>
+                  <th style={{ width: 122 }}>Category</th>
+                  <th className="text-right" style={showBar ? undefined : { width: 96 }}>Time (24h)</th>
+                  <th className="text-right" style={{ width: 56 }}>Visits</th>
+                  <th className="text-right" style={{ width: 74 }}>Last</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((log) => (
+                  <tr key={log.key}>
+                    <td className="text-[12px] t1 font-medium truncate max-w-[220px]" title={log.url}>
+                      {log.url}
                     </td>
-                    <td className="px-4 py-3"><span className="text-sm text-gray-300">{formatTime(log.timeSpentSec)}</span></td>
-                    <td className="px-4 py-3"><span className="text-sm text-gray-300">{log.visits}x</span></td>
-                    <td className="px-4 py-3"><span className="text-sm text-gray-400">{formatLast(log.lastVisit)}</span></td>
+                    {hasPath && (
+                      <td className="max-w-[300px]">
+                        <span className="text-[11px] t3 truncate block" title={log.pageTitle}>
+                          {log.pageTitle || '—'}
+                        </span>
+                      </td>
+                    )}
+                    <td className="text-[11.5px] t2 truncate">{log.agentName || 'Unknown'}</td>
+                    <td>
+                      <CategoryBadge
+                        value={log.category}
+                        onChange={(c) => upsertRule('host', log.url, c)}
+                      />
+                    </td>
+                    <td>
+                      <span className="flex items-center gap-2.5 justify-end">
+                        {showBar && (
+                          <span className="flex-1 min-w-[60px] hidden md:block">
+                            <Bar pct={(log.timeSpentSec / longest) * 100} height={4} color={C.accent} />
+                          </span>
+                        )}
+                        <span className="text-[11.5px] t2 tnum text-right w-[52px]">
+                          {formatDurationShort(log.timeSpentSec)}
+                        </span>
+                      </span>
+                    </td>
+                    <td className="text-right text-[11.5px] t3 tnum">{log.visits}</td>
+                    <td className="text-right text-[11px] t3 whitespace-nowrap tnum">
+                      {formatLast(log.lastVisit)}
+                    </td>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {hasMore && (
-        <div className="flex justify-center pt-2">
-          <button
-            onClick={() => setLimit((l) => l + 200)}
-            className="px-4 py-1.5 rounded-lg bg-dark-800 border border-dark-700 text-gray-400 text-xs font-medium hover:bg-dark-700 transition-colors"
-          >
+        <div className="flex justify-center">
+          <button onClick={() => setLimit((l) => l + 200)} className="chip chip-quiet text-[10.5px]">
+            <i className="ri-arrow-down-line" />
             Load more
           </button>
         </div>
       )}
-
-      {!loading && filtered.length === 0 && (
-        <div className="text-center py-12">
-          <span className="w-12 h-12 flex items-center justify-center mx-auto mb-3 text-gray-600">
-            <i className="ri-global-line text-3xl" />
-          </span>
-          <p className="text-sm text-gray-500">
-            {rows.length === 0 ? 'No browser activity yet — agents will populate this in real time.' : 'No browser activity matches your filters'}
-          </p>
-        </div>
-      )}
       {loading && filtered.length === 0 && (
-        <div className="text-center py-12 text-xs text-gray-500">Loading…</div>
+        <p className="text-center text-[11px] t3 py-3">Loading…</p>
       )}
     </div>
   );

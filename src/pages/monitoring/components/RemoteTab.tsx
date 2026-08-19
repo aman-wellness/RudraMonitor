@@ -186,17 +186,18 @@ export default function RemoteTab() {
     : null;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <div className="flex items-center gap-2 flex-wrap">
           <select
             value={selectedId ?? ''}
             onChange={(e) => setSelectedId(e.target.value || null)}
             disabled={!!session || onlineAgents.length === 0}
-            className="bg-dark-800 border border-dark-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+            className="filter-date disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ minWidth: 190 }}
           >
             <option value="">
-              {onlineAgents.length === 0 ? 'No online agents' : 'Select agent…'}
+              {onlineAgents.length === 0 ? 'No agents reporting' : 'Select agent…'}
             </option>
             {onlineAgents.map((a) => (
               <option key={a.id} value={a.id}>
@@ -211,24 +212,26 @@ export default function RemoteTab() {
             placeholder="Reason (shown to employee)"
             disabled={!!session}
             maxLength={200}
-            className="bg-dark-800 border border-dark-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none disabled:opacity-50 w-72"
+            className="filter-date disabled:opacity-50"
+            style={{ width: 240 }}
           />
           {!session && (
             <button
               onClick={startSession}
               disabled={!selectedId}
-              className="px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              className="chip chip-success text-[10.5px] disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <i className="ri-remote-control-2-line mr-1" />
-              Start Remote Session
+              <i className="ri-remote-control-2-line" />
+              Start remote session
             </button>
           )}
           {session && (
             <button
               onClick={endSession}
-              className="px-3 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-red-300 text-xs font-medium"
+              className="chip chip-danger text-[10.5px]"
             >
-              End Session
+              <i className="ri-stop-circle-line" />
+              End session
             </button>
           )}
         </div>
@@ -236,15 +239,21 @@ export default function RemoteTab() {
       </div>
 
       {error && (
-        <div className="bg-rose-500/10 border border-rose-500/30 rounded-lg px-4 py-3 text-xs text-rose-300">
-          {error}
+        <div className="banner">
+          <span className="flex items-start gap-2 min-w-0">
+            <i className="ri-error-warning-line text-[13px] t-danger mt-px" />
+            <span className="text-[11.5px] t-danger">{error}</span>
+          </span>
         </div>
       )}
 
-      <div className="aspect-video bg-dark-900 border border-dark-700 rounded-xl overflow-hidden relative">
-        {!session && (
+      {/* Same as Live: only claim a 16:9 stage once there's a session to show. */}
+      {!session ? (
+        <div className="panel p-10">
           <EmptyState />
-        )}
+        </div>
+      ) : (
+      <div className="panel aspect-video overflow-hidden relative">
         {session && session.state !== 'ready' && (
           <PendingState state={session.state} />
         )}
@@ -261,25 +270,29 @@ export default function RemoteTab() {
           )
         )}
       </div>
+      )}
     </div>
   );
 }
 
 function StatePill({ state }: { state: SessionState }) {
   const labels: Record<SessionState, [string, string]> = {
-    idle:             ['Idle',                'bg-dark-800 text-gray-400'],
-    requesting:       ['Requesting…',         'bg-amber-500/15 text-amber-300'],
-    awaiting_consent: ['Awaiting consent…',   'bg-amber-500/15 text-amber-300'],
-    approved:         ['Starting RustDesk…',  'bg-amber-500/15 text-amber-300'],
-    ready:            ['Active',              'bg-emerald-500/15 text-emerald-300'],
-    failed:           ['Failed',              'bg-red-500/15 text-red-300'],
-    ended:            ['Ended',               'bg-gray-500/15 text-gray-300'],
+    idle:             ['Idle',               'var(--d-neutral)'],
+    requesting:       ['Requesting…',        'var(--d-warning)'],
+    awaiting_consent: ['Awaiting consent…',  'var(--d-warning)'],
+    approved:         ['Starting RustDesk…', 'var(--d-warning)'],
+    ready:            ['Active',             'var(--d-success)'],
+    failed:           ['Failed',             'var(--d-danger)'],
+    ended:            ['Ended',              'var(--d-neutral)'],
   };
-  const [label, cls] = labels[state];
-  const pulsing = ['requesting','awaiting_consent','approved','ready'].includes(state);
+  const [label, tone] = labels[state];
+  const pulsing = ['requesting', 'awaiting_consent', 'approved', 'ready'].includes(state);
   return (
-    <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium ${cls}`}>
-      <span className={`w-1.5 h-1.5 rounded-full bg-current ${pulsing ? 'animate-pulse' : ''}`} />
+    <span className="inline-flex items-center gap-1.5 text-[11px]" style={{ color: tone }}>
+      <span
+        className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${pulsing ? 'animate-pulse' : ''}`}
+        style={{ background: tone }}
+      />
       {label}
     </span>
   );
@@ -287,19 +300,17 @@ function StatePill({ state }: { state: SessionState }) {
 
 function EmptyState() {
   return (
-    <div className="absolute inset-0 flex items-center justify-center">
+    <div className="flex items-center justify-center">
       <div className="text-center max-w-md">
-        <span className="w-12 h-12 flex items-center justify-center mx-auto mb-3 text-gray-600">
-          <i className="ri-remote-control-2-line text-3xl" />
-        </span>
-        <p className="text-sm text-gray-400">
-          Pick an online agent and click <strong>Start Remote Session</strong> to connect.
+        <i className="ri-remote-control-2-line text-[24px] t3 block mb-2" />
+        <p className="text-[12.5px] t2">
+          Pick an agent and start a session to connect.
         </p>
-        <p className="text-[11px] text-gray-600 mt-2">
+        <p className="text-[11px] t3 mt-1.5 leading-relaxed">
           Unattended access is on by default — the session connects without a per-session prompt
           (consent is covered by your acceptable-use policy). To require an on-screen approval for a
-          specific org or agent instead, add a <code className="text-gray-400">remote_permissions</code>
-          row with <code className="text-gray-400">require_consent = true</code>.
+          specific org or agent instead, add a <code className="t2">remote_permissions</code>{' '}
+          row with <code className="t2">require_consent = true</code>.
         </p>
       </div>
     </div>
@@ -334,9 +345,12 @@ function PendingState({ state }: { state: SessionState }) {
   return (
     <div className="absolute inset-0 flex items-center justify-center">
       <div className="text-center max-w-md">
-        <div className="w-10 h-10 rounded-full border-2 border-amber-400/30 border-t-amber-400 animate-spin mx-auto mb-4" />
-        <p className="text-sm text-gray-200 font-medium">{m.title}</p>
-        <p className="text-xs text-gray-500 mt-1.5">{m.sub}</p>
+        <div
+          className="w-9 h-9 rounded-full mx-auto mb-3 animate-spin"
+          style={{ border: '2px solid var(--d-line)', borderTopColor: 'var(--d-warning)' }}
+        />
+        <p className="text-[12.5px] t1 font-medium">{m.title}</p>
+        <p className="text-[11px] t3 mt-1.5 leading-relaxed">{m.sub}</p>
       </div>
     </div>
   );
@@ -347,9 +361,9 @@ function ConnectionDetails({ session }: { session: ActiveSession }) {
   // with the desktop RustDesk client.
   return (
     <div className="absolute inset-0 flex items-center justify-center p-6">
-      <div className="bg-dark-800/80 border border-dark-700 rounded-xl p-6 max-w-md w-full">
-        <p className="text-xs text-gray-400 mb-4">
-          Open the <strong className="text-white">desktop RustDesk client</strong> on your machine and use
+      <div className="panel p-4 max-w-md w-full">
+        <p className="text-[11.5px] t2 mb-3">
+          Open the <strong className="t1">desktop RustDesk client</strong> on your machine and use
           these credentials to connect:
         </p>
         <Field label="Relay" value={session.rustdesk_server} />
@@ -360,8 +374,8 @@ function ConnectionDetails({ session }: { session: ActiveSession }) {
           mono
           secret={!!session.rustdesk_pass}
         />
-        <p className="text-[11px] text-gray-600 mt-4">
-          Or set <code className="text-gray-400">VITE_RUSTDESK_WEB_URL</code> at build time to embed the
+        <p className="text-[10.5px] t3 mt-3 leading-relaxed">
+          Or set <code className="t2">VITE_RUSTDESK_WEB_URL</code> at build time to embed the
           RustDesk web client directly in this iframe.
         </p>
       </div>
@@ -373,14 +387,14 @@ function Field({ label, value, mono, secret }: { label: string; value: string; m
   const [revealed, setRevealed] = useState(false);
   const display = secret && !revealed ? '•'.repeat(Math.min(16, value.length)) : value;
   return (
-    <div className="flex items-center justify-between gap-3 py-2 border-b border-dark-700/50 last:border-b-0">
-      <span className="text-[11px] uppercase tracking-wider text-gray-500">{label}</span>
+    <div className="flex items-center justify-between gap-3 py-2 hair-b last:border-b-0">
+      <span className="label">{label}</span>
       <div className="flex items-center gap-1.5">
-        <code className={`text-xs text-gray-200 ${mono ? 'font-mono' : ''}`}>{display}</code>
+        <code className={`text-[11.5px] t1 ${mono ? 'font-mono' : ''}`}>{display}</code>
         {secret && (
           <button
             onClick={() => setRevealed((v) => !v)}
-            className="p-1 rounded hover:bg-dark-700 text-gray-500 hover:text-gray-300"
+            className="icon-btn"
             title={revealed ? 'Hide' : 'Reveal'}
           >
             <i className={revealed ? 'ri-eye-off-line' : 'ri-eye-line'} />
@@ -388,7 +402,7 @@ function Field({ label, value, mono, secret }: { label: string; value: string; m
         )}
         <button
           onClick={() => void navigator.clipboard.writeText(value)}
-          className="p-1 rounded hover:bg-dark-700 text-gray-500 hover:text-gray-300"
+          className="icon-btn"
           title="Copy"
         >
           <i className="ri-clipboard-line" />

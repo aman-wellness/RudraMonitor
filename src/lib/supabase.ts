@@ -242,4 +242,10 @@ export type Agent = {
   // seat_count and the server is refusing its ingest calls.
   seat_rank?: number;
   seat_locked?: boolean;
+  // Per-agent capture cadence. Read straight off the row the UI already
+  // fetches, so screens can state the REAL interval instead of repeating a
+  // "captures every 5 minutes" claim in prose.
+  idle_threshold_secs?: number | null;
+  screenshot_interval_secs?: number | null;
+  video_interval_secs?: number | null;
 };

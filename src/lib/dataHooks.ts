@@ -27,6 +27,10 @@ export type UiAgent = {
   // migration 0078 + edge functions). The dashboard hides their stream
   // and shows a "Locked — over license" badge until the customer
   // upgrades seats or removes another agent.
+  /** Capture cadence from the agent's own row — seconds, or null if unset. */
+  idleThresholdSecs: number | null;
+  screenshotIntervalSecs: number | null;
+  videoIntervalSecs: number | null;
   seatLocked: boolean;
   seatRank: number;
 };
@@ -74,6 +78,9 @@ const toUi = (a: AgentRow): UiAgent => ({
   applications: [],
   browserUrls: [],
   enrollToken: a.enroll_token,
+  idleThresholdSecs: a.idle_threshold_secs ?? null,
+  screenshotIntervalSecs: a.screenshot_interval_secs ?? null,
+  videoIntervalSecs: a.video_interval_secs ?? null,
   seatLocked: !!a.seat_locked,
   seatRank: a.seat_rank ?? 0,
 });
