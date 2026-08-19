@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import AdminLayout from '../AdminLayout';
 import { supabase } from '@/lib/supabase';
+import { confirmDialog, notify } from '@/lib/notify';
 
 type DraftKind = 'post' | 'short_video' | 'long_video';
 type DraftStatus = 'pending' | 'approved' | 'rejected' | 'regen_requested';
@@ -95,13 +96,13 @@ export default function AdminMarketingPage() {
   const togglePause = async () => {
     if (!settings) return;
     const next = !settings.enabled;
-    if (!confirm(next ? 'Resume AI marketing generation?' : 'Pause AI marketing generation? The next cron tick will skip generating any content (no OpenAI calls, no cost).')) return;
+    if (!await confirmDialog({ title: next ? 'Resume AI marketing generation?' : 'Pause AI marketing generation? The next cron tick will skip generating any content (no OpenAI calls, no cost).' })) return;
     const { error } = await supabase
       .from('marketing_settings')
       .update({ enabled: next, updated_at: new Date().toISOString() })
       .eq('id', 1);
     if (error) {
-      alert(`Failed: ${error.message}`);
+      notify.error('Failed', { description: String(error.message) });
       return;
     }
     await refresh();
@@ -291,12 +292,12 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: () => void }) 
       });
       if (!r.ok) {
         const j = await r.json().catch(() => ({}));
-        alert(`Action failed: ${j.error ?? r.status}`);
+        notify.error('Action failed', { description: String(j.error ?? r.status) });
       } else {
         onChange();
       }
     } catch (e) {
-      alert(`Action failed: ${(e as Error).message}`);
+      notify.error('Action failed', { description: String((e as Error).message) });
     } finally {
       setBusy(null);
     }

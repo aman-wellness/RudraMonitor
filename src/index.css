@@ -1025,13 +1025,17 @@ html.dark .dash .chip-danger  { background: rgba(251, 113, 133, 0.14); }
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 8px;
+  padding: 4px 9px;
   border-radius: 8px;
-  background: var(--d-sunken);
-  border: 1px solid var(--d-line-soft);
-  transition: border-color 0.18s ease;
+  background: var(--d-panel);
+  border: 1px solid var(--d-line);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
-.dash .field:focus-within { border-color: var(--d-line-hi); }
+.dash .field:hover { border-color: var(--d-line-hi); }
+.dash .field:focus-within {
+  border-color: var(--d-accent);
+  box-shadow: 0 0 0 3px var(--d-accent-wash);
+}
 
 /* KPI strip grid. Hairlines between cells only — the panel border draws the
    outer edge — and they have to move as the column count changes, which is
@@ -1684,11 +1688,11 @@ html.dark .dash .check.is-bad { background: rgba(251, 113, 133, 0.09); }
   padding: 0 7px;
   border-radius: 7px;
   font-size: 11px;
-  background-color: var(--d-sunken) !important;
-  border: 1px solid var(--d-line-soft) !important;
+  background-color: var(--d-panel) !important;
+  border: 1px solid var(--d-line) !important;
   color: var(--d-t1) !important;
 }
-.dash input[type='date'].filter-date:focus { border-color: var(--d-line-hi) !important; }
+.dash input[type='date'].filter-date:focus { border-color: var(--d-accent) !important; }
 /* The native picker glyph is near-invisible on a dark surface. */
 html.dark .dash input[type='date'].filter-date::-webkit-calendar-picker-indicator {
   filter: invert(1);
@@ -1706,3 +1710,240 @@ html.dark .dash input[type='date'].filter-date::-webkit-calendar-picker-indicato
   align-items: center;
   gap: 4px;
 }
+
+/* ----------------------------------------------------------------------------
+   Categorical palette. Used for things with no inherent order — departments,
+   for instance — where a colour just needs to be stable and distinguishable.
+   Indexed by a hash of the label, so a department keeps its colour across
+   pages and sessions without anyone maintaining a mapping.
+   -------------------------------------------------------------------------- */
+:root {
+  --d-cat-1: #5b5bd6;
+  --d-cat-2: #0d9488;
+  --d-cat-3: #b45309;
+  --d-cat-4: #be123c;
+  --d-cat-5: #0369a1;
+  --d-cat-6: #7c3aed;
+  --d-cat-7: #15803d;
+  --d-cat-8: #c2410c;
+}
+html.dark {
+  --d-cat-1: #8e8ff7;
+  --d-cat-2: #2dd4bf;
+  --d-cat-3: #fbbf24;
+  --d-cat-4: #fb7185;
+  --d-cat-5: #38bdf8;
+  --d-cat-6: #c084fc;
+  --d-cat-7: #4ade80;
+  --d-cat-8: #fb923c;
+}
+
+/* Checkbox. Native inputs can't be styled consistently across the two themes,
+   so this is a button that looks like one. */
+.dash .cbx {
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  border: 1px solid var(--d-line-hi);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background-color 0.14s ease, border-color 0.14s ease;
+}
+.dash .cbx:hover { border-color: var(--d-accent); }
+.dash .cbx i {
+  font-size: 10px;
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.dash .cbx.is-on {
+  background: var(--d-accent);
+  border-color: var(--d-accent);
+}
+.dash .cbx.is-on i { opacity: 1; }
+html.dark .dash .cbx.is-on i { color: #14142b; }
+
+/* A panel the user has ticked. */
+.dash .panel.is-sel {
+  border-color: var(--d-accent);
+  box-shadow: var(--d-inset), 0 0 0 1px var(--d-accent);
+}
+
+/* Card grid: the whole card is a click target, so give it a pointer and a
+   slightly stronger hover than a static panel. */
+.dash .card-link { cursor: pointer; }
+.dash .card-link:hover { background-color: var(--d-hover); }
+
+/* Small stat tile inside an agent card. */
+.dash .tile {
+  padding: 7px 8px;
+  border-radius: 7px;
+  background: var(--d-sunken);
+  border: 1px solid var(--d-line-soft);
+  text-align: center;
+  min-width: 0;
+}
+
+/* Inline banner (seat-locked warning). */
+.dash .banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: rgba(225, 29, 72, 0.07);
+  border: 1px solid rgba(225, 29, 72, 0.22);
+}
+html.dark .dash .banner {
+  background: rgba(251, 113, 133, 0.09);
+  border-color: rgba(251, 113, 133, 0.24);
+}
+
+/* Selection action bar. */
+.dash .selbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 9px;
+  background: var(--d-accent-wash);
+  border: 1px solid transparent;
+}
+
+/* ============================================================================
+   DIALOGS + TOASTS
+   Replaces the browser's alert()/confirm()/prompt(). Drawn from the same tokens
+   as the rest of the app, and defined outside `.dash` where needed because both
+   surfaces mount at the document root.
+   ========================================================================== */
+
+@keyframes dlg-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes dlg-fade { from { opacity: 0; } to { opacity: 1; } }
+
+.dlg-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(9, 9, 14, 0.45);
+  backdrop-filter: blur(2px);
+  animation: dlg-fade 0.14s ease both;
+}
+html.dark .dlg-backdrop { background: rgba(0, 0, 0, 0.62); }
+
+.dlg {
+  width: 100%;
+  max-width: 400px;
+  padding: 16px;
+  border-radius: 13px;
+  background-color: var(--d-panel);
+  background-image: linear-gradient(180deg, var(--d-wash-a), var(--d-wash-b));
+  border: 1px solid var(--d-line);
+  box-shadow: var(--d-inset), 0 24px 60px -18px rgba(0, 0, 0, 0.5);
+  animation: dlg-in 0.18s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.dlg-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  color: var(--d-accent);
+  background: var(--d-accent-wash);
+}
+.dlg-icon.is-danger {
+  color: var(--d-danger);
+  background: rgba(225, 29, 72, 0.1);
+}
+html.dark .dlg-icon.is-danger { background: rgba(251, 113, 133, 0.13); }
+
+.dlg-title {
+  font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--d-t1);
+  line-height: 1.35;
+}
+.dlg-body {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--d-t2);
+  margin-top: 5px;
+}
+
+.dlg-btn {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--d-t2);
+  background: transparent;
+  border: 1px solid var(--d-line);
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.dlg-btn:hover { background: var(--d-hover); color: var(--d-t1); border-color: var(--d-line-hi); }
+.dlg-btn.is-primary {
+  color: #fff;
+  background: var(--d-accent);
+  border-color: var(--d-accent);
+}
+.dlg-btn.is-primary:hover { filter: brightness(1.08); }
+.dlg-btn.is-primary.is-danger {
+  background: var(--d-danger);
+  border-color: var(--d-danger);
+}
+html.dark .dlg-btn.is-primary { color: #14142b; }
+.dlg-btn:focus-visible { outline: 2px solid var(--d-accent); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .dlg-backdrop, .dlg { animation: none !important; }
+}
+
+/* ------------------------------------------------------------------ toasts --- */
+/* sonner ships its own CSS variables; point them at our tokens so toasts match
+   the app in both themes instead of carrying their own palette. */
+[data-sonner-toaster] {
+  --normal-bg: var(--d-panel);
+  --normal-border: var(--d-line);
+  --normal-text: var(--d-t1);
+  --border-radius: 10px;
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+}
+[data-sonner-toast] {
+  box-shadow: var(--d-inset), 0 12px 32px -12px rgba(0, 0, 0, 0.38) !important;
+  backdrop-filter: none;
+}
+[data-sonner-toast] [data-title] {
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+}
+[data-sonner-toast] [data-description] {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--d-t2);
+  margin-top: 2px;
+}
+[data-sonner-toast] [data-icon] { margin-right: 9px; }
+[data-sonner-toast] [data-close-button] {
+  background: var(--d-panel);
+  border-color: var(--d-line);
+  color: var(--d-t3);
+}
+[data-sonner-toast] [data-close-button]:hover { color: var(--d-t1); }

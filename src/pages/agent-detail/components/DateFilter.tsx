@@ -8,6 +8,7 @@
 // that did absolutely nothing. This version actually works.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { notify } from '@/lib/notify';
 
 const presets = ['Today', 'Yesterday', '7 days', '30 days', 'All time'] as const;
 type Preset = typeof presets[number];
@@ -94,7 +95,7 @@ export default function DateFilter({ onChange }: Props) {
   const applyCustom = () => {
     if (!customFrom || !customTo) return;
     if (customFrom > customTo) {
-      alert('From date must be before To date.');
+      notify.error('From date must be before To date.');
       return;
     }
     setActive('Custom');

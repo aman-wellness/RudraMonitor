@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import AdminLayout from '../AdminLayout';
 import { supabase, type Partner, type PartnerStatus } from '@/lib/supabase';
 import RegisterPartnerModal from '@/components/billing/RegisterPartnerModal';
+import { confirmDialog, promptDialog } from '@/lib/notify';
 
 const statusColor: Record<PartnerStatus, string> = {
   pending:   'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
@@ -54,7 +55,7 @@ export default function AdminPartners() {
   };
 
   const reject = async (partnerId: string) => {
-    const reason = window.prompt('Reason for rejection?') ?? '';
+    const reason = await promptDialog({ title: 'Reason for rejection?' }) ?? '';
     setBusy(partnerId);
     const { error } = await supabase.from('partners').update({ status: 'rejected', rejection_reason: reason }).eq('id', partnerId);
     if (error) setError(error.message); else await load();
@@ -69,7 +70,7 @@ export default function AdminPartners() {
   };
 
   const resetPassword = async (p: Partner) => {
-    if (!confirm(`Send password-reset email to ${p.contact_email}?`)) return;
+    if (!await confirmDialog({ title: `Send password-reset email to ${p.contact_email}?`, tone: 'danger' })) return;
     setBusy(p.id);
     setError(null);
     const { error } = await supabase.auth.resetPasswordForEmail(p.contact_email, {
@@ -80,7 +81,7 @@ export default function AdminPartners() {
   };
 
   const deletePartner = async (p: Partner) => {
-    if (!confirm(`Delete partner "${p.name}"? This will detach all customers/licenses linked to them. Auth users + their data are NOT deleted.`)) return;
+    if (!await confirmDialog({ title: `Delete partner "${p.name}"? This will detach all customers/licenses linked to them. Auth users + their data are NOT deleted.`, tone: 'danger' })) return;
     setBusy(p.id); setError(null);
     const { error } = await supabase.from('partners').delete().eq('id', p.id);
     if (error) setError(`Delete failed: ${error.message}`);

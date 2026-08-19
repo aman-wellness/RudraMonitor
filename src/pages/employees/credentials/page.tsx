@@ -4,6 +4,7 @@ import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import { supabase } from '@/lib/supabase';
 import { useAppAccess } from '@/lib/useAppAccess';
 import { useAuth } from '@/context/AuthContext';
+import { confirmDialog, notify } from '@/lib/notify';
 
 type Credential = {
   id: string;
@@ -190,7 +191,7 @@ export default function CredentialsVault() {
   // row gets written. Two-step confirm because deletion is permanent
   // (FK cascades nuke assignments + invoices + open requests too).
   const deleteCredential = async (r: Credential) => {
-    if (!confirm(`Delete "${r.platform_name}"? This removes the encrypted secret, all assignments, invoices and pending requests. Cannot be undone.`)) return;
+    if (!await confirmDialog({ title: `Delete "${r.platform_name}"? This removes the encrypted secret, all assignments, invoices and pending requests. Cannot be undone.`, tone: 'danger' })) return;
     setDeletingId(r.id);
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -207,7 +208,7 @@ export default function CredentialsVault() {
       setRows((rs) => rs.filter((x) => x.id !== r.id));
       setSelected((s) => { const n = new Set(s); n.delete(r.id); return n; });
     } catch (e) {
-      alert(`Delete failed: ${(e as Error).message}`);
+      notify.error('Delete failed', { description: String((e as Error).message) });
     } finally {
       setDeletingId(null);
     }
@@ -773,16 +774,30 @@ function CredentialModal({
                         <input
                           type="checkbox"
                           checked={checked}
-                          onChange={() => {
+                          onChange={async () => {
+                            if (checked) {
+                              setAssignedIds((prev) => {
+                                const next = new Set(prev);
+                                next.delete(e.id);
+                                return next;
+                              });
+                              return;
+                            }
+                            // Soft cap on seats — warn but don't hard-block (the
+                            // customer may be mid-resize). The prompt has to
+                            // happen out here: a useState updater must stay
+                            // synchronous and side-effect free, so it can't await.
+                            if (f.seats_total && assignedIds.size >= f.seats_total) {
+                              const ok = await confirmDialog({
+                                title: `Seat limit of ${f.seats_total} already reached`,
+                                body: 'You can still assign this employee — the extra seat will need to be covered when you next save.',
+                                confirmLabel: 'Assign anyway',
+                              });
+                              if (!ok) return;
+                            }
                             setAssignedIds((prev) => {
                               const next = new Set(prev);
-                              if (next.has(e.id)) next.delete(e.id); else {
-                                // Soft cap on seats — warn but don't hard-block (customer may be in the middle of resizing).
-                                if (f.seats_total && next.size >= f.seats_total) {
-                                  if (!confirm(`Seat limit (${f.seats_total}) already reached. Add this employee anyway?`)) return prev;
-                                }
-                                next.add(e.id);
-                              }
+                              next.add(e.id);
                               return next;
                             });
                           }}
@@ -1793,7 +1808,7 @@ function AccessMap() {
   useEffect(() => { void load(); }, [load]);
 
   const revoke = async (assignmentId: string, userName: string, platformName: string) => {
-    if (!confirm(`Revoke ${userName}'s access to ${platformName}? They will lose access immediately. This is logged in the audit trail.`)) return;
+    if (!await confirmDialog({ title: `Revoke ${userName}'s access to ${platformName}? They will lose access immediately. This is logged in the audit trail.`, tone: 'danger' })) return;
     setRevokingId(assignmentId);
     // `select()` returns the rows the UPDATE actually modified. Under RLS,
     // a denied update silently returns 0 rows with no error — so checking
@@ -1806,16 +1821,14 @@ function AccessMap() {
       .eq('id', assignmentId)
       .select('id');
     setRevokingId(null);
-    if (error) { alert(`Could not revoke: ${error.message}`); return; }
+    if (error) { notify.error('Could not revoke', { description: String(error.message) }); return; }
     if (!data || data.length === 0) {
-      alert(
-        'Revoke failed: no rows updated.\n\n' +
+      notify.error('Revoke failed: no rows updated.\n\n' +
         'Most likely the RLS policy that lets org owners/admins revoke access ' +
         'has not been applied to the database yet. Run migration ' +
         '0094_credential_assignments_admin_revoke.sql in the Supabase SQL editor, ' +
         'then try again.\n\n' +
-        'If you are an owner/admin and this still fails, check your org_members.role.'
-      );
+        'If you are an owner/admin and this still fails, check your org_members.role.');
       return;
     }
     await load();
@@ -2214,7 +2227,7 @@ function TestFetchButton({ credId }: { credId: string }) {
       setDone(true);
       setTimeout(() => setDone(false), 4000);
     } catch (e) {
-      alert(`Test fetch failed: ${(e as Error).message}`);
+      notify.error('Test fetch failed', { description: String((e as Error).message) });
     } finally { setBusy(false); }
   };
   return (
@@ -2296,7 +2309,7 @@ function FetchStatusTab({ credentials }: { credentials: Credential[] }) {
       if (!r.ok) throw new Error(j.error ?? `${r.status}`);
       await load();
     } catch (e) {
-      alert(`Retry failed: ${(e as Error).message}`);
+      notify.error('Retry failed', { description: String((e as Error).message) });
     } finally {
       setRetryingId(null);
     }
@@ -2443,22 +2456,22 @@ function InvoicesTab({ credentials, depts }: { credentials: Credential[]; depts:
   };
 
   const deleteRow = async (r: Invoice) => {
-    if (!confirm(`Delete invoice "${r.invoice_number ?? '(no number)'}" for ${r.platform_name}? This removes the row and any attached file.`)) return;
+    if (!await confirmDialog({ title: `Delete invoice "${r.invoice_number ?? '(no number)'}" for ${r.platform_name}? This removes the row and any attached file.`, tone: 'danger' })) return;
     try {
       await callDelete({ ids: [r.id] });
       await load();
-    } catch (e) { alert(`Delete failed: ${(e as Error).message}`); }
+    } catch (e) { notify.error('Delete failed', { description: String((e as Error).message) }); }
   };
 
   const deleteSelected = async () => {
     if (selected.size === 0) return;
-    if (!confirm(`Delete ${selected.size} invoice${selected.size === 1 ? '' : 's'} and any attached files? This cannot be undone.`)) return;
+    if (!await confirmDialog({ title: `Delete ${selected.size} invoice${selected.size === 1 ? '' : 's'} and any attached files? This cannot be undone.`, tone: 'danger' })) return;
     setBulkBusy(true);
     try {
       const j = await callDelete({ ids: Array.from(selected) });
-      alert(`Deleted ${j.deleted} invoice(s) + ${j.files_deleted} file(s).`);
+      notify.success(`Deleted ${j.deleted} invoice(s) + ${j.files_deleted} file(s).`);
       await load();
-    } catch (e) { alert(`Bulk delete failed: ${(e as Error).message}`); }
+    } catch (e) { notify.error('Bulk delete failed', { description: String((e as Error).message) }); }
     setBulkBusy(false);
   };
 
@@ -2732,7 +2745,7 @@ function InvoiceAttachmentLink({ invoice }: { invoice: Invoice }) {
       if (error || !data?.signedUrl) throw new Error(error?.message ?? 'no url');
       window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
     } catch (e) {
-      alert(`Could not open file: ${(e as Error).message}`);
+      notify.error('Could not open file', { description: String((e as Error).message) });
     } finally { setBusy(false); }
   };
   const icon = invoice.attachment_mime?.startsWith('image/') ? 'ri-image-line' : 'ri-file-pdf-2-line';
@@ -2760,7 +2773,7 @@ function RangeDeleteModal({ credentials, onClose, onDone }: {
     if (!from && !to) { setErr('Pick at least one date'); return; }
     const scope = credId ? ` for ${credentials.find((c) => c.id === credId)?.platform_name ?? 'selected credential'}` : '';
     const range = `${from || 'beginning'} → ${to || 'today'}`;
-    if (!confirm(`Delete EVERY invoice${scope} dated ${range}? This cannot be undone.`)) return;
+    if (!await confirmDialog({ title: `Delete EVERY invoice${scope} dated ${range}? This cannot be undone.`, tone: 'danger' })) return;
     setBusy(true); setErr(null);
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -2775,7 +2788,7 @@ function RangeDeleteModal({ credentials, onClose, onDone }: {
       });
       const j = await resp.json();
       if (!resp.ok) throw new Error(j.error ?? `${resp.status}`);
-      alert(`Deleted ${j.deleted} invoice(s) + ${j.files_deleted} file(s).`);
+      notify.success(`Deleted ${j.deleted} invoice(s) + ${j.files_deleted} file(s).`);
       await onDone();
     } catch (e) {
       setErr((e as Error).message);
@@ -3389,7 +3402,7 @@ function ConnectorModal({ cred, onClose, onSaved }: { cred: Credential; onClose:
           {cred.billing_api_connected && (
             <button
               onClick={async () => {
-                if (!confirm('Disconnect API token? Synced invoices will remain.')) return;
+                if (!await confirmDialog({ title: 'Disconnect API token? Synced invoices will remain.' })) return;
                 try {
                   const { data: { session } } = await supabase.auth.getSession();
                   await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/invoice-connector-save`, {

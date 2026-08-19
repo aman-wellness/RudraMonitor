@@ -14,6 +14,7 @@ import WallpaperUploadCard from '@/pages/org-settings/components/WallpaperUpload
 import TrackingScheduleCard from '@/pages/org-settings/components/TrackingScheduleCard';
 import PlanGrid from '@/components/PlanGrid';
 import { APP_ACCESS_CODES, type AppAccessCode, type AccessLevel } from '@/lib/useAppAccess';
+import { confirmDialog, notify } from '@/lib/notify';
 
 interface OrgUser {
   id: string;
@@ -364,7 +365,7 @@ export default function AdminPortalPage() {
       })
       .eq('id', editingUser.id);
     if (error) {
-      alert(`Failed to save: ${error.message}`);
+      notify.error('Failed to save', { description: String(error.message) });
       return;
     }
     await refresh();
@@ -959,7 +960,7 @@ export default function AdminPortalPage() {
                                 disabled={removeBusyId === user.id}
                                 onClick={async () => {
                                   const label = user.status === 'pending' ? 'cancel this pending invite' : `remove ${user.name || user.email}`;
-                                  if (!confirm(`Are you sure you want to ${label}? This cannot be undone.`)) return;
+                                  if (!await confirmDialog({ title: `Are you sure you want to ${label}? This cannot be undone.` })) return;
                                   setRemoveBusyId(user.id);
                                   setResendMsg(null);
                                   try {
@@ -1547,7 +1548,7 @@ function SubscriptionTab({
   const startUpgrade = async (p: Plan, extraNote?: string) => {
     if (!organization?.id) { setMsg({ kind: 'err', text: 'Missing org context' }); return; }
     const msg = `Request upgrade to "${p.name}"${extraNote ? ` (${extraNote})` : ''}? Our team will reach out within one business day to finalize billing.`;
-    if (!confirm(msg)) return;
+    if (!await confirmDialog({ title: msg })) return;
     setBusy(`plan-${p.id}`); setMsg(null);
     const { error, data } = await supabase
       .from('plan_upgrade_requests')
@@ -1579,7 +1580,7 @@ function SubscriptionTab({
   };
 
   const cancelRequest = async () => {
-    if (!organization?.id || !confirm('Cancel the pending upgrade request?')) return;
+    if (!organization?.id || !await confirmDialog({ title: 'Cancel the pending upgrade request?', tone: 'danger' })) return;
     setBusy('cancel');
     await supabase.from('plan_upgrade_requests')
       .update({ status: 'cancelled' })
@@ -1815,7 +1816,7 @@ function DangerZone({ orgId }: { orgId: string | null }) {
       setFeedback({ kind: 'err', text: 'Organisation not loaded yet.' });
       return;
     }
-    if (!confirm(confirmText)) return;
+    if (!await confirmDialog({ title: confirmText })) return;
     setBusy(action);
     setFeedback(null);
     try {

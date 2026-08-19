@@ -11,6 +11,7 @@ import { supabase } from '@/lib/supabase';
 import AnimatedBackground, { BACKGROUND_OPTIONS, type BackgroundKey } from './AnimatedBackground';
 import Avatar, { AVATAR_STYLE_OPTIONS, type AvatarStyle } from './Avatar';
 import '@xyflow/react/dist/style.css';
+import { confirmDialog, notify } from '@/lib/notify';
 
 // Dropdown that renders to document.body via portal so it can never be
 // clipped by an ancestor's `overflow: hidden`. Positions itself relative to
@@ -822,7 +823,7 @@ function OrgChartInner({
     }
     // Cycle check.
     if (newParentId && isDescendantOf(newParentId, child.id, parentMap)) {
-      alert('Cannot drop this person under their own report — would create a cycle.');
+      notify.success('Cannot drop this person under their own report — would create a cycle.');
       setNodes((ns) => ns.map((n) => n.id === node.id ? { ...n, position: laidOut.find((l: Node) => l.id === n.id)?.position ?? n.position } : n));
       return;
     }
@@ -844,7 +845,7 @@ function OrgChartInner({
       .eq('id', child.id);
     setSaving(false);
     if (error) {
-      alert(`Failed to update manager: ${error.message}`);
+      notify.error('Failed to update manager', { description: String(error.message) });
       return;
     }
     setPendingMove(null);
@@ -874,23 +875,23 @@ function OrgChartInner({
   // Quick action handlers for the unassigned-employees panel.
   const setEmployeeManager = useCallback(async (childId: string, managerId: string | null) => {
     const { error } = await supabase.from('employees').update({ manager_id: managerId }).eq('id', childId);
-    if (error) { alert(`Failed: ${error.message}`); return; }
+    if (error) { notify.error('Failed', { description: String(error.message) }); return; }
     onEmployeeMoved?.();
   }, [onEmployeeMoved]);
 
   const offboardEmployee = useCallback(async (id: string, name: string) => {
-    if (!confirm(`Mark ${name} as offboarded? They'll disappear from the chart and active employee lists.`)) return;
+    if (!await confirmDialog({ title: `Mark ${name} as offboarded? They'll disappear from the chart and active employee lists.`, tone: 'danger' })) return;
     const { error } = await supabase.from('employees').update({ status: 'offboarded' }).eq('id', id);
-    if (error) { alert(`Failed: ${error.message}`); return; }
+    if (error) { notify.error('Failed', { description: String(error.message) }); return; }
     onEmployeeMoved?.();
   }, [onEmployeeMoved]);
 
   // Hard-delete an employee row — for cases where the person was never
   // really in the org (stale M365 import, test account, duplicate, etc.).
   const deleteEmployee = useCallback(async (id: string, name: string) => {
-    if (!confirm(`Permanently DELETE ${name} from the org?\n\nThis removes them everywhere — chart, employees list, group memberships. Cannot be undone.`)) return;
+    if (!await confirmDialog({ title: `Permanently DELETE ${name} from the org?\n\nThis removes them everywhere — chart, employees list, group memberships. Cannot be undone.`, tone: 'danger' })) return;
     const { error } = await supabase.from('employees').delete().eq('id', id);
-    if (error) { alert(`Failed: ${error.message}`); return; }
+    if (error) { notify.error('Failed', { description: String(error.message) }); return; }
     onEmployeeMoved?.();
   }, [onEmployeeMoved]);
 
@@ -1039,14 +1040,19 @@ function OrgChartInner({
                       <td className="px-3 py-2">
                         <select
                           defaultValue=""
-                          onChange={(e) => {
+                          onChange={async (e) => {
                             const v = e.target.value;
-                            if (v) {
-                              if (confirm(`Set ${u.full_name}'s manager to ${empById.get(v)?.full_name ?? v}?`)) {
-                                setEmployeeManager(u.id, v);
-                              } else {
-                                e.target.value = '';
-                              }
+                            if (!v) return;
+                            // Reset the select first: awaiting the dialog lets
+                            // React pool/reuse the event, so `e.target` must not
+                            // be read after the await.
+                            const select = e.target;
+                            if (await confirmDialog({
+                              title: `Set ${u.full_name}'s manager to ${empById.get(v)?.full_name ?? v}?`,
+                            })) {
+                              setEmployeeManager(u.id, v);
+                            } else {
+                              select.value = '';
                             }
                           }}
                           className="w-full bg-dark-900 border border-dark-700 rounded px-2 py-1 text-white text-xs"

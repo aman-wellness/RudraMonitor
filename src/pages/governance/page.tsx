@@ -17,6 +17,7 @@ import PillarEditModal from './components/PillarEditModal';
 import AssignRoleModal from './components/AssignRoleModal';
 import PlatformEditModal from './components/PlatformEditModal';
 import PolicyEditModal from './components/PolicyEditModal';
+import { confirmDialog, notify } from '@/lib/notify';
 import type {
   GovPillar, GovPillarSummary, GovPillarAssignment, GovPillarPlatform,
   GovChannel, GovChannelMember, GovAccessRegister, GovPolicy, OrgUser,
@@ -186,7 +187,7 @@ export default function GovernancePage() {
     setSeeding(true);
     const { error } = await supabase.rpc('gov_seed_default_pillars', { p_org_id: orgId });
     if (error) {
-      alert(`Seed failed: ${error.message}`);
+      notify.error('Seed failed', { description: String(error.message) });
     }
     setSeeding(false);
     await load();
@@ -342,7 +343,7 @@ export default function GovernancePage() {
                       disabled={syncingM365}
                       onClick={async () => {
                         if (syncingM365) return;
-                        if (!confirm('Push every portal manager assignment to Microsoft 365 now?\n\nThis updates Entra ID immediately. The M365 Admin Center may take 5–30 minutes to reflect changes (cache lag).')) return;
+                        if (!await confirmDialog({ title: 'Push every portal manager assignment to Microsoft 365 now?\n\nThis updates Entra ID immediately. The M365 Admin Center may take 5–30 minutes to reflect changes (cache lag).' })) return;
                         setSyncingM365(true); setM365SyncResult(null);
                         try {
                           const { data: { session } } = await supabase.auth.getSession();
