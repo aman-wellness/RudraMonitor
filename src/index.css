@@ -1021,18 +1021,35 @@ html.dark .dash .chip-danger  { background: rgba(251, 113, 133, 0.14); }
 }
 
 /* Form controls on the dashboard surface. The global rules target
-   `.dashboard-shell input` with !important, so these need equal reach. */
-.dash input[type='text'],
-.dash select {
+   `.dashboard-shell input` with !important, so these need equal reach.
+   Matched on "not the exceptions" rather than input[type='text']: an <input>
+   with no type attribute, or type="email" / "search" / "number", did not match
+   that selector and fell through to the global white background — a white slab
+   on the dark surface. The wrapper (.field) owns the visible chrome; .filter-date
+   and the boolean controls own their own. */
+.dash input:not([type='checkbox']):not([type='radio']):not([type='range']):not(.filter-date):not(.cbx),
+.dash select:not(.filter-date),
+.dash textarea:not(.filter-date) {
   background-color: transparent !important;
   border-color: transparent !important;
   color: var(--d-t1) !important;
 }
-.dash input[type='text']::placeholder { color: var(--d-t3) !important; }
-.dash input[type='text']:focus,
-.dash select:focus {
+.dash input::placeholder,
+.dash textarea::placeholder { color: var(--d-t3) !important; }
+.dash input:focus,
+.dash select:focus,
+.dash textarea:focus {
   box-shadow: none !important;
   outline: none !important;
+}
+/* Chrome paints autofilled fields with its own near-white wash and ignores
+   background-color; the inset shadow is the only way to override it. */
+.dash input:-webkit-autofill,
+.dash input:-webkit-autofill:hover,
+.dash input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--d-t1);
+  -webkit-box-shadow: 0 0 0 1000px var(--d-panel) inset;
+  caret-color: var(--d-t1);
 }
 .dash .field {
   display: flex;
