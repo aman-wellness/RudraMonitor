@@ -12,6 +12,8 @@ export type UiAgent = {
   os: string;            // os_type (e.g. "Windows 11")
   status: 'online' | 'idle' | 'offline';
   lastActive: string;
+  /** Enrollment timestamp — drives the "fleet growth" sparkline on the dashboard. */
+  createdAt: string;
   ipAddress: string;
   department: string;
   productivity: number;
@@ -63,6 +65,7 @@ const toUi = (a: AgentRow): UiAgent => ({
   // so the UI is unambiguous about WHY it's silent.
   status: a.seat_locked ? 'offline' : computeStatus(a),
   lastActive: a.last_active ?? '-',
+  createdAt: a.created_at,
   ipAddress: a.ip_address ?? '-',
   department: a.department ?? DEFAULT_DEPT,
   productivity: 0,
@@ -188,6 +191,9 @@ type ActivityFilter = {
   type?: 'app' | 'browser' | 'screenshot' | 'idle' | 'alert' | 'video';
   agentId?: string;          // 'all' or omitted = all agents
   sinceHours?: number;       // default 24
+  /** Hours before now the window ENDS. 0 = up to now. Lets a caller ask for a
+   *  historical range rather than only "the last N hours". */
+  untilHours?: number;
   limit?: number;            // default 500
 };
 
@@ -198,6 +204,7 @@ export function useActivityLogs(filter: ActivityFilter = {}) {
   const [error, setError] = useState<string | null>(null);
 
   const sinceHours = filter.sinceHours ?? 24;
+  const untilHours = filter.untilHours ?? 0;
   const limit = filter.limit ?? 500;
   const type = filter.type;
   const agentId = filter.agentId;
@@ -217,6 +224,9 @@ export function useActivityLogs(filter: ActivityFilter = {}) {
       .eq('agents.org_id', organization.id)
       .order('created_at', { ascending: false })
       .limit(limit);
+    if (untilHours > 0) {
+      q = q.lte('created_at', new Date(Date.now() - untilHours * 3600 * 1000).toISOString());
+    }
     if (type) q = q.eq('activity_type', type);
     if (agentId && agentId !== 'all') q = q.eq('agent_id', agentId);
     const { data, error } = await q;
@@ -251,7 +261,7 @@ export function useActivityLogs(filter: ActivityFilter = {}) {
       setRows(mapped);
     }
     setLoading(false);
-  }, [organization, type, agentId, sinceHours, limit]);
+  }, [organization, type, agentId, sinceHours, untilHours, limit]);
 
   useEffect(() => {
     void refresh();
@@ -506,12 +516,16 @@ export type AlertRow = {
   created_at: string;
 };
 
-export function useAlerts(opts: { sinceHours?: number; limit?: number } = {}) {
+export function useAlerts(
+  opts: { sinceHours?: number; untilHours?: number; agentId?: string | null; limit?: number } = {},
+) {
   const { organization } = useAuth();
   const [rows, setRows] = useState<AlertRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   const sinceHours = opts.sinceHours ?? 24 * 7;
+  const untilHours = opts.untilHours ?? 0;
+  const agentId = opts.agentId ?? null;
   const limit = opts.limit ?? 200;
 
   const refresh = useCallback(async () => {
@@ -522,13 +536,17 @@ export function useAlerts(opts: { sinceHours?: number; limit?: number } = {}) {
     }
     setLoading(true);
     const since = new Date(Date.now() - sinceHours * 3600 * 1000).toISOString();
-    const { data, error } = await supabase
+    const until = new Date(Date.now() - untilHours * 3600 * 1000).toISOString();
+    let q = supabase
       .from('alerts')
       .select('id, agent_id, alert_type, message, ai_resolved, resolution, created_at, agents!inner(agent_name, org_id)')
       .gte('created_at', since)
+      .lte('created_at', until)
       .eq('agents.org_id', organization.id)
       .order('created_at', { ascending: false })
       .limit(limit);
+    if (agentId) q = q.eq('agent_id', agentId);
+    const { data, error } = await q;
     if (error) {
       setRows([]);
     } else {
@@ -549,7 +567,7 @@ export function useAlerts(opts: { sinceHours?: number; limit?: number } = {}) {
       );
     }
     setLoading(false);
-  }, [organization, sinceHours, limit]);
+  }, [organization, sinceHours, untilHours, agentId, limit]);
 
   useEffect(() => {
     void refresh();
@@ -649,13 +667,21 @@ export function useLatestSystemMetrics() {
 // supabase/migrations/0007_aggregation.sql. Use these instead of useActivityLogs whenever you only
 // need totals/buckets — much faster and pagination-proof at scale.
 
+// Mirrors the column names org_productivity_stats actually returns as of
+// migration 0118. It used to return total_*/pending_alerts/online_agents;
+// 0118 renamed them and dropped the last two, which silently turned every
+// field here into NaN → the dashboard showed "—" productivity and 0 alerts
+// even with a day of activity in the table. Callers that need unresolved
+// alert counts or the online agent count read useAlerts / useAgents instead.
 export type OrgProductivityStats = {
   total_active_seconds: number;
   total_weighted_seconds: number;
   total_idle_seconds: number;
   total_screenshots: number;
-  pending_alerts: number;
-  online_agents: number;
+  app_switches: number;
+  browser_events: number;
+  /** All alerts raised in the window (not just unresolved ones). */
+  alerts_count: number;
   // Derived in JS so callers don't repeat the math.
   productivity_pct: number | null;
 };
@@ -678,16 +704,28 @@ export function useOrgProductivityStats(sinceHours: number) {
       p_since: since,
     });
     if (!error && data && data.length > 0) {
-      const r = data[0] as Omit<OrgProductivityStats, 'productivity_pct'>;
-      const active = Number(r.total_active_seconds) || 0;
-      const weighted = Number(r.total_weighted_seconds) || 0;
+      type Raw = {
+        active_seconds: number | string;
+        weighted_seconds: number | string;
+        idle_seconds: number | string;
+        app_switches: number | string;
+        browser_events: number | string;
+        screenshots: number | string;
+        alerts_count: number | string;
+      };
+      const r = data[0] as Raw;
+      const active = Number(r.active_seconds) || 0;
+      // weighted_seconds is 'productive_seconds' since 0118 — time that
+      // matched a productivity_rule with category 'productive'.
+      const weighted = Number(r.weighted_seconds) || 0;
       setStats({
         total_active_seconds: active,
         total_weighted_seconds: weighted,
-        total_idle_seconds: Number(r.total_idle_seconds) || 0,
-        total_screenshots: Number(r.total_screenshots) || 0,
-        pending_alerts: Number(r.pending_alerts) || 0,
-        online_agents: Number(r.online_agents) || 0,
+        total_idle_seconds: Number(r.idle_seconds) || 0,
+        total_screenshots: Number(r.screenshots) || 0,
+        app_switches: Number(r.app_switches) || 0,
+        browser_events: Number(r.browser_events) || 0,
+        alerts_count: Number(r.alerts_count) || 0,
         productivity_pct: active > 0 ? Math.round((weighted / active) * 100) : null,
       });
     } else {
@@ -711,7 +749,9 @@ export type DailyProductivityRow = {
   productivity_pct: number;
 };
 
-export function useOrgProductivityDaily(days: number) {
+/** `untilHours` shifts the window's END back from now, `agentId` scopes it to
+ *  one machine — both pushed down to the RPC (migration 0126). */
+export function useOrgProductivityDaily(days: number, untilHours = 0, agentId?: string | null) {
   const { organization } = useAuth();
   const [rows, setRows] = useState<DailyProductivityRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -726,6 +766,8 @@ export function useOrgProductivityDaily(days: number) {
     const { data, error } = await supabase.rpc('org_productivity_daily', {
       p_org_id: organization.id,
       p_days: days,
+      p_until: new Date(Date.now() - untilHours * 3600 * 1000).toISOString(),
+      p_agent_id: agentId ?? null,
     });
     if (!error && data) {
       type Raw = {
@@ -749,7 +791,7 @@ export function useOrgProductivityDaily(days: number) {
       );
     }
     setLoading(false);
-  }, [organization, days]);
+  }, [organization, days, untilHours, agentId]);
 
   useEffect(() => {
     void refresh();
@@ -762,6 +804,10 @@ export type PerAgentAgg = {
   agent_id: string;
   active_seconds: number;
   weighted_seconds: number;
+  /** Rule-matched 'unproductive' time. active - weighted - unproductive = neutral
+   *  (time on apps no productivity_rule covers). The dashboard donut needs all
+   *  three buckets, so this is surfaced rather than folded into the pct. */
+  unproductive_seconds: number;
   idle_seconds: number;
   app_switches: number;
   browser_events: number;
@@ -816,6 +862,7 @@ export function useProductivityPerAgent(sinceHours: number, untilHours = 0) {
           agent_id: r.agent_id,
           active_seconds: active,
           weighted_seconds: productive,
+          unproductive_seconds: unproductive,
           idle_seconds: Number(r.idle_seconds) || 0,
           app_switches: Number(r.app_switches) || 0,
           browser_events: Number(r.browser_events) || 0,
@@ -836,6 +883,470 @@ export function useProductivityPerAgent(sinceHours: number, untilHours = 0) {
   }, [refresh]);
 
   return { byAgent, loading, refresh };
+}
+
+// =============== Dashboard aggregates (migration 0125) ===============
+//
+// Both hooks prefer the server-side RPC and fall back to client-side
+// bucketing over a capped window when the function isn't deployed yet.
+// The fallback flags itself via `approximate` so the UI can say so instead
+// of quietly showing a truncated total.
+
+const FALLBACK_ROW_CAP = 5000;
+
+export type HourlyActivityRow = {
+  /** ISO timestamp of the bucket start (local hour). */
+  hour: string;
+  activeSeconds: number;
+  activeAgents: number;
+};
+
+export function useOrgActivityHourly(hours: number, untilHours = 0, agentId?: string | null) {
+  const { organization } = useAuth();
+  const [rows, setRows] = useState<HourlyActivityRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [approximate, setApproximate] = useState(false);
+
+  const refresh = useCallback(async () => {
+    if (!organization) {
+      setRows([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    const until = new Date(Date.now() - untilHours * 3600 * 1000);
+    const { data, error } = await supabase.rpc('org_activity_hourly', {
+      p_org_id: organization.id,
+      p_hours: hours,
+      p_until: until.toISOString(),
+      p_agent_id: agentId ?? null,
+    });
+    if (!error && data) {
+      type Raw = { hour_bucket: string; active_seconds: number | string; active_agents: number | string };
+      setRows((data as Raw[]).map((r) => ({
+        hour: r.hour_bucket,
+        activeSeconds: Number(r.active_seconds) || 0,
+        activeAgents: Number(r.active_agents) || 0,
+      })));
+      setApproximate(false);
+      setLoading(false);
+      return;
+    }
+
+    // Fallback: bucket client-side. Only reached before 0125/0126 are applied.
+    const since = new Date(until.getTime() - (hours - 1) * 3600 * 1000);
+    let fq = supabase
+      .from('activity_logs')
+      .select('agent_id, activity_type, duration, created_at, agents!inner(org_id)')
+      .gte('created_at', since.toISOString())
+      .lte('created_at', until.toISOString())
+      .eq('agents.org_id', organization.id)
+      .in('activity_type', ['app', 'browser'])
+      .order('created_at', { ascending: false })
+      .limit(FALLBACK_ROW_CAP);
+    if (agentId) fq = fq.eq('agent_id', agentId);
+    const { data: logs } = await fq;
+    const seconds = new Map<number, number>();
+    const agentsSeen = new Map<number, Set<string>>();
+    for (const r of (logs ?? []) as { agent_id: string; duration: number | null; created_at: string }[]) {
+      const t = new Date(r.created_at);
+      t.setMinutes(0, 0, 0);
+      const key = t.getTime();
+      seconds.set(key, (seconds.get(key) ?? 0) + Math.max(0, r.duration ?? 0));
+      const set = agentsSeen.get(key) ?? new Set<string>();
+      set.add(r.agent_id);
+      agentsSeen.set(key, set);
+    }
+    // Gap-fill so the chart x-axis stays continuous, matching the RPC.
+    const end = new Date(until);
+    end.setMinutes(0, 0, 0);
+    const out: HourlyActivityRow[] = [];
+    for (let i = hours - 1; i >= 0; i--) {
+      const t = new Date(end.getTime() - i * 3600 * 1000);
+      const key = t.getTime();
+      out.push({
+        hour: t.toISOString(),
+        activeSeconds: seconds.get(key) ?? 0,
+        activeAgents: agentsSeen.get(key)?.size ?? 0,
+      });
+    }
+    setRows(out);
+    setApproximate((logs?.length ?? 0) >= FALLBACK_ROW_CAP);
+    setLoading(false);
+  }, [organization, hours, untilHours, agentId]);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  return { rows, loading, approximate, refresh };
+}
+
+export type TopAppRow = { name: string; seconds: number; events: number };
+
+export function useTopApplications(
+  sinceHours: number,
+  limit = 6,
+  untilHours = 0,
+  agentId?: string | null,
+) {
+  const { organization } = useAuth();
+  const [rows, setRows] = useState<TopAppRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [approximate, setApproximate] = useState(false);
+
+  const refresh = useCallback(async () => {
+    if (!organization) {
+      setRows([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    const since = new Date(Date.now() - sinceHours * 3600 * 1000).toISOString();
+    const until = new Date(Date.now() - untilHours * 3600 * 1000).toISOString();
+    const { data, error } = await supabase.rpc('org_top_applications', {
+      p_org_id: organization.id,
+      p_since: since,
+      p_limit: limit,
+      p_until: until,
+      p_agent_id: agentId ?? null,
+    });
+    if (!error && data) {
+      type Raw = { app_name: string; seconds: number | string; events: number | string };
+      setRows((data as Raw[]).map((r) => ({
+        name: r.app_name,
+        seconds: Number(r.seconds) || 0,
+        events: Number(r.events) || 0,
+      })));
+      setApproximate(false);
+      setLoading(false);
+      return;
+    }
+
+    // Fallback: aggregate client-side over a capped window.
+    let fq = supabase
+      .from('activity_logs')
+      .select('application_name, duration, agents!inner(org_id)')
+      .gte('created_at', since)
+      .lte('created_at', until)
+      .eq('agents.org_id', organization.id)
+      .eq('activity_type', 'app')
+      .order('created_at', { ascending: false })
+      .limit(FALLBACK_ROW_CAP);
+    if (agentId) fq = fq.eq('agent_id', agentId);
+    const { data: logs } = await fq;
+    const totals = new Map<string, { seconds: number; events: number }>();
+    for (const r of (logs ?? []) as { application_name: string | null; duration: number | null }[]) {
+      const name = (r.application_name ?? '').trim();
+      if (!name) continue;
+      const cur = totals.get(name) ?? { seconds: 0, events: 0 };
+      cur.seconds += Math.max(0, r.duration ?? 0);
+      cur.events += 1;
+      totals.set(name, cur);
+    }
+    setRows(
+      [...totals.entries()]
+        .map(([name, v]) => ({ name, seconds: v.seconds, events: v.events }))
+        .sort((a, b) => b.seconds - a.seconds || b.events - a.events)
+        .slice(0, limit),
+    );
+    setApproximate((logs?.length ?? 0) >= FALLBACK_ROW_CAP);
+    setLoading(false);
+  }, [organization, sinceHours, untilHours, agentId, limit]);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  return { rows, loading, approximate, refresh };
+}
+
+/** agent_id → { hourStartMs → activeSeconds }. Drives the per-agent presence
+ *  strips in the dashboard agent table. */
+export function useAgentActivityHourly(hours: number, untilHours = 0, agentId?: string | null) {
+  const { organization } = useAuth();
+  const [byAgent, setByAgent] = useState<Record<string, Record<number, number>>>({});
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    if (!organization) {
+      setByAgent({});
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    const until = new Date(Date.now() - untilHours * 3600 * 1000);
+    const { data, error } = await supabase.rpc('org_agent_hourly', {
+      p_org_id: organization.id,
+      p_hours: hours,
+      p_until: until.toISOString(),
+      p_agent_id: agentId ?? null,
+    });
+    const out: Record<string, Record<number, number>> = {};
+    if (!error && data) {
+      for (const r of data as { agent_id: string; hour_bucket: string; active_seconds: number | string }[]) {
+        const bucket = new Date(r.hour_bucket);
+        bucket.setMinutes(0, 0, 0);
+        const map = out[r.agent_id] ?? (out[r.agent_id] = {});
+        map[bucket.getTime()] = (map[bucket.getTime()] ?? 0) + (Number(r.active_seconds) || 0);
+      }
+    } else {
+      // Fallback before 0125/0126: bucket a capped window client-side.
+      const since = new Date(until.getTime() - (hours - 1) * 3600 * 1000).toISOString();
+      let fq = supabase
+        .from('activity_logs')
+        .select('agent_id, duration, created_at, agents!inner(org_id)')
+        .gte('created_at', since)
+        .lte('created_at', until.toISOString())
+        .eq('agents.org_id', organization.id)
+        .in('activity_type', ['app', 'browser'])
+        .order('created_at', { ascending: false })
+        .limit(FALLBACK_ROW_CAP);
+      if (agentId) fq = fq.eq('agent_id', agentId);
+      const { data: logs } = await fq;
+      for (const r of (logs ?? []) as { agent_id: string; duration: number | null; created_at: string }[]) {
+        const t = new Date(r.created_at);
+        t.setMinutes(0, 0, 0);
+        const map = out[r.agent_id] ?? (out[r.agent_id] = {});
+        map[t.getTime()] = (map[t.getTime()] ?? 0) + Math.max(0, r.duration ?? 0);
+      }
+    }
+    setByAgent(out);
+    setLoading(false);
+  }, [organization, hours, untilHours, agentId]);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  return { byAgent, loading, refresh };
+}
+
+// =============== DLP risk summary ===============
+
+export type DlpRiskEvent = {
+  id: string;
+  agent_name: string;
+  event_type: string;
+  severity: 'low' | 'medium' | 'high' | 'critical' | null;
+  authorized: boolean | null;
+  file_name: string | null;
+  occurred_at: string;
+};
+
+/** Severity counts for the window plus the same counts for the preceding
+ *  window, so the dashboard can show a real trend instead of a bare number. */
+export function useDlpRisk(sinceHours: number, untilHours = 0, agentId?: string | null) {
+  const { organization } = useAuth();
+  const [events, setEvents] = useState<DlpRiskEvent[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    if (!organization) {
+      setEvents([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    // Pull two windows in one query; split client-side.
+    // Two windows deep, so the trend has a baseline to compare against.
+    const until = new Date(Date.now() - untilHours * 3600 * 1000);
+    const since = new Date(until.getTime() - sinceHours * 2 * 3600 * 1000).toISOString();
+    let q = supabase
+      .from('dlp_events')
+      .select('id, event_type, ai_severity, ai_authorized, file_name, occurred_at, agents(agent_name)')
+      .eq('org_id', organization.id)
+      .gte('occurred_at', since)
+      .lte('occurred_at', until.toISOString())
+      .order('occurred_at', { ascending: false })
+      .limit(500);
+    if (agentId) q = q.eq('agent_id', agentId);
+    const { data } = await q;
+    type Raw = {
+      id: string;
+      event_type: string;
+      ai_severity: DlpRiskEvent['severity'];
+      ai_authorized: boolean | null;
+      file_name: string | null;
+      occurred_at: string;
+      agents: { agent_name: string } | { agent_name: string }[] | null;
+    };
+    setEvents(
+      ((data ?? []) as Raw[]).map((r) => ({
+        id: r.id,
+        agent_name: Array.isArray(r.agents) ? (r.agents[0]?.agent_name ?? '') : (r.agents?.agent_name ?? ''),
+        event_type: r.event_type,
+        severity: r.ai_severity,
+        authorized: r.ai_authorized,
+        file_name: r.file_name,
+        occurred_at: r.occurred_at,
+      })),
+    );
+    setLoading(false);
+  }, [organization, sinceHours, untilHours, agentId]);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  const summary = useMemo(() => {
+    const cutoff = Date.now() - (untilHours + sinceHours) * 3600 * 1000;
+    const counts = { low: 0, medium: 0, high: 0, critical: 0, unclassified: 0 };
+    let current = 0;
+    let previous = 0;
+    // Tracked separately per window so a caller showing the high+critical count
+    // can trend it against the same measure, rather than against total volume.
+    let serious = 0;
+    let seriousPrevious = 0;
+    for (const e of events) {
+      const t = new Date(e.occurred_at).getTime();
+      const isSerious = e.severity === 'high' || e.severity === 'critical';
+      if (t >= cutoff) {
+        current += 1;
+        if (isSerious) serious += 1;
+        if (e.severity) counts[e.severity] += 1;
+        else counts.unclassified += 1;
+      } else {
+        previous += 1;
+        if (isSerious) seriousPrevious += 1;
+      }
+    }
+    return { counts, current, previous, serious, seriousPrevious };
+  }, [events, sinceHours, untilHours]);
+
+  const recent = useMemo(() => {
+    const cutoff = Date.now() - (untilHours + sinceHours) * 3600 * 1000;
+    return events.filter((e) => new Date(e.occurred_at).getTime() >= cutoff);
+  }, [events, sinceHours, untilHours]);
+
+  return { events: recent, summary, loading, refresh };
+}
+
+// =============== Configured working hours ===============
+
+/** Per weekday (0 = Sunday … 6 = Saturday), the set of hours that count as
+ *  working time for this org. */
+export type WorkHours = {
+  /** byDay[dow] = Set of hour numbers 0-23 that are inside working hours. */
+  byDay: Set<number>[];
+  /** False when the org hasn't configured a schedule and we're using the
+   *  Mon–Fri 9-6 fallback — the UI says so rather than implying it's theirs. */
+  configured: boolean;
+  loading: boolean;
+};
+
+const FALLBACK_START = 9;
+const FALLBACK_END = 18; // exclusive
+const DOW_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
+
+const fallbackByDay = () =>
+  DOW_KEYS.map((_, dow) => {
+    const s = new Set<number>();
+    if (dow >= 1 && dow <= 5) for (let h = FALLBACK_START; h < FALLBACK_END; h++) s.add(h);
+    return s;
+  });
+
+/**
+ * Reads organization_settings.tracking_schedule_json (migration 0115) — the
+ * same schedule the agents use to decide when to capture — so "after hours"
+ * on the dashboard means after *this org's* hours, not a hardcoded 9-to-6.
+ * Falls back to Mon–Fri 09:00–18:00 when no schedule is enabled.
+ */
+export function useOrgWorkHours(): WorkHours {
+  const { organization } = useAuth();
+  const [state, setState] = useState<{ byDay: Set<number>[]; configured: boolean; loading: boolean }>(
+    { byDay: fallbackByDay(), configured: false, loading: true },
+  );
+
+  useEffect(() => {
+    if (!organization) {
+      setState({ byDay: fallbackByDay(), configured: false, loading: false });
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from('organization_settings')
+        .select('tracking_schedule_enabled, tracking_schedule_json')
+        .eq('org_id', organization.id)
+        .maybeSingle();
+      if (cancelled) return;
+
+      const row = data as
+        | { tracking_schedule_enabled: boolean | null; tracking_schedule_json: string | null }
+        | null;
+      if (!row?.tracking_schedule_enabled || !row.tracking_schedule_json) {
+        setState({ byDay: fallbackByDay(), configured: false, loading: false });
+        return;
+      }
+      try {
+        const parsed = JSON.parse(row.tracking_schedule_json) as {
+          days?: Record<string, { start: string; end: string }[]>;
+        };
+        const byDay = DOW_KEYS.map((key) => {
+          const set = new Set<number>();
+          for (const range of parsed.days?.[key] ?? []) {
+            const from = Number(range.start?.slice(0, 2));
+            const to = Number(range.end?.slice(0, 2));
+            if (!Number.isFinite(from) || !Number.isFinite(to)) continue;
+            // A range ending at :00 doesn't include that hour; anything past
+            // the hour mark does, so round the end up.
+            const endHour = range.end?.slice(3) === '00' ? to : to + 1;
+            for (let h = from; h < endHour && h < 24; h++) set.add(h);
+          }
+          return set;
+        });
+        // An enabled-but-empty schedule would mark everything after-hours,
+        // which is never what the admin meant.
+        const any = byDay.some((s) => s.size > 0);
+        setState({
+          byDay: any ? byDay : fallbackByDay(),
+          configured: any,
+          loading: false,
+        });
+      } catch {
+        setState({ byDay: fallbackByDay(), configured: false, loading: false });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [organization]);
+
+  return state;
+}
+
+// =============== License / seat position ===============
+
+export type OrgLicense = {
+  seat_count: number;
+  status: string;
+  expires_at: string | null;
+};
+
+export function useOrgLicense() {
+  const { organization } = useAuth();
+  const [license, setLicense] = useState<OrgLicense | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    if (!organization) {
+      setLicense(null);
+      setLoading(false);
+      return;
+    }
+    const { data } = await supabase
+      .from('licenses')
+      .select('seat_count, status, expires_at')
+      .eq('organization_id', organization.id)
+      .order('expires_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    setLicense(
+      data
+        ? {
+            seat_count: Number((data as { seat_count: number }).seat_count) || 0,
+            status: (data as { status: string }).status,
+            expires_at: (data as { expires_at: string | null }).expires_at,
+          }
+        : null,
+    );
+    setLoading(false);
+  }, [organization]);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  return { license, loading, refresh };
 }
 
 // Generates short-lived signed URLs for storage paths in one batch.

@@ -1,81 +1,101 @@
+import { useEffect, useState } from 'react';
 import DashboardLayout from './DashboardLayout';
-import StatCards from './components/StatCards';
+import { DashboardTick } from './refreshBus';
+import KpiStrip from './components/KpiStrip';
+import WorkforceActivity from './components/WorkforceActivity';
+import ProductivityOverview from './components/ProductivityOverview';
+import WorkPatternHeatmap from './components/WorkPatternHeatmap';
+import FleetHealthPanel from './components/FleetHealthPanel';
+import DepartmentPanel from './components/DepartmentPanel';
+import TopApplications from './components/TopApplications';
+import RiskPanel from './components/RiskPanel';
 import AgentTable from './components/AgentTable';
-import ProductivityChart from './components/ProductivityChart';
-import RecentActivity from './components/RecentActivity';
-import AlertsSummary from './components/AlertsSummary';
-import { useAuth } from '@/context/AuthContext';
-import { useTrialDaysLeft } from '@/lib/dataHooks';
+import FilterBar from './components/FilterBar';
+import { SectionBand } from './components/ui';
+import { DashFilterContext, defaultFilter, type DashFilter } from './filterContext';
 
-const greet = () => {
-  const h = new Date().getHours();
-  if (h < 12) return 'Good Morning';
-  if (h < 17) return 'Good Afternoon';
-  return 'Good Evening';
-};
+/* Spacing is tiered on purpose: 10px between panels inside a row, 16px between
+   sections. Equal gaps everywhere is what made an earlier version read as an
+   undifferentiated wall — the eye needs the larger gap to know a new idea has
+   started. Each band is labelled, and panels stagger in on mount by index.
+
+   No page-level header: the shell already names the route, and the KPI strip is
+   the first thing worth reading. */
+
+const AUTO_REFRESH_MS = 60_000;
 
 export default function Dashboard() {
-  const { user, organization } = useAuth();
-  const trialDays = useTrialDaysLeft();
-  const firstName =
-    ((user?.user_metadata?.full_name as string | undefined) || user?.email || 'Admin').split(' ')[0];
-  const subStatus = organization?.subscription_status ?? 'trial';
-  const trialBadge =
-    subStatus === 'trial'
-      ? trialDays === null
-        ? 'Trial'
-        : trialDays > 0
-          ? `Trial Active - ${trialDays} day${trialDays === 1 ? '' : 's'} left`
-          : 'Trial Expired'
-      : subStatus === 'active'
-        ? 'Subscription Active'
-        : 'Subscription Expired';
+  // Every panel subscribes to this tick and re-fetches in place, so data stays
+  // live without the page reloading — filters, selected ranges and scroll
+  // position all survive a refresh.
+  const [tick, setTick] = useState(0);
+  // Agent + date-range filter. Deliberately not persisted: coming back to a
+  // dashboard silently scoped to last month is worse than re-picking it.
+  const [filter, setFilter] = useState<DashFilter>(defaultFilter);
+
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), AUTO_REFRESH_MS);
+    return () => clearInterval(id);
+  }, []);
 
   return (
     <DashboardLayout>
-      <div className="space-y-5 md:space-y-6">
-        {/* Header greeting */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-          <div>
-            <h1 className="text-xl md:text-2xl font-poppins font-bold text-white">
-              {greet()}, {firstName}
-            </h1>
-            <p className="text-sm text-gray-500 mt-0.5">
-              Here&apos;s what&apos;s happening across your organization today
-            </p>
+      <DashboardTick.Provider value={tick}>
+        <DashFilterContext.Provider value={filter}>
+        <div className="dash">
+          <FilterBar filter={filter} onChange={setFilter} />
+
+          {/* ------------------------------------------------ right now ---- */}
+          <div className="space-y-2.5">
+            <KpiStrip />
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-2.5">
+              <div className="lg:col-span-8 min-w-0 flex">
+                <WorkforceActivity index={1} />
+              </div>
+              <div className="lg:col-span-4 min-w-0 flex">
+                <ProductivityOverview index={2} />
+              </div>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 text-xs font-medium">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              {trialBadge}
-            </span>
-            <button
-              onClick={() => window.location.reload()}
-              className="px-3 py-1.5 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-300 text-xs font-medium transition-colors flex items-center gap-1.5"
-            >
-              <span className="w-4 h-4 flex items-center justify-center">
-                <i className="ri-refresh-line text-sm" />
-              </span>
-              Refresh
-            </button>
+
+          {/* -------------------------------------------- patterns / ops ---- */}
+          <div className="mt-4 space-y-2.5">
+            <SectionBand label="Patterns & operations" />
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-2.5">
+              <div className="lg:col-span-8 min-w-0 flex">
+                <WorkPatternHeatmap index={3} />
+              </div>
+              <div className="lg:col-span-4 min-w-0 flex">
+                <FleetHealthPanel index={4} />
+              </div>
+            </div>
+          </div>
+
+          {/* ------------------------------------------------ breakdowns ---- */}
+          <div className="mt-4 space-y-2.5">
+            <SectionBand label="Breakdowns" />
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5">
+              <div className="min-w-0 flex">
+                <DepartmentPanel index={5} />
+              </div>
+              <div className="min-w-0 flex">
+                <TopApplications index={6} />
+              </div>
+              <div className="min-w-0 flex">
+                <RiskPanel index={7} />
+              </div>
+            </div>
+          </div>
+
+          {/* ----------------------------------------------------- fleet ---- */}
+          <div className="mt-4 space-y-2.5">
+            <SectionBand label="Fleet" />
+            <AgentTable index={8} />
           </div>
         </div>
-
-        {/* Stat Cards */}
-        <StatCards />
-
-        {/* Agent Table */}
-        <AgentTable />
-
-        {/* Charts + Activity */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-          <ProductivityChart />
-          <RecentActivity />
-        </div>
-
-        {/* Alerts */}
-        <AlertsSummary />
-      </div>
+        </DashFilterContext.Provider>
+      </DashboardTick.Provider>
     </DashboardLayout>
   );
 }
