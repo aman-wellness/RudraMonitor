@@ -509,7 +509,11 @@ export type AlertRow = {
   id: string;
   agent_id: string;
   agent_name: string;
-  alert_type: 'error' | 'warning' | 'info';
+  /** Free text written by the agent — high_cpu, unauthorized_usb,
+   *  idle_extended, offline, … NOT an error/warning/info severity enum. It was
+   *  typed as that union, which is why several screens branch on 'error' /
+   *  'warning' and always fall through to the neutral case. */
+  alert_type: string;
   message: string;
   ai_resolved: boolean;
   resolution: string | null;

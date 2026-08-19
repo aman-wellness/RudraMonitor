@@ -56,6 +56,41 @@ export function useElementWidth<T extends HTMLElement>() {
 }
 
 /**
+ * Width AND height of a container, for charts that should fill whatever space
+ * their panel has rather than sit at a fixed height with dead air beneath.
+ *
+ * The measured element must get its own height from layout (flex-1) and the SVG
+ * must be absolutely positioned inside it — if the SVG contributed to the
+ * element's height, setting that height from the measurement would feed back
+ * into the observer.
+ */
+export function useElementBox<T extends HTMLElement>() {
+  const ref = useRef<T | null>(null);
+  const [box, setBox] = useState({ width: 0, height: 0 });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    // Ignore sub-pixel churn; fractional layout widths would otherwise re-render
+    // on every scrollbar/zoom nudge.
+    const read = (width: number, height: number) =>
+      setBox((prev) =>
+        Math.abs(prev.width - width) < 1 && Math.abs(prev.height - height) < 1
+          ? prev
+          : { width, height },
+      );
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0]?.contentRect;
+      if (r) read(r.width, r.height);
+    });
+    ro.observe(el);
+    const r = el.getBoundingClientRect();
+    read(r.width, r.height);
+    return () => ro.disconnect();
+  }, []);
+  return { ref, width: box.width, height: box.height };
+}
+
+/**
  * Catmull-Rom → cubic bezier, so the curve passes through every sample instead
  * of cutting the corner on spiky fleet data.
  *

@@ -783,6 +783,19 @@ html.dark {
   border-color: var(--d-line-hi);
   box-shadow: var(--d-inset), var(--d-shadow-hi);
 }
+/* `.rise` uses animation-fill-mode: both, so a transform stays applied to the
+   element after the entrance finishes — and a transformed element is its own
+   stacking context. That traps every dropdown inside its panel: a `.menu` or
+   `.filter-pop` with z-index 20/40 still paints BELOW the next panel in the
+   DOM, because the comparison happens between the two panels (both z-index
+   auto), not between the popover and the panel. The department menu and the
+   date-range popover in the agent header were both sliced in half by the KPI
+   strip underneath them.
+   Fix: lift the whole panel while it holds an open overlay. */
+.dash .panel:has(.menu),
+.dash .panel:has(.filter-pop) {
+  z-index: 50;
+}
 
 .dash .panel-head {
   display: flex;
@@ -1058,6 +1071,21 @@ html.dark .dash .chip-danger  { background: rgba(251, 113, 133, 0.14); }
   .dash .kpi-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
   .dash .kpi-grid > * { border-top: 0; border-left: 0; }
   .dash .kpi-grid > *:not(:first-child) { border-left: 1px solid var(--d-line-soft); }
+}
+
+/* Same divider treatment for a four-cell strip. .kpi-grid is tuned for exactly
+   six cells — reusing it for four leaves two empty columns at ≥1280px. */
+.dash .quad-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.dash .quad-grid > *:nth-child(2n) { border-left: 1px solid var(--d-line-soft); }
+.dash .quad-grid > *:nth-child(n + 3) { border-top: 1px solid var(--d-line-soft); }
+
+@media (min-width: 900px) {
+  .dash .quad-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .dash .quad-grid > * { border-top: 0; border-left: 0; }
+  .dash .quad-grid > *:not(:first-child) { border-left: 1px solid var(--d-line-soft); }
 }
 
 /* Heatmap: rounded cells on a continuous accent ramp, with the out-of-hours
@@ -1681,7 +1709,14 @@ html.dark .dash .check.is-bad { background: rgba(251, 113, 133, 0.09); }
   font-weight: 500;
 }
 
-.dash input[type='date'].filter-date {
+/* Matches every input type this class is actually used on. It used to say
+   input[type='date'] only, so the agent-detail custom-range fields — which are
+   datetime-local — got no styling and rendered as white native boxes on the
+   dark surface. */
+.dash .filter-date,
+.dash input[type='date'].filter-date,
+.dash input[type='datetime-local'].filter-date,
+.dash input[type='time'].filter-date {
   flex: 1;
   min-width: 0;
   height: 28px;
@@ -1692,9 +1727,9 @@ html.dark .dash .check.is-bad { background: rgba(251, 113, 133, 0.09); }
   border: 1px solid var(--d-line) !important;
   color: var(--d-t1) !important;
 }
-.dash input[type='date'].filter-date:focus { border-color: var(--d-accent) !important; }
+.dash .filter-date:focus { border-color: var(--d-accent) !important; }
 /* The native picker glyph is near-invisible on a dark surface. */
-html.dark .dash input[type='date'].filter-date::-webkit-calendar-picker-indicator {
+html.dark .dash .filter-date::-webkit-calendar-picker-indicator {
   filter: invert(1);
   opacity: 0.55;
 }
@@ -1800,6 +1835,28 @@ html.dark .dash .cbx.is-on i { color: #14142b; }
 html.dark .dash .banner {
   background: rgba(251, 113, 133, 0.09);
   border-color: rgba(251, 113, 133, 0.24);
+}
+
+/* Media thumbnail tile — screenshot / video grids. The accent edge on hover is
+   the only affordance; a coloured border at rest would fight the grid. */
+.dash .tile-media {
+  border: 1px solid var(--d-line);
+  transition: border-color 0.16s ease, transform 0.16s ease;
+}
+.dash .tile-media:hover {
+  border-color: var(--d-accent);
+  transform: translateY(-1px);
+}
+
+/* Same shape in the warning tone, for "here's why this looks empty" notices
+   that aren't failures. */
+.dash .banner.is-notice {
+  background: rgba(217, 119, 6, 0.08);
+  border-color: rgba(217, 119, 6, 0.22);
+}
+html.dark .dash .banner.is-notice {
+  background: rgba(251, 191, 36, 0.09);
+  border-color: rgba(251, 191, 36, 0.22);
 }
 
 /* Selection action bar. */
@@ -1947,3 +2004,58 @@ html.dark .dlg-btn.is-primary { color: #14142b; }
   color: var(--d-t3);
 }
 [data-sonner-toast] [data-close-button]:hover { color: var(--d-t1); }
+
+/* Toggle switch. Each row passes its own accent through `--tg`, so the six
+   capture controls keep their distinct colours without six copies of the
+   markup carrying hardcoded Tailwind classes. */
+.dash .toggle {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background: var(--d-track);
+  transition: background-color 0.18s ease, opacity 0.18s ease;
+}
+.dash .toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.dash .toggle.is-on { background: var(--tg, var(--d-accent)); }
+.dash .toggle.is-on::after { transform: translateX(16px); }
+.dash .toggle:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* One capture-control row. */
+.dash .ctl-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: var(--d-sunken);
+  border: 1px solid var(--d-line-soft);
+}
+.dash .ctl-row + .dash .ctl-row { margin-top: 8px; }
+.dash .ctl-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  background: var(--d-panel);
+  border: 1px solid var(--d-line-soft);
+  color: var(--d-t3);
+}
+.dash .ctl-icon.is-on { color: var(--tg, var(--d-accent)); }
