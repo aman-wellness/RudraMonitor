@@ -51,3 +51,18 @@ export const formatDurationShort = (sec: number) => {
   if (mins < 60) return `${mins}m`;
   return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, '0')}m`;
 };
+
+/**
+ * How long ago, in the shortest honest form: "just now", "14m ago", "3h ago",
+ * "2d ago". Third copy of this function in the app — the alerts page and the
+ * agent-detail page each had their own, disagreeing on whether sub-minute is
+ * "0 min ago" or "just now".
+ */
+export const formatRelative = (iso: string) => {
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+};

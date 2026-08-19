@@ -55,8 +55,12 @@ export default function FleetHealthPanel({ index = 0 }: { index?: number }) {
       );
     });
 
-    const critical = alertRows.filter((a) => a.alert_type === 'error' && !a.ai_resolved);
-    const criticalAgents = new Set(critical.map((a) => a.agent_id));
+    // An UNRESOLVED alert is the only alert signal that exists: alert_type holds
+    // the kind (high_cpu, offline, …), never a severity, so the old
+    // `alert_type === 'error'` test matched nothing and alerts contributed
+    // nothing to the health score on any org.
+    const openAlerts = alertRows.filter((a) => !a.ai_resolved);
+    const criticalAgents = new Set(openAlerts.map((a) => a.agent_id));
 
     const silent = agents.filter((a) => {
       if (a.lastActive === '-') return true;
@@ -76,7 +80,7 @@ export default function FleetHealthPanel({ index = 0 }: { index?: number }) {
       reporting: fresh.length,
       healthy,
       pressured: pressured.length,
-      critical: critical.length,
+      openAlerts: openAlerts.length,
       silent,
       score,
       seats,
@@ -106,10 +110,10 @@ export default function FleetHealthPanel({ index = 0 }: { index?: number }) {
       hint: 'Agents that reported hardware metrics in the last 5 minutes',
     },
     {
-      label: model.critical === 0 ? 'No critical alerts' : 'Critical alerts',
-      value: model.critical === 0 ? 'clear' : String(model.critical),
-      ok: model.critical === 0,
-      hint: 'Unresolved error-level alerts in the last 24 hours',
+      label: model.openAlerts === 0 ? 'No open alerts' : 'Open alerts',
+      value: model.openAlerts === 0 ? 'clear' : String(model.openAlerts),
+      ok: model.openAlerts === 0,
+      hint: 'Alerts raised in the last 24 hours and not yet resolved',
     },
     {
       label: model.pressured === 0 ? 'Resources healthy' : 'Under load',
@@ -181,7 +185,7 @@ export default function FleetHealthPanel({ index = 0 }: { index?: number }) {
                 <span className="t1 font-medium">
                   {model.healthy} of {model.reporting}
                 </span>{' '}
-                reporting agent{model.reporting === 1 ? '' : 's'} clear of load and critical alerts.
+                reporting agent{model.reporting === 1 ? '' : 's'} clear of load and open alerts.
               </>
             )}
           </p>

@@ -10,6 +10,7 @@ import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 // the page → unmount its inner DashboardLayout → refire every Supabase
 // query the sidebar depends on.
 const DashboardLayoutMounted = createContext(false);
+import { kindColor, prettyKind } from '@/lib/labels';
 import { useTheme } from '@/context/ThemeContext';
 import { useAuth } from '@/context/AuthContext';
 import { useAlerts } from '@/lib/dataHooks';
@@ -622,14 +623,8 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
                           <div className="flex items-start gap-2.5">
                             <span
                               className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0"
-                              style={{
-                                background:
-                                  a.alert_type === 'error'
-                                    ? 'var(--d-danger)'
-                                    : a.alert_type === 'warning'
-                                      ? 'var(--d-warning)'
-                                      : 'var(--d-info)',
-                              }}
+                              style={{ background: kindColor(a.alert_type) }}
+                              title={prettyKind(a.alert_type)}
                             />
                             <div className="min-w-0 flex-1">
                               <p className="text-[11px] leading-snug truncate t2">{a.message}</p>

@@ -5,6 +5,7 @@ import { useRefreshOnTick } from '../refreshBus';
 import { useFilterWindow } from '../filterContext';
 import { EmptyNote, MicroLabel, Panel, Segmented } from './ui';
 import { C } from './chartKit';
+import { kindColor, prettyKind } from '@/lib/labels';
 
 /* Security + operational risk, in the order an owner triages it.
 
@@ -183,14 +184,14 @@ export default function RiskPanel({ index = 0 }: { index?: number }) {
           <div className="space-y-2">
             {alertRows.slice(0, 5).map((a) => (
               <Link key={a.id} to="/alerts" className="flex items-start gap-2.5 group">
-                <i
-                  className={`text-[12px] mt-0.5 flex-shrink-0 ${
-                    a.alert_type === 'error'
-                      ? 'ri-error-warning-fill t-danger'
-                      : a.alert_type === 'warning'
-                        ? 'ri-alert-fill t-warning'
-                        : 'ri-information-fill t-info'
-                  }`}
+                {/* Dot coloured by the alert's KIND (derived, see lib/labels).
+                    The three-way icon this replaces branched on 'error' /
+                    'warning', values the column never holds, so every alert
+                    rendered as the same blue info icon. */}
+                <span
+                  className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0"
+                  style={{ background: kindColor(a.alert_type) }}
+                  title={prettyKind(a.alert_type)}
                 />
                 <span className="min-w-0 flex-1">
                   <span className="block text-[11px] t2 leading-snug line-clamp-2 group-hover:underline">
