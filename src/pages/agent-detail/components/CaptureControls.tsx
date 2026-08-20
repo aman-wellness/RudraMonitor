@@ -151,28 +151,27 @@ export default function CaptureControls({
   const dlpLoading = dlpAddonPriceInr === undefined;
   const dlpAvailable = isTrial || (typeof dlpAddonPriceInr === 'number');
 
-  const selectCls = 'bg-dark-800 border border-dark-700 rounded-md text-[11px] text-white px-2 py-1 focus:outline-none focus:border-emerald-500';
+  // The `.dash select` rules in index.css already theme this; only sizing here.
+  const selectCls = 'filter-date';
 
   return (
-    <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
-      <div className="flex items-center gap-2 mb-4">
-        <span className="w-5 h-5 flex items-center justify-center">
-          <i className="ri-camera-line text-emerald-400 text-sm" />
-        </span>
-        <h3 className="text-sm font-semibold text-white">Capture Controls</h3>
+    <div className="panel p-3.5">
+      <div className="flex items-center gap-2 mb-1">
+        <i className="ri-camera-line text-[14px] t-accent" />
+        <h3 className="panel-title">Capture controls</h3>
       </div>
-      <p className="text-[11px] text-gray-500 mb-4">Enable or disable screen recording features for this agent. Changes apply on the next agent heartbeat (within ~1 min).</p>
+      <p className="text-[10.5px] t3 mb-4">Enable or disable screen recording features for this agent. Changes apply on the next agent heartbeat (within ~1 min).</p>
 
-      <div className="space-y-3">
+      <div className="space-y-2">
         {/* Screenshot */}
-        <div className="flex items-center justify-between bg-dark-900 rounded-lg border border-dark-700 p-3">
+        <div className="ctl-row">
           <div className="flex items-center gap-3">
-            <span className={`w-8 h-8 rounded-lg flex items-center justify-center ${ss ? 'bg-emerald-500/15' : 'bg-dark-700'}`}>
-              <i className={`ri-image-line ${ss ? 'text-emerald-400' : 'text-gray-600'}`} />
+            <span className={`ctl-icon ${ss ? 'is-on' : ''}`} style={{ ['--tg' as string]: 'var(--d-success)' }}>
+              <i className="ri-image-line" />
             </span>
             <div>
-              <p className="text-xs text-white font-medium">Screenshots</p>
-              <p className="text-[11px] text-gray-500">Captures on activity / URL change, throttled by interval below</p>
+              <p className="text-[12px] t1 font-medium">Screenshots</p>
+              <p className="text-[10.5px] t3">Captures on activity / URL change, throttled by interval below</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -191,22 +190,21 @@ export default function CaptureControls({
             </select>
             <button
               onClick={() => { setSs(!ss); markTouched(); }}
-              className={`w-10 h-5 rounded-full transition-colors relative ${ss ? 'bg-emerald-500' : 'bg-dark-700'}`}
+              className={`toggle ${ss ? 'is-on' : ''}`} style={{ ['--tg' as string]: 'var(--d-success)' }}
             >
-              <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${ss ? 'left-[22px]' : 'left-[2px]'}`} />
             </button>
           </div>
         </div>
 
         {/* Video */}
-        <div className="flex items-center justify-between bg-dark-900 rounded-lg border border-dark-700 p-3">
+        <div className="ctl-row">
           <div className="flex items-center gap-3">
-            <span className={`w-8 h-8 rounded-lg flex items-center justify-center ${vid ? 'bg-emerald-500/15' : 'bg-dark-700'}`}>
-              <i className={`ri-video-line ${vid ? 'text-emerald-400' : 'text-gray-600'}`} />
+            <span className={`ctl-icon ${vid ? 'is-on' : ''}`} style={{ ['--tg' as string]: 'var(--d-success)' }}>
+              <i className="ri-video-line" />
             </span>
             <div>
-              <p className="text-xs text-white font-medium">Video Recording</p>
-              <p className="text-[11px] text-gray-500">10-sec clip every interval</p>
+              <p className="text-[12px] t1 font-medium">Video Recording</p>
+              <p className="text-[10.5px] t3">10-sec clip every interval</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -225,34 +223,33 @@ export default function CaptureControls({
             </select>
             <button
               onClick={() => { setVid(!vid); markTouched(); }}
-              className={`w-10 h-5 rounded-full transition-colors relative ${vid ? 'bg-emerald-500' : 'bg-dark-700'}`}
+              className={`toggle ${vid ? 'is-on' : ''}`} style={{ ['--tg' as string]: 'var(--d-success)' }}
             >
-              <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${vid ? 'left-[22px]' : 'left-[2px]'}`} />
             </button>
           </div>
         </div>
 
         {/* DLP */}
-        <div className={`flex items-center justify-between bg-dark-900 rounded-lg border p-3 ${dlpAvailable && !dlpLoading ? 'border-dark-700' : 'border-dark-700/50 opacity-60'}`}>
+        <div className={`ctl-row ${dlpAvailable && !dlpLoading ? '' : 'opacity-60'}`}>
           <div className="flex items-center gap-3">
-            <span className={`w-8 h-8 rounded-lg flex items-center justify-center ${dlp && dlpAvailable ? 'bg-cyan-500/15' : 'bg-dark-700'}`}>
-              <i className={`ri-shield-keyhole-line ${dlp && dlpAvailable ? 'text-cyan-400' : 'text-gray-600'}`} />
+            <span className={`ctl-icon ${dlp && dlpAvailable ? 'is-on' : ''}`} style={{ ['--tg' as string]: 'var(--d-accent-2)' }}>
+              <i className="ri-shield-keyhole-line" />
             </span>
             <div>
-              <p className="text-xs text-white font-medium flex items-center gap-2">
+              <p className="text-[12px] t1 font-medium flex items-center gap-2">
                 Data Loss Prevention (DLP)
                 {!dlpLoading && isTrial && (
-                  <span className="px-1.5 py-0.5 text-[9px] uppercase rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                  <span className="chip chip-success text-[9px] uppercase px-1.5 py-0.5">
                     Trial — free
                   </span>
                 )}
                 {!dlpLoading && !isTrial && typeof dlpAddonPriceInr === 'number' && (
-                  <span className="px-1.5 py-0.5 text-[9px] uppercase rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                  <span className="chip chip-accent text-[9px] uppercase px-1.5 py-0.5">
                     +₹{dlpAddonPriceInr}/mo
                   </span>
                 )}
               </p>
-              <p className="text-[11px] text-gray-500">
+              <p className="text-[10.5px] t3">
                 {dlpLoading
                   ? 'Checking plan…'
                   : dlpAvailable
@@ -262,23 +259,22 @@ export default function CaptureControls({
             </div>
           </div>
           <button
-            onClick={() => dlpAvailable && !dlpLoading && setDlp(!dlp)}
+            onClick={() => { if (dlpAvailable && !dlpLoading) { setDlp(!dlp); markTouched(); } }}
             disabled={!dlpAvailable || dlpLoading}
-            className={`w-10 h-5 rounded-full transition-colors relative ${dlp && dlpAvailable && !dlpLoading ? 'bg-cyan-500' : 'bg-dark-700'} disabled:cursor-not-allowed`}
+            className={`toggle ${dlp && dlpAvailable && !dlpLoading ? 'is-on' : ''}`} style={{ ['--tg' as string]: 'var(--d-accent-2)' }}
           >
-            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${dlp && dlpAvailable && !dlpLoading ? 'left-[22px]' : 'left-[2px]'}`} />
           </button>
         </div>
 
         {/* Removable disk block */}
-        <div className="flex items-center justify-between bg-dark-900 rounded-lg border border-dark-700 p-3">
+        <div className="ctl-row">
           <div className="flex items-center gap-3">
-            <span className={`w-8 h-8 rounded-lg flex items-center justify-center ${usbBlock ? 'bg-rose-500/15' : 'bg-dark-700'}`}>
-              <i className={`ri-usb-line ${usbBlock ? 'text-rose-400' : 'text-gray-600'}`} />
+            <span className={`ctl-icon ${usbBlock ? 'is-on' : ''}`} style={{ ['--tg' as string]: 'var(--d-danger)' }}>
+              <i className="ri-usb-line" />
             </span>
             <div>
-              <p className="text-xs text-white font-medium">Block removable disks</p>
-              <p className="text-[11px] text-gray-500">
+              <p className="text-[12px] t1 font-medium">Block removable disks</p>
+              <p className="text-[10.5px] t3">
                 {usbBlock
                   ? 'USB sticks, external drives & SD cards are auto-ejected on connect'
                   : 'This agent can read/write removable storage (allowlisted)'}
@@ -287,21 +283,20 @@ export default function CaptureControls({
           </div>
           <button
             onClick={() => { setUsbBlock(!usbBlock); markTouched(); }}
-            className={`w-10 h-5 rounded-full transition-colors relative ${usbBlock ? 'bg-rose-500' : 'bg-dark-700'}`}
+            className={`toggle ${usbBlock ? 'is-on' : ''}`} style={{ ['--tg' as string]: 'var(--d-danger)' }}
           >
-            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${usbBlock ? 'left-[22px]' : 'left-[2px]'}`} />
           </button>
         </div>
 
         {/* Wallpaper enforcement */}
-        <div className="flex items-center justify-between bg-dark-900 rounded-lg border border-dark-700 p-3">
+        <div className="ctl-row">
           <div className="flex items-center gap-3">
-            <span className={`w-8 h-8 rounded-lg flex items-center justify-center ${wallpaper ? 'bg-indigo-500/15' : 'bg-dark-700'}`}>
-              <i className={`ri-image-2-line ${wallpaper ? 'text-indigo-400' : 'text-gray-600'}`} />
+            <span className={`ctl-icon ${wallpaper ? 'is-on' : ''}`} style={{ ['--tg' as string]: 'var(--d-accent)' }}>
+              <i className="ri-image-2-line" />
             </span>
             <div>
-              <p className="text-xs text-white font-medium">Apply org wallpaper</p>
-              <p className="text-[11px] text-gray-500">
+              <p className="text-[12px] t1 font-medium">Apply org wallpaper</p>
+              <p className="text-[10.5px] t3">
                 {wallpaper
                   ? 'Desktop wallpaper is pushed from org Settings → Branding'
                   : 'This agent keeps its current wallpaper (exempt from org push)'}
@@ -310,23 +305,22 @@ export default function CaptureControls({
           </div>
           <button
             onClick={() => { setWallpaper(!wallpaper); markTouched(); }}
-            className={`w-10 h-5 rounded-full transition-colors relative ${wallpaper ? 'bg-indigo-500' : 'bg-dark-700'}`}
+            className={`toggle ${wallpaper ? 'is-on' : ''}`} style={{ ['--tg' as string]: 'var(--d-accent)' }}
           >
-            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${wallpaper ? 'left-[22px]' : 'left-[2px]'}`} />
           </button>
         </div>
 
         {/* Tracking schedule override — exempts this agent from the org-wide
             working-hours policy so it tracks 24/7. Useful for CEO laptops,
             security analysts, after-hours support staff, etc. */}
-        <div className="flex items-center justify-between bg-dark-900 rounded-lg border border-dark-700 p-3">
+        <div className="ctl-row">
           <div className="flex items-center gap-3">
-            <span className={`w-8 h-8 rounded-lg flex items-center justify-center ${scheduleOverride ? 'bg-amber-500/15' : 'bg-dark-700'}`}>
-              <i className={`ri-time-line ${scheduleOverride ? 'text-amber-400' : 'text-gray-600'}`} />
+            <span className={`ctl-icon ${scheduleOverride ? 'is-on' : ''}`} style={{ ['--tg' as string]: 'var(--d-warning)' }}>
+              <i className="ri-time-line" />
             </span>
             <div>
-              <p className="text-xs text-white font-medium">Override tracking schedule (24/7)</p>
-              <p className="text-[11px] text-gray-500">
+              <p className="text-[12px] t1 font-medium">Override tracking schedule (24/7)</p>
+              <p className="text-[10.5px] t3">
                 {scheduleOverride
                   ? 'This agent tracks 24/7 — ignores the org working-hours policy'
                   : 'Follows the org-wide schedule from Settings → Org Settings'}
@@ -335,17 +329,16 @@ export default function CaptureControls({
           </div>
           <button
             onClick={() => { setScheduleOverride(!scheduleOverride); markTouched(); }}
-            className={`w-10 h-5 rounded-full transition-colors relative ${scheduleOverride ? 'bg-amber-500' : 'bg-dark-700'}`}
+            className={`toggle ${scheduleOverride ? 'is-on' : ''}`} style={{ ['--tg' as string]: 'var(--d-warning)' }}
           >
-            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${scheduleOverride ? 'left-[22px]' : 'left-[2px]'}`} />
           </button>
         </div>
       </div>
 
-      <div className="flex items-center justify-end gap-2 mt-4 pt-3 border-t border-dark-700">
-        {error && <span className="text-xs text-red-400">{error}</span>}
+      <div className="flex items-center justify-end gap-2 mt-4 pt-3 hair-t">
+        {error && <span className="text-[11px] t-danger">{error}</span>}
         {saved && (
-          <span className="text-xs text-emerald-400 flex items-center gap-1">
+          <span className="text-[11px] t-success flex items-center gap-1">
             <span className="w-3 h-3 flex items-center justify-center"><i className="ri-check-line text-xs" /></span>
             Saved — agent picks up within 1 min
           </span>
@@ -355,8 +348,8 @@ export default function CaptureControls({
           disabled={!hasChanges || saving}
           className={`px-4 py-2 rounded-lg text-xs font-medium transition-colors ${
             hasChanges && !saving
-              ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 hover:bg-emerald-500/25'
-              : 'bg-dark-700 text-gray-500 cursor-not-allowed border border-dark-700'
+              ? 'dlg-btn is-primary'
+              : 'dlg-btn opacity-50 cursor-not-allowed'
           }`}
         >
           {saving ? 'Saving…' : 'Save Changes'}

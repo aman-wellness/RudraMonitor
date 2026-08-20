@@ -8,7 +8,7 @@ import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import { supabase } from '@/lib/supabase';
 import { useFeatures } from '@/lib/useFeatures';
 import { useAuth } from '@/context/AuthContext';
-import PlanGrid, { type Currency } from '@/components/PlanGrid';
+import PlanGrid from '@/components/PlanGrid';
 
 type TrialReq = { id: string; status: 'pending' | 'approved' | 'denied' | 'cancelled'; requested_at: string; decision_note: string | null };
 
@@ -106,11 +106,6 @@ export default function SubscriptionPage() {
     }
   };
 
-  // Default INR for Indian customers; USD otherwise. country_code lives on
-  // the org row but isn't on the typed shape — read defensively.
-  const country = String((organization as { country_code?: string } | null)?.country_code ?? '').toUpperCase();
-  const defaultCurrency: Currency = country === 'IN' ? 'INR' : 'USD';
-
   const trialDaysLeft = (() => {
     if (features.subscription_status !== 'trial' || !features.trial_ends_at) return null;
     const diff = new Date(features.trial_ends_at).getTime() - Date.now();
@@ -167,7 +162,7 @@ export default function SubscriptionPage() {
 
         <PlanGrid
           currentPlanCode={currentPlanCode}
-          defaultCurrency={defaultCurrency}
+          lockCurrency="INR"
           onSelect={({ planCode, seats, addons, currency }) => {
             if (planCode === 'enterprise') {
               navigate('/#contact');
@@ -191,6 +186,14 @@ export default function SubscriptionPage() {
         <p className="mt-8 text-center text-[11px] text-gray-500 max-w-3xl mx-auto leading-relaxed">
           Razorpay billing for the v2 plans is rolling out. Click <strong>Switch</strong> to be redirected
           to the secure checkout flow with your selected plan, seat count and add-ons pre-filled.
+          {' '}
+          <button
+            type="button"
+            onClick={() => navigate('/addon-seats')}
+            className="text-emerald-400 hover:text-emerald-300 underline"
+          >
+            Manage add-on seat assignments →
+          </button>
         </p>
       </div>
     </DashboardLayout>

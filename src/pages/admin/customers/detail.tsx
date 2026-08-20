@@ -5,6 +5,7 @@ import { supabase, type Organization } from '@/lib/supabase';
 import CountryStatePicker from '@/components/forms/CountryStatePicker';
 import PhoneInput from '@/components/forms/PhoneInput';
 import { decodeGstin, GSTIN_REGEX } from '@/lib/gst';
+import { confirmDialog, notify, promptDialog } from '@/lib/notify';
 
 type LicenseRow = {
   id: string;
@@ -114,7 +115,7 @@ export default function CustomerDetail() {
       .eq('id', org.id);
     if (error) {
       setProfileBusy(false);
-      alert(`Update failed: ${error.message}`);
+      notify.error('Update failed', { description: String(error.message) });
       return;
     }
 
@@ -128,7 +129,7 @@ export default function CustomerDetail() {
         .eq('id', activeLicense.id);
       if (licErr) {
         setProfileBusy(false);
-        alert(`Seat update failed on license: ${licErr.message}`);
+        notify.error('Seat update failed on license', { description: String(licErr.message) });
         return;
       }
       setLicenses((ls) => ls.map((l) => (l.id === activeLicense.id ? { ...l, seat_count: newSeats } : l)));
@@ -305,9 +306,9 @@ export default function CustomerDetail() {
                       {l.status === 'pending_payment' && (
                         <button
                           onClick={async () => {
-                            if (!confirm('Confirm partner payment received and activate this license?')) return;
+                            if (!await confirmDialog({ title: 'Confirm partner payment received and activate this license?' })) return;
                             const { error: actErr } = await supabase.rpc('activate_pending_license', { p_license_id: l.id });
-                            if (actErr) alert(`Activation failed: ${actErr.message}`);
+                            if (actErr) notify.error('Activation failed', { description: String(actErr.message) });
                             else if (customerId) {
                               const { data: licRes } = await supabase.from('licenses')
                                 .select('id, license_key, status, seat_count, issued_at, expires_at, plan:plans(name)')
@@ -323,31 +324,28 @@ export default function CustomerDetail() {
                       )}
                       <button
                         onClick={async () => {
-                          const periodsStr = prompt(
-                            'Extend renewal by how many billing periods? (1 = +1 month for monthly, +1 year for yearly plans)\n\nLeave blank to set a custom expiry date instead.',
-                            '1',
-                          );
+                          const periodsStr = await promptDialog({ title: 'Extend renewal by how many billing periods? (1 = +1 month for monthly, +1 year for yearly plans)\n\nLeave blank to set a custom expiry date instead.', defaultValue: String('1') });
                           if (periodsStr === null) return;
                           let untilArg: string | null = null;
                           let periodsArg = 1;
                           if (periodsStr.trim() === '') {
-                            const customDate = prompt('Enter the new expiry date (YYYY-MM-DD):');
+                            const customDate = await promptDialog({ title: 'Enter the new expiry date (YYYY-MM-DD):' });
                             if (!customDate) return;
                             const d = new Date(customDate);
-                            if (Number.isNaN(d.getTime())) { alert('Invalid date'); return; }
+                            if (Number.isNaN(d.getTime())) { notify.error('Invalid date'); return; }
                             untilArg = d.toISOString();
                           } else {
                             const n = parseInt(periodsStr, 10);
-                            if (!Number.isFinite(n) || n < 1) { alert('Invalid number of periods'); return; }
+                            if (!Number.isFinite(n) || n < 1) { notify.error('Invalid number of periods'); return; }
                             periodsArg = n;
                           }
-                          if (!confirm(`Confirm: payment received, extending license renewal${untilArg ? ` until ${new Date(untilArg).toDateString()}` : ` by ${periodsArg} period(s)`}?`)) return;
+                          if (!await confirmDialog({ title: `Confirm: payment received, extending license renewal${untilArg ? ` until ${new Date(untilArg).toDateString()}` : ` by ${periodsArg} period(s)`}?` })) return;
                           const { error: extErr } = await supabase.rpc('extend_license_renewal', {
                             p_license_id: l.id,
                             p_periods: periodsArg,
                             p_until:   untilArg,
                           });
-                          if (extErr) alert(`Extend failed: ${extErr.message}`);
+                          if (extErr) notify.error('Extend failed', { description: String(extErr.message) });
                           else if (customerId) {
                             const { data: licRes } = await supabase.from('licenses')
                               .select('id, license_key, status, seat_count, issued_at, expires_at, plan:plans(name)')
@@ -727,7 +725,7 @@ function UpgradeRequests({ orgId, onApproved }: { orgId: string; onApproved: () 
   useEffect(() => { load(); }, [orgId]);
 
   const decide = async (r: Req, decision: 'approved' | 'rejected') => {
-    if (!confirm(`${decision === 'approved' ? 'Approve' : 'Reject'} upgrade to "${r.plans?.name ?? r.plan_id}"?`)) return;
+    if (!await confirmDialog({ title: `${decision === 'approved' ? 'Approve' : 'Reject'} upgrade to "${r.plans?.name ?? r.plan_id}"?`, tone: 'danger' })) return;
     setBusy(r.id);
 
     if (decision === 'approved') {
@@ -750,7 +748,7 @@ function UpgradeRequests({ orgId, onApproved }: { orgId: string; onApproved: () 
           .from('licenses')
           .update({ plan_id: r.plan_id, seat_count: seats })
           .eq('id', lic.id);
-        if (licErr) { alert(`Failed to switch license: ${licErr.message}`); setBusy(null); return; }
+        if (licErr) { notify.error('Failed to switch license', { description: String(licErr.message) }); setBusy(null); return; }
       }
 
       // Build the org patch:
@@ -770,7 +768,7 @@ function UpgradeRequests({ orgId, onApproved }: { orgId: string; onApproved: () 
         if (!orgRow?.em_subscribed) orgPatch.em_subscribed_since = new Date().toISOString();
       }
       const { error: orgErr } = await supabase.from('organizations').update(orgPatch).eq('id', orgId);
-      if (orgErr) { alert(`Failed to update org: ${orgErr.message}`); setBusy(null); return; }
+      if (orgErr) { notify.error('Failed to update org', { description: String(orgErr.message) }); setBusy(null); return; }
     }
 
     const { error } = await supabase
@@ -778,7 +776,7 @@ function UpgradeRequests({ orgId, onApproved }: { orgId: string; onApproved: () 
       .update({ status: decision, decided_at: new Date().toISOString() })
       .eq('id', r.id);
     setBusy(null);
-    if (error) { alert(error.message); return; }
+    if (error) { notify.error(error.message); return; }
     await load();
     if (decision === 'approved') await onApproved();
   };
@@ -862,7 +860,7 @@ function SubscriptionControls({
   };
 
   const setStatus = async (status: 'trial' | 'active' | 'suspended' | 'canceled') => {
-    if (!confirm(`Change subscription status to "${status}"?`)) return;
+    if (!await confirmDialog({ title: `Change subscription status to "${status}"?` })) return;
     await patch('status', { subscription_status: status });
   };
 
@@ -871,7 +869,7 @@ function SubscriptionControls({
       ? new Date(org.trial_ends_at)
       : new Date();
     base.setDate(base.getDate() + days);
-    if (!confirm(`Extend trial to ${base.toLocaleDateString('en-IN')}?`)) return;
+    if (!await confirmDialog({ title: `Extend trial to ${base.toLocaleDateString('en-IN')}?` })) return;
     await patch('trial', {
       trial_ends_at: base.toISOString(),
       subscription_status: 'trial',
@@ -919,7 +917,7 @@ function SubscriptionControls({
 
   const toggleEm = async (enable: boolean) => {
     const action = enable ? 'enable' : 'disable';
-    if (!confirm(`${action.toUpperCase()} Employee Management add-on for ${org.name}?`)) return;
+    if (!await confirmDialog({ title: `${action.toUpperCase()} Employee Management add-on for ${org.name}?` })) return;
     await patch('em', {
       em_subscribed: enable,
       em_subscribed_since: enable ? new Date().toISOString() : null,
@@ -992,10 +990,10 @@ function SubscriptionControls({
               </button>
             ))}
             <button onClick={async () => {
-              const v = prompt('Set trial expiry (YYYY-MM-DD):');
+              const v = await promptDialog({ title: 'Set trial expiry (YYYY-MM-DD):' });
               if (!v) return;
               const d = new Date(v);
-              if (Number.isNaN(d.getTime())) { alert('Invalid date'); return; }
+              if (Number.isNaN(d.getTime())) { notify.error('Invalid date'); return; }
               await patch('trial', { trial_ends_at: d.toISOString(), subscription_status: 'trial' });
             }} disabled={busy === 'trial'}
               className="px-2 py-1 text-[10px] rounded-md bg-dark-700 text-gray-300 border border-dark-600 hover:text-white hover:border-cyan-500/40 disabled:opacity-40">
@@ -1066,7 +1064,7 @@ function ManualAddonGrant({ orgId }: { orgId: string }) {
     else { setMsg({ kind: 'ok', text: `Granted ${addonCode} × ${seats}` }); await loadActive(); }
   };
   const revoke = async (code: string) => {
-    if (!confirm(`Revoke ${code}? This drops all agent assignments too.`)) return;
+    if (!await confirmDialog({ title: `Revoke ${code}? This drops all agent assignments too.`, tone: 'danger' })) return;
     setBusy('revoke'); setMsg(null);
     const { error } = await supabase.rpc('revoke_addon_admin', {
       p_org_id: orgId, p_addon_plan_code: code, p_reason: reason.trim() || null,

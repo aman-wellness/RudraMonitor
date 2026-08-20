@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import AdminLayout from '../AdminLayout';
 import { supabase, type Plan } from '@/lib/supabase';
+import { notify, promptDialog } from '@/lib/notify';
 
 export default function AdminPlans() {
   const [rows, setRows] = useState<Plan[]>([]);
@@ -46,21 +47,27 @@ export default function AdminPlans() {
     // Two-step confirm — typed name match. Plans are FK-referenced by
     // `licenses.plan_id`, so a hard delete fails when any org subscribed
     // to it. Tell the admin to deactivate first if they hit that case.
-    const typed = window.prompt(
-      `Type the plan code "${p.code}" to confirm permanent deletion. This removes the plan from the landing page, customer portal, and admin portal everywhere.`,
-    );
+    const typed = await promptDialog({
+      title: `Delete the "${p.name}" plan?`,
+      body: `Type the plan code ${p.code} to confirm. This removes the plan from the landing page, customer portal and admin portal everywhere.`,
+      placeholder: p.code,
+      confirmLabel: 'Delete plan',
+    });
+    if (typed === null) return;
     if (typed !== p.code) {
-      if (typed !== null) window.alert('Plan code did not match. Deletion cancelled.');
+      notify.error('Plan code did not match', { description: 'Deletion cancelled — nothing was changed.' });
       return;
     }
     const { error } = await supabase.from('plans').delete().eq('id', p.id);
     if (error) {
-      window.alert(
-        `Delete failed: ${error.message}\n\nLikely cause: an organisation is still subscribed to this plan. ` +
-        `Deactivate it instead (click Active → Inactive) — that hides it from the storefront without breaking existing licenses.`,
-      );
+      notify.error('Could not delete plan', {
+        description:
+          `${error.message}. Likely cause: an organisation is still subscribed. ` +
+          'Deactivate it instead (Active → Inactive) — that hides it from the storefront without breaking existing licences.',
+      });
       return;
     }
+    notify.success(`Plan "${p.name}" deleted`);
     await load();
   };
 

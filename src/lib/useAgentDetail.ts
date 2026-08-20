@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from './supabase';
 import type { AlertRow } from './dataHooks';
+import { formatDurationShort } from './labels';
 
 // Shape the agent-detail page components consume. Keeps mock-era prop signatures unchanged
 // so we don't have to touch the JSX.
@@ -37,7 +38,17 @@ export type AgentDetail = {
   alertsCount: number;
   sessionsCount: number;
   idleTime: string;
+  /** Raw seconds behind activeWorked / systemOn, so callers computing a share
+   *  don't have to parse the formatted strings back into numbers. */
+  activeSeconds: number;
+  systemOnSeconds: number;
+  /** Calendar days in the window that have any activity — the System On figure
+   *  is the sum of that many per-day spans, so the label has to say which. */
+  daysCovered: number;
   timeline: { time: string; events: number; active: number; idle: number }[];
+  /** Minutes per timeline bar. The bucket is sized to the window, so the chart
+   *  must be told what it's showing instead of claiming "per hour". */
+  timelineBucketMinutes: number;
   appsTime: { name: string; percent: number; time: string; color: string }[];
 };
 
@@ -46,19 +57,6 @@ const APP_COLORS = [
   'bg-blue-500', 'bg-violet-500', 'bg-pink-500', 'bg-rose-500',
   'bg-cyan-500', 'bg-purple-500',
 ];
-
-const formatHM = (totalSec: number) => {
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  return `${h}h ${m.toString().padStart(2, '0')}m`;
-};
-
-const formatHMS = (totalSec: number) => {
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = Math.floor(totalSec % 60);
-  return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-};
 
 const formatDateTime = (iso: string | null) => {
   if (!iso) return '—';
@@ -188,12 +186,16 @@ export function useAgentDetail(agentId: string | undefined, range: DateRange = '
         .eq('activity_type', 'video')
         .order('created_at', { ascending: false })
         .limit(500),
+      // Same window as everything else. Without the range filter the KPI read
+      // "raised in the window" while actually counting the agent's last 50
+      // alerts ever — Today and 7 days both showed the same number.
       supabase
         .from('alerts')
         .select('*')
         .eq('agent_id', agentId)
+        .gte('created_at', sinceISO).lte('created_at', untilISO)
         .order('created_at', { ascending: false })
-        .limit(50),
+        .limit(200),
     ]);
 
     const actData = [
@@ -207,14 +209,14 @@ export function useAgentDetail(agentId: string | undefined, range: DateRange = '
         id: r.id as string,
         agent_id: r.agent_id as string,
         agent_name: agentRow.agent_name as string,
-        alert_type: r.alert_type as 'error' | 'warning' | 'info',
+        alert_type: r.alert_type as string,
         message: r.message as string,
         ai_resolved: !!r.ai_resolved,
         resolution: (r.resolution as string | null) ?? null,
         created_at: r.created_at as string,
       })),
     );
-    setAgent(buildDetail(agentRow, (actData ?? []) as ActivityRow[], (alertData ?? []).length, since, until));
+    setAgent(buildDetail(agentRow, (actData ?? []) as ActivityRow[], (alertData ?? []).length));
     setLoading(false);
   }, [agentId, range]);
 
@@ -268,24 +270,12 @@ function buildDetail(
   agentRow: Record<string, unknown>,
   activity: ActivityRow[],
   alertCount: number,
-  rangeStart?: Date,
-  rangeEnd?: Date,
 ): AgentDetail {
   const apps = activity.filter((a) => a.activity_type === 'app');
   const browser = activity.filter((a) => a.activity_type === 'browser');
-  const idle = activity.filter((a) => a.activity_type === 'idle');
   const screenshots = activity.filter((a) => a.activity_type === 'screenshot');
   const videos = activity.filter((a) => a.activity_type === 'video');
   const sessions = activity.filter((a) => a.activity_type === 'session_start');
-
-  // Focus session durations include time the user was idle on that window
-  // (the agent emits the focus row when the window changes; idle is tracked
-  // separately and overlaps with the focus row). So focus-row sums double-count
-  // idle time. Real time the user was actively using the keyboard/mouse =
-  // focus minus idle, both clamped to the wall-clock window so we never report
-  // > 24h for a "today" view.
-  const rawFocusSec = apps.concat(browser).reduce((s, r) => s + (r.duration ?? 0), 0);
-  const totalIdleSec = idle.reduce((s, r) => s + (r.duration ?? 0), 0);
 
   // `activity[]` is a concatenation of THREE sub-arrays with different
   // sort orders — timelineData ascending, screenshotData + videoData
@@ -333,22 +323,65 @@ function buildDetail(
   //   → System On     7h 20m
   //   → Idle          max(16m, 35m) = 35m   ← gap now credited as idle
   //   → Active        6h 45m                 ← matches focused time
-  const wallStart = firstActivity ? new Date(firstActivity).getTime() : null;
-  const wallEnd = lastActivity ? new Date(lastActivity).getTime() : null;
-  const wallSec = wallStart != null && wallEnd != null
-    ? Math.max(0, Math.floor((wallEnd - wallStart) / 1000))
-    : 0;
-  const rangeCapSec = rangeStart && rangeEnd
-    ? Math.max(0, Math.floor((rangeEnd.getTime() - rangeStart.getTime()) / 1000))
-    : Infinity;
-  const systemOnSec = Math.min(wallSec, rangeCapSec);
-  // Idle rolls up any wall-clock time not covered by a focus row.
-  // Explicit idle rows and focus rows can overlap (the agent emits
-  // idle separately even while an app is still marked focused), so
-  // take the max not the sum — sum would double-count.
-  const unfocusedGapSec = Math.max(0, systemOnSec - rawFocusSec);
-  const effectiveIdleSec = Math.max(totalIdleSec, unfocusedGapSec);
+  //
+  // APPLIED PER CALENDAR DAY, then summed. First → last across a MULTI-day
+  // range spans the nights in between: on a 7-day range the old end-to-end
+  // wall clock reported System On 158h and Idle 131h for an agent that was
+  // actually up ~6h a day, and the "% of system-on" share on the KPI strip
+  // read 17% instead of ~64%. Active came out right only because it is
+  // wall − idle and the two errors cancelled.
+  //
+  // Bucketing by the viewer's local day is what makes it correct AND keeps
+  // single-day ranges byte-identical to the agreed formula above.
+  const dayKey = (iso: string) => {
+    const d = new Date(iso);
+    return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  };
+
+  type DayBucket = { firstMs: number; lastMs: number; focusSec: number; idleSec: number };
+  const days = new Map<string, DayBucket>();
+  const bucketFor = (iso: string) => {
+    const key = dayKey(iso);
+    let b = days.get(key);
+    if (!b) {
+      b = { firstMs: Infinity, lastMs: -Infinity, focusSec: 0, idleSec: 0 };
+      days.set(key, b);
+    }
+    return b;
+  };
+  for (const r of activity) {
+    const t = new Date(r.created_at).getTime();
+    if (!Number.isFinite(t)) continue;
+    const b = bucketFor(r.created_at);
+    if (t < b.firstMs) b.firstMs = t;
+    if (t > b.lastMs) b.lastMs = t;
+    if (r.activity_type === 'app' || r.activity_type === 'browser') b.focusSec += r.duration ?? 0;
+    if (r.activity_type === 'idle') b.idleSec += r.duration ?? 0;
+  }
+
+  // A day can't be on for more than 24h, whatever the timestamps say.
+  const DAY_SEC = 24 * 60 * 60;
+  let systemOnSec = 0;
+  let effectiveIdleSec = 0;
+  for (const b of days.values()) {
+    if (!Number.isFinite(b.firstMs) || !Number.isFinite(b.lastMs)) continue;
+    const wall = Math.min(DAY_SEC, Math.max(0, Math.floor((b.lastMs - b.firstMs) / 1000)));
+    // Explicit idle rows and focus rows overlap (the agent emits idle
+    // separately even while an app is still marked focused), so take the max
+    // not the sum — summing would double-count.
+    const idleForDay = Math.min(wall, Math.max(b.idleSec, Math.max(0, wall - b.focusSec)));
+    systemOnSec += wall;
+    effectiveIdleSec += idleForDay;
+  }
   const totalActiveSec = Math.max(0, systemOnSec - effectiveIdleSec);
+
+  // Display in whole minutes, with Idle taken as (System On − Active) in that
+  // same minute space. Formatting the three independently lets rounding break
+  // the identity the customer explicitly asked for — "System On = Active +
+  // Idle, nothing unaccounted" — by a minute.
+  const sysMin = Math.floor(systemOnSec / 60);
+  const activeMin = Math.min(sysMin, Math.floor(totalActiveSec / 60));
+  const idleMin = sysMin - activeMin;
 
   const appBuckets = new Map<string, number>();
   for (const r of apps) {
@@ -362,7 +395,7 @@ function buildDetail(
     .map(([name, sec], i) => ({
       name,
       percent: totalAppSec > 0 ? Math.round((sec / totalAppSec) * 100) : 0,
-      time: formatHMS(sec),
+      time: formatDurationShort(sec),
       color: APP_COLORS[i % APP_COLORS.length],
     }));
 
@@ -376,6 +409,7 @@ function buildDetail(
   // Prior bug: fixed 30-min slots × cap-16 silently truncated a 24h window to the
   // FIRST 8h, hiding all recent activity.
   const timeline: AgentDetail['timeline'] = [];
+  let timelineBucketMinutes = 60;
   if (firstActivity) {
     const startMs = new Date(firstActivity).getTime();
     const endMs = Math.max(
@@ -386,6 +420,7 @@ function buildDetail(
     const minSlot = 30 * 60 * 1000;
     const slotMs = Math.max(minSlot, Math.ceil((endMs - startMs) / TARGET_BUCKETS));
     const cap = Math.max(1, Math.ceil((endMs - startMs) / slotMs));
+    timelineBucketMinutes = Math.round(slotMs / 60000);
     for (let i = 0; i < cap; i++) {
       const slotStart = startMs + i * slotMs;
       const slotEnd = slotStart + slotMs;
@@ -399,7 +434,11 @@ function buildDetail(
         if (r.activity_type === 'app' || r.activity_type === 'browser') active += r.duration ?? 0;
         else if (r.activity_type === 'idle') idleSec += r.duration ?? 0;
       }
-      const label = new Date(slotStart).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      // Once a bar covers several hours the window spans days, and a bare
+      // clock time repeats across them — "12 AM" four times over means nothing.
+      const label = slotMs >= 6 * 60 * 60 * 1000
+        ? new Date(slotStart).toLocaleDateString([], { day: '2-digit', month: 'short' })
+        : new Date(slotStart).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       timeline.push({
         time: label,
         events,
@@ -432,10 +471,19 @@ function buildDetail(
     firstLogin: formatDateTime(firstActivity),
     lastActivity: formatDateTime(lastActivity),
     stillActive: status === 'online',
-    logins: sessions.length || (activity.length > 0 ? 1 : 0),
-    logouts: 0,
-    systemOn: formatHM(systemOnSec),
-    activeWorked: formatHM(totalActiveSec),
+    // Real count of session_start rows the agent emitted in this window
+    // (spawn_session_start in the agent). No synthetic fallback — if the
+    // agent was already running before the window started there may be 0,
+    // which the "no login events" hint below explains honestly.
+    logins: sessions.length,
+    // Ended sessions, derived from real session boundaries: every launch
+    // emits a session_start, so a new one means the prior session ended.
+    // logouts = sessions started − the one still open (if agent is online).
+    // Captures every restart (graceful or not) without needing a separate
+    // shutdown event the OS often never lets us send.
+    logouts: Math.max(0, sessions.length - (status === 'online' ? 1 : 0)),
+    systemOn: formatDurationShort(sysMin * 60),
+    activeWorked: formatDurationShort(activeMin * 60),
     screenshotsEnabled: (agentRow.screenshots_enabled as boolean | undefined) ?? true,
     videosEnabled: (agentRow.videos_enabled as boolean | undefined) ?? false,
     dlpEnabled: (agentRow.dlp_enabled as boolean | undefined) ?? false,
@@ -444,7 +492,7 @@ function buildDetail(
     trackingScheduleOverride: (agentRow.tracking_schedule_override as boolean | undefined) ?? false,
     screenshotIntervalSecs: (agentRow.screenshot_interval_secs as number | undefined) ?? 300,
     videoIntervalSecs: (agentRow.video_interval_secs as number | undefined) ?? 1800,
-    totalActiveTime: formatHM(totalActiveSec),
+    totalActiveTime: formatDurationShort(activeMin * 60),
     appsUsed: appBuckets.size,
     sitesVisited: sites.size,
     screenshotsCount: screenshots.length,
@@ -454,8 +502,12 @@ function buildDetail(
     // Report effective idle (explicit rows OR unfocused wall gaps,
     // whichever's larger) so the card matches the arithmetic:
     //   System On = Active + Idle
-    idleTime: formatHM(effectiveIdleSec),
+    idleTime: formatDurationShort(idleMin * 60),
+    activeSeconds: totalActiveSec,
+    systemOnSeconds: systemOnSec,
+    daysCovered: days.size,
     timeline,
+    timelineBucketMinutes,
     appsTime,
   };
 }

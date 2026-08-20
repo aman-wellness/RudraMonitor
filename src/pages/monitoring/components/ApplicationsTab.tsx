@@ -1,8 +1,20 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useActivityLogs, useAgents, useProductivityRules, classify } from '@/lib/dataHooks';
 import CategoryBadge from '@/components/feature/CategoryBadge';
+import MonitorFilters, { type CategoryFilter } from './MonitorFilters';
+import { useRegisterRefresh } from './refreshBus';
+import { formatDurationShort } from '@/lib/labels';
+import { Bar } from '@/pages/dashboard/components/ui';
+import { C } from '@/pages/dashboard/components/chartKit';
 
-type CategoryFilter = 'all' | 'productive' | 'unproductive' | 'neutral';
+/* Foreground application time per employee, last 24h.
+
+   Was a grid of one card per (app × employee) pair: 120px tall each, holding an
+   app name, a person, an always-empty window-title line, a duration and a
+   timestamp. Five employees using six apps produced 30 near-identical cards and
+   a 1700px page you had to scroll to compare any two numbers. A table puts the
+   same rows in a fifth of the height with the durations in one column, which is
+   the only way to read a ranking. */
 
 export default function ApplicationsTab() {
   const { agents } = useAgents();
@@ -11,9 +23,10 @@ export default function ApplicationsTab() {
   const [search, setSearch] = useState('');
 
   const [limit, setLimit] = useState(200);
-  const { rows, loading } = useActivityLogs({ type: 'app', agentId: agentFilter, sinceHours: 24, limit });
+  const { rows, loading, refresh } = useActivityLogs({ type: 'app', agentId: agentFilter, sinceHours: 24, limit });
   const hasMore = rows.length >= limit;
   const { ruleMap, upsertRule } = useProductivityRules();
+  useRegisterRefresh(useCallback(() => { void refresh(); }, [refresh]));
 
   const aggregated = useMemo(() => {
     const map = new Map<string, {
@@ -58,22 +71,19 @@ export default function ApplicationsTab() {
     const matchSearch =
       search === '' ||
       log.appName.toLowerCase().includes(search.toLowerCase()) ||
-      log.windowTitle.toLowerCase().includes(search.toLowerCase());
+      log.windowTitle.toLowerCase().includes(search.toLowerCase()) ||
+      log.agentName.toLowerCase().includes(search.toLowerCase());
     return matchCat && matchSearch;
   });
 
-  const catOptions: { value: CategoryFilter; label: string; color: string }[] = [
-    { value: 'all', label: 'All', color: 'bg-dark-700 text-white' },
-    { value: 'productive', label: 'Productive', color: 'bg-emerald-500/15 text-emerald-400' },
-    { value: 'unproductive', label: 'Unproductive', color: 'bg-red-500/15 text-red-400' },
-    { value: 'neutral', label: 'Neutral', color: 'bg-gray-500/15 text-gray-400' },
-  ];
+  // Longest row in view — the bar is relative to it, so the duration column
+  // reads as a ranking instead of a list of numbers to compare by eye.
+  const longest = Math.max(1, ...filtered.map((f) => f.duration));
+  // A window title is only worth a column if the agents actually captured one.
+  const hasTitles = filtered.some((f) => f.windowTitle.trim());
 
-  const formatDuration = (sec: number) => {
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    return `${m}m ${s}s`;
-  };
+  const showBar = !hasTitles;
+
   const formatTime = (iso: string) => {
     try {
       return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -83,110 +93,104 @@ export default function ApplicationsTab() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-3">
-        <div className="flex items-center gap-2 flex-wrap">
-          {catOptions.map((c) => (
-            <button
-              key={c.value}
-              onClick={() => setCatFilter(c.value)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                catFilter === c.value ? c.color : 'text-gray-500 hover:text-gray-400 bg-dark-800'
-              }`}
-            >
-              {c.label}
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-2">
-          <select
-            value={agentFilter}
-            onChange={(e) => setAgentFilter(e.target.value)}
-            className="bg-dark-800 border border-dark-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none"
-          >
-            <option value="all">All Agents</option>
-            {agents.map((a) => (
-              <option key={a.id} value={a.id}>{a.name}</option>
-            ))}
-          </select>
-          <div className="flex items-center bg-dark-800 border border-dark-700 rounded-lg px-3 py-1.5">
-            <span className="w-4 h-4 flex items-center justify-center text-gray-500 mr-2">
-              <i className="ri-search-line text-sm" />
+    <div className="space-y-2.5">
+      <MonitorFilters
+        agents={agents}
+        agentFilter={agentFilter}
+        onAgentChange={setAgentFilter}
+        search={search}
+        onSearchChange={setSearch}
+        searchPlaceholder="App, window title, employee…"
+        category={catFilter}
+        onCategoryChange={setCatFilter}
+        count={
+          filtered.length > 0 ? (
+            <span className="text-[10.5px] t3 tnum">
+              {filtered.length} of {aggregated.length}
             </span>
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search apps..."
-              className="bg-transparent text-xs text-white placeholder-gray-600 focus:outline-none w-32 md:w-40"
-            />
-          </div>
-        </div>
-      </div>
+          ) : null
+        }
+      />
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-        {filtered.map((log) => {
-          const catColor =
-            log.category === 'productive'
-              ? 'border-emerald-500/20 bg-emerald-500/5'
-              : log.category === 'unproductive'
-                ? 'border-red-500/20 bg-red-500/5'
-                : 'border-gray-500/20 bg-gray-500/5';
-          return (
-            <div key={log.key} className={`rounded-xl border ${catColor} p-4 transition-all`}>
-              <div className="flex items-start justify-between mb-3">
-                <div className="flex items-center gap-2.5">
-                  <span className="w-8 h-8 flex items-center justify-center rounded-lg bg-dark-700">
-                    <i className="ri-apps-line text-lg text-gray-400" />
-                  </span>
-                  <div>
-                    <p className="text-sm font-medium text-white">{log.appName}</p>
-                    <p className="text-[11px] text-gray-500">{log.agentName || 'Unknown'}</p>
-                  </div>
-                </div>
-                <CategoryBadge value={log.category} onChange={(c) => upsertRule('app', log.appName, c)} />
-              </div>
-              <p className="text-xs text-gray-400 mb-3 truncate" title={log.windowTitle}>
-                {log.windowTitle || '—'}
+      <div className="panel overflow-hidden">
+        {filtered.length === 0 ? (
+          <div className="p-8 text-center">
+            <i className="ri-apps-line text-[22px] t3 block mb-2" />
+            <p className="text-[12.5px] t2">
+              {rows.length === 0 ? 'No application activity in the last 24 hours' : 'Nothing matches these filters'}
+            </p>
+            {rows.length === 0 && (
+              <p className="text-[11px] t3 mt-1">
+                Rows appear as soon as an agent reports a foreground window.
               </p>
-              <div className="flex items-center justify-between text-[11px] text-gray-500">
-                <span className="flex items-center gap-1">
-                  <span className="w-3 h-3 flex items-center justify-center"><i className="ri-time-line" /></span>
-                  {formatDuration(log.duration)}
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="w-3 h-3 flex items-center justify-center"><i className="ri-history-line" /></span>
-                  Last: {formatTime(log.lastActive)}
-                </span>
-              </div>
-            </div>
-          );
-        })}
+            )}
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="d-table" style={{ minWidth: 640 }}>
+              <thead>
+                <tr className="hair-b">
+                  <th style={{ width: hasTitles ? '22%' : 200 }}>Application</th>
+                  {hasTitles && <th>Window</th>}
+                  <th style={{ width: 150 }}>Employee</th>
+                  <th style={{ width: 122 }}>Category</th>
+                  <th className="text-right" style={showBar ? undefined : { width: 96 }}>Time (24h)</th>
+                  <th className="text-right" style={{ width: 74 }}>Last seen</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((log) => (
+                  <tr key={log.key}>
+                    <td className="text-[12px] t1 font-medium truncate max-w-[240px]" title={log.appName}>
+                      {log.appName}
+                    </td>
+                    {hasTitles && (
+                      <td className="max-w-[300px]">
+                        <span className="text-[11px] t3 truncate block" title={log.windowTitle}>
+                          {log.windowTitle || '—'}
+                        </span>
+                      </td>
+                    )}
+                    <td className="text-[11.5px] t2 truncate">{log.agentName || 'Unknown'}</td>
+                    <td>
+                      <CategoryBadge
+                        value={log.category}
+                        onChange={(c) => upsertRule('app', log.appName, c)}
+                      />
+                    </td>
+                    <td>
+                      <span className="flex items-center gap-2.5 justify-end">
+                        {showBar && (
+                          <span className="flex-1 min-w-[60px] hidden md:block">
+                            <Bar pct={(log.duration / longest) * 100} height={4} color={C.accent} />
+                          </span>
+                        )}
+                        <span className="text-[11.5px] t2 tnum text-right w-[52px]">
+                          {formatDurationShort(log.duration)}
+                        </span>
+                      </span>
+                    </td>
+                    <td className="text-right text-[11px] t3 whitespace-nowrap tnum">
+                      {formatTime(log.lastActive)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {hasMore && (
-        <div className="flex justify-center pt-2">
-          <button
-            onClick={() => setLimit((l) => l + 200)}
-            className="px-4 py-1.5 rounded-lg bg-dark-800 border border-dark-700 text-gray-400 text-xs font-medium hover:bg-dark-700 transition-colors"
-          >
+        <div className="flex justify-center">
+          <button onClick={() => setLimit((l) => l + 200)} className="chip chip-quiet text-[10.5px]">
+            <i className="ri-arrow-down-line" />
             Load more
           </button>
         </div>
       )}
-
-      {!loading && filtered.length === 0 && (
-        <div className="text-center py-12">
-          <span className="w-12 h-12 flex items-center justify-center mx-auto mb-3 text-gray-600">
-            <i className="ri-apps-line text-3xl" />
-          </span>
-          <p className="text-sm text-gray-500">
-            {rows.length === 0 ? 'No application activity yet — agents will populate this in real time.' : 'No applications match your filters'}
-          </p>
-        </div>
-      )}
       {loading && filtered.length === 0 && (
-        <div className="text-center py-12 text-xs text-gray-500">Loading…</div>
+        <p className="text-center text-[11px] t3 py-3">Loading…</p>
       )}
     </div>
   );

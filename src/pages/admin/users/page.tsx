@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react';
 import AdminLayout from '../AdminLayout';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
+import { confirmDialog } from '@/lib/notify';
 
 type Row = {
   user_id: string;
@@ -66,7 +67,7 @@ export default function AdminUsersPage() {
   };
 
   const runAction = async (r: Row, action: 'revoke' | 'reset_password' | 'disable' | 'enable' | 'delete', confirmMsg: string, okMsg: string) => {
-    if (!confirm(confirmMsg)) return;
+    if (!await confirmDialog({ title: confirmMsg })) return;
     setBusy(`${r.user_id}-${action}`); setMsg(null);
     try {
       await callFn({ action, user_id: r.user_id });

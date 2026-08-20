@@ -14,6 +14,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import DashboardLayout from '../../dashboard/DashboardLayout';
 import { supabase } from '@/lib/supabase';
+import { confirmDialog, notify } from '@/lib/notify';
 
 interface Safe {
   org_id: string;
@@ -177,10 +178,8 @@ function ConnectionControls({
     onSave({ [`${channelKey}_enabled`]: !enabled });
   };
   const disconnect = async () => {
-    if (!confirm(
-      `Disconnect ${channelLabel(channelKey)}? This wipes the stored token + IDs. ` +
-      `If you just want to pause delivery without losing the credentials, use the toggle instead.`,
-    )) return;
+    if (!await confirmDialog({ title: `Disconnect ${channelLabel(channelKey)}? This wipes the stored token + IDs. ` +
+      `If you just want to pause delivery without losing the credentials, use the toggle instead.`, tone: 'danger' })) return;
     setDisconnecting(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -193,7 +192,7 @@ function ConnectionControls({
       if (!r.ok) throw new Error(j.error ?? `${r.status}`);
       await onMutated();
     } catch (e) {
-      alert(`Disconnect failed: ${(e as Error).message}`);
+      notify.error('Disconnect failed', { description: String((e as Error).message) });
     } finally { setDisconnecting(false); }
   };
   return (
@@ -328,7 +327,7 @@ function TeamsCard({ s, saving, onSave, onMutated }: { s: Safe | null; saving: b
       if (!r.ok || !j.authorize_url) throw new Error(j.error ?? `${r.status}`);
       window.location.href = j.authorize_url;
     } catch (e) {
-      alert(`Could not start sign-in: ${(e as Error).message}`);
+      notify.error('Could not start sign-in', { description: String((e as Error).message) });
       setBusy(false);
     }
   };

@@ -4,10 +4,13 @@ import { useAuth } from '@/context/AuthContext';
 import { supabase } from '@/lib/supabase';
 import { useFeatures } from '@/lib/useFeatures';
 
+const TRIAL_BANNER_LAST_DAYS = 3;
+
 /**
  * Trial countdown + grace banner.
  *
- * - During the 14-day trial: amber banner counting down to trial_ends_at.
+ * - During the last {TRIAL_BANNER_LAST_DAYS} days of the trial: amber banner
+ *   counting down to trial_ends_at.
  *   Includes "Switch plan" and "Request 15-day extension" actions.
  * - During the 7-day grace window (trial_ends_at < now() < trial_ends_at + 7d):
  *   rose banner counting down to auto-charge.
@@ -55,6 +58,8 @@ export default function TrialGraceBanner() {
 
   const daysToTrialEnd = Math.max(0, Math.ceil((trialEnd.getTime() - now.getTime()) / 86_400_000));
   const daysToGraceEnd = Math.max(0, Math.ceil((graceEnd.getTime() - now.getTime()) / 86_400_000));
+
+  if (inTrial && daysToTrialEnd > TRIAL_BANNER_LAST_DAYS) return null;
 
   const submitExtension = async () => {
     if (!organization?.id) return;

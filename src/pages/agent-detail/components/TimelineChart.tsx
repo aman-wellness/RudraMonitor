@@ -1,152 +1,186 @@
 import { useState } from 'react';
+import { EmptyNote, MicroLabel, Panel } from '@/pages/dashboard/components/ui';
+import { C, niceCeil, useElementBox } from '@/pages/dashboard/components/chartKit';
+import { formatDurationShort } from '@/lib/labels';
 
-interface DataPoint {
-  time: string;
-  events: number;
-  active: number;
-  idle: number;
-}
+/* Activity per hour: active and idle minutes, stacked.
 
-interface Props {
+   The previous version drew three grouped bars per hour — events, active, idle —
+   sharing one y-axis despite events being a COUNT and the other two MINUTES, so
+   the axis was meaningless and the bars incomparable. Stacking active + idle is
+   the honest reading: together they are that hour's system-on time, so the bar
+   height is "how long the machine was up" and the split is "how much of it was
+   work". Event counts moved into the hover readout, where they don't distort
+   the scale. */
+
+type DataPoint = { time: string; events: number; active: number; idle: number };
+
+/** Floor only — the plot takes whatever height the panel row gives it. */
+const MIN_H = 150;
+const PAD = { l: 28, r: 6, t: 10, b: 18 };
+
+/** "per 30m" / "per hour" / "per 11h" — whatever one bar covers. */
+const bucketLabel = (mins: number) => {
+  if (mins < 60) return `per ${mins}m`;
+  const hrs = Math.round(mins / 60);
+  return hrs === 1 ? 'per hour' : `per ${hrs}h`;
+};
+
+export default function TimelineChart({
+  data,
+  bucketMinutes,
+  index = 0,
+}: {
   data: DataPoint[];
-}
-
-const HEIGHT = 192;     // px — matches the previous h-48 visual
-const PAD_TOP = 8;
-const PAD_BOTTOM = 24;  // for x-axis labels
-const PAD_LEFT = 36;    // for y-axis labels
-const PAD_RIGHT = 8;
-
-export default function TimelineChart({ data }: Props) {
+  bucketMinutes: number;
+  index?: number;
+}) {
   const [hover, setHover] = useState<number | null>(null);
+  const { ref, width, height } = useElementBox<HTMLDivElement>();
 
-  const maxVal = Math.max(...data.map((d) => Math.max(d.events, d.active, d.idle)), 1);
+  const H = Math.max(MIN_H, Math.round(height));
+  const innerW = Math.max(0, width - PAD.l - PAD.r);
+  const innerH = H - PAD.t - PAD.b;
+  const max = niceCeil(Math.max(...data.map((d) => d.active + d.idle), 1));
+  const slot = innerW / Math.max(1, data.length);
+  const barW = Math.max(2, Math.min(22, slot * 0.62));
+  const active = hover !== null ? data[hover] : null;
 
-  // Y-axis ticks
-  const ticks = [0, 0.25, 0.5, 0.75, 1].map((p) => Math.round(maxVal * p));
+  const labelStep = Math.max(1, Math.ceil(data.length / 8));
 
   return (
-    <div className="bg-dark-800 border border-dark-700 rounded-xl p-4 md:p-5">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <span className="w-4 h-4 flex items-center justify-center text-violet-400">
-            <i className="ri-pulse-line" />
+    <Panel
+      title="Activity timeline"
+      index={index}
+      hint={bucketLabel(bucketMinutes)}
+      action={
+        <span className="flex items-center gap-2.5 text-[9.5px] t3">
+          <span className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-sm" style={{ background: C.success }} />
+            active
           </span>
-          <h3 className="text-sm font-poppins font-semibold text-white">Activity Timeline</h3>
-        </div>
-        <div className="flex items-center gap-3 text-[10px] text-gray-400">
-          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-violet-500" /> Events</span>
-          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-emerald-500" /> Active (min)</span>
-          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-amber-500" /> Idle (min)</span>
-        </div>
+          <span className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-sm" style={{ background: C.warning }} />
+            idle
+          </span>
+        </span>
+      }
+    >
+      {/* Hovered hour reads out in the header rather than a floating tooltip —
+          the old absolutely-positioned one clipped at the panel edge.
+
+          Deliberately no window total here: per-hour `idle` counts explicit idle
+          rows, while the Idle figure in the strip above is effective idle
+          (explicit rows OR unfocused wall gaps, whichever is larger). Showing
+          both totals side by side made the page look like it was contradicting
+          itself. */}
+      {/* Fixed reserve so hovering doesn't shift the plot, but aligned to the
+          TOP of that reserve — bottom-aligning it left a 30px band of dead air
+          hanging under the panel header. */}
+      <div className="flex items-start justify-between gap-3 min-h-[30px] flex-shrink-0">
+        {active ? (
+          <>
+            <div>
+              <MicroLabel>{active.time}</MicroLabel>
+              <p className="text-[12px] t1 font-medium mt-1 tnum">
+                {formatDurationShort(active.active * 60)} active
+                <span className="t3 font-normal"> · {formatDurationShort(active.idle * 60)} idle</span>
+              </p>
+            </div>
+            {active.events > 0 && (
+              <p className="text-[10px] t3">
+                {active.events} event{active.events === 1 ? '' : 's'}
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="text-[10px] t3">Hover a bar for its active / idle split.</p>
+        )}
       </div>
 
-      {data.length === 0 ? (
-        <div className="h-48 flex items-center justify-center text-xs text-gray-500">
-          No activity recorded in this window.
-        </div>
-      ) : (
-        <div className="relative">
+      {/* flex-1 + absolutely-positioned svg: the plot expands to use the height
+          this panel gets from its taller neighbour instead of leaving a gap. */}
+      <div ref={ref} className="w-full flex-1 relative" style={{ minHeight: MIN_H }}>
+        {data.length === 0 ? (
+          <EmptyNote
+            title="No activity recorded in this window"
+            hint="Pick a wider date range, or check the agent is reporting."
+          />
+        ) : width > 0 ? (
           <svg
-            viewBox={`0 0 1000 ${HEIGHT}`}
-            preserveAspectRatio="none"
-            className="w-full"
-            style={{ height: HEIGHT }}
+            width={width}
+            height={H}
+            className="absolute inset-0"
+            onMouseLeave={() => setHover(null)}
           >
-            {/* Grid + Y-axis labels */}
-            {ticks.map((t, i) => {
-              const y = HEIGHT - PAD_BOTTOM - ((HEIGHT - PAD_TOP - PAD_BOTTOM) * i) / 4;
+            {[0, 0.5, 1].map((g) => {
+              const y = PAD.t + innerH - g * innerH;
               return (
-                <g key={i}>
-                  <line
-                    x1={PAD_LEFT} x2={1000 - PAD_RIGHT} y1={y} y2={y}
-                    stroke="rgba(255,255,255,0.05)" strokeWidth={1}
-                  />
-                  <text
-                    x={PAD_LEFT - 6} y={y + 3}
-                    textAnchor="end" fontSize={10} fill="#6b7280"
-                  >
-                    {t}
+                <g key={g}>
+                  <line x1={PAD.l} x2={width - PAD.r} y1={y} y2={y} stroke={C.line} strokeWidth="1" />
+                  <text x={PAD.l - 6} y={y + 3} textAnchor="end" fill={C.t3} style={{ fontSize: 8.5 }}>
+                    {/* Wide windows push the axis into the hundreds of minutes,
+                        where "800m" is worse than "13h 20m". */}
+                    {g === 0 ? '0' : formatDurationShort(Math.round(max * g) * 60)}
                   </text>
                 </g>
               );
             })}
 
-            {/* Bars — three columns per slot (events, active, idle) */}
             {data.map((d, i) => {
-              const slotWidth = (1000 - PAD_LEFT - PAD_RIGHT) / data.length;
-              const slotX = PAD_LEFT + i * slotWidth;
-              const innerW = slotWidth * 0.78;
-              const innerX = slotX + (slotWidth - innerW) / 2;
-              const barW = innerW / 3 - 1;
-              const chartH = HEIGHT - PAD_TOP - PAD_BOTTOM;
-
-              const heights = [
-                { v: d.events, color: '#8b5cf6' },
-                { v: d.active, color: '#10b981' },
-                { v: d.idle,   color: '#f59e0b' },
-              ];
-
+              const x = PAD.l + i * slot + (slot - barW) / 2;
+              const activeH = (d.active / max) * innerH;
+              const idleH = (d.idle / max) * innerH;
+              const dim = hover !== null && hover !== i;
               return (
-                <g
-                  key={i}
-                  onMouseEnter={() => setHover(i)}
-                  onMouseLeave={() => setHover((h) => (h === i ? null : h))}
-                >
-                  {/* invisible hit area for hover */}
-                  <rect x={slotX} y={PAD_TOP} width={slotWidth} height={chartH} fill="transparent" />
-                  {heights.map((h, j) => {
-                    const barH = (h.v / maxVal) * chartH;
-                    const x = innerX + j * (barW + 1);
-                    return (
-                      <rect
-                        key={j}
-                        x={x}
-                        y={HEIGHT - PAD_BOTTOM - barH}
-                        width={barW}
-                        height={barH}
-                        fill={h.color}
-                        opacity={hover === null || hover === i ? 0.85 : 0.35}
-                        rx={1}
-                      />
-                    );
-                  })}
+                <g key={i} opacity={dim ? 0.4 : 1} style={{ transition: 'opacity 0.14s ease' }}>
+                  {/* idle sits on top of active, so the column height is the
+                      hour's total system-on time */}
+                  <rect
+                    x={x}
+                    y={PAD.t + innerH - activeH}
+                    width={barW}
+                    height={Math.max(0, activeH)}
+                    fill={C.success}
+                    rx="2"
+                  />
+                  <rect
+                    x={x}
+                    y={PAD.t + innerH - activeH - idleH}
+                    width={barW}
+                    height={Math.max(0, idleH)}
+                    fill={C.warning}
+                    rx="2"
+                  />
+                  <rect
+                    x={PAD.l + i * slot}
+                    y={PAD.t}
+                    width={slot}
+                    height={innerH}
+                    fill="transparent"
+                    onMouseEnter={() => setHover(i)}
+                  />
                 </g>
               );
             })}
 
-            {/* X-axis labels — show every Nth so they don't overlap */}
-            {data.map((d, i) => {
-              const skip = Math.max(1, Math.ceil(data.length / 8));
-              if (i % skip !== 0 && i !== data.length - 1) return null;
-              const slotWidth = (1000 - PAD_LEFT - PAD_RIGHT) / data.length;
-              const x = PAD_LEFT + i * slotWidth + slotWidth / 2;
-              return (
-                <text key={i} x={x} y={HEIGHT - 6} textAnchor="middle" fontSize={10} fill="#6b7280">
+            {data.map((d, i) =>
+              i % labelStep === 0 || i === data.length - 1 ? (
+                <text
+                  key={i}
+                  x={PAD.l + i * slot + slot / 2}
+                  y={H - 4}
+                  textAnchor="middle"
+                  fill={C.t3}
+                  style={{ fontSize: 8.5 }}
+                >
                   {d.time}
                 </text>
-              );
-            })}
+              ) : null,
+            )}
           </svg>
-
-          {/* Tooltip */}
-          {hover !== null && data[hover] && (
-            <div
-              className="absolute pointer-events-none bg-dark-900 border border-dark-700 rounded-lg px-2.5 py-1.5 text-[10px] text-white whitespace-nowrap shadow-lg"
-              style={{
-                left: `${PAD_LEFT / 10 + (hover + 0.5) * (100 - (PAD_LEFT + PAD_RIGHT) / 10) / data.length}%`,
-                top: 4,
-                transform: 'translateX(-50%)',
-              }}
-            >
-              <p className="font-medium mb-0.5">{data[hover].time}</p>
-              <p><span className="text-violet-400">●</span> Events: {data[hover].events}</p>
-              <p><span className="text-emerald-400">●</span> Active: {data[hover].active}m</p>
-              <p><span className="text-amber-400">●</span> Idle: {data[hover].idle}m</p>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
+        ) : null}
+      </div>
+    </Panel>
   );
 }

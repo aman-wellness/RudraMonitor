@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import AdminLayout from '../AdminLayout';
 import { supabase, type Organization } from '@/lib/supabase';
 import NewCustomerModal from '@/components/billing/NewCustomerModal';
+import { confirmDialog } from '@/lib/notify';
 
 type Row = Organization & {
   partner: { name: string } | null;
@@ -74,7 +75,7 @@ export default function AdminCustomers() {
   // (otherwise the agents would keep ingesting). The agent's enrollment check
   // looks at organizations.subscription_status, so suspend is real-time.
   const setStatus = async (o: Row, status: 'active' | 'suspended') => {
-    if (!confirm(`${status === 'suspended' ? 'Suspend' : 'Re-activate'} "${o.name}"?`)) return;
+    if (!await confirmDialog({ title: `${status === 'suspended' ? 'Suspend' : 'Re-activate'} "${o.name}"?`, tone: 'danger' })) return;
     setBusy(o.id); setError(null);
     const { error: e1 } = await supabase
       .from('organizations')
@@ -97,8 +98,8 @@ export default function AdminCustomers() {
   };
 
   const deleteCustomer = async (o: Row) => {
-    if (!confirm(`Delete customer "${o.name}"? All licenses, agents, historical data AND the customer's login accounts will be removed. The owner will need to sign up again to come back. This cannot be undone.`)) return;
-    if (!confirm(`Type-check: this will permanently delete ALL of ${o.name}'s data and revoke their login. Continue?`)) return;
+    if (!await confirmDialog({ title: `Delete customer "${o.name}"? All licenses, agents, historical data AND the customer's login accounts will be removed. The owner will need to sign up again to come back. This cannot be undone.`, tone: 'danger' })) return;
+    if (!await confirmDialog({ title: `Type-check: this will permanently delete ALL of ${o.name}'s data and revoke their login. Continue?`, tone: 'danger' })) return;
     setBusy(o.id); setError(null);
     try {
       const token = (await supabase.auth.getSession()).data.session?.access_token;

@@ -1,6 +1,16 @@
-import { useNavigate } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
+import { confirmDialog, notify } from '@/lib/notify';
+
+/* Identity strip for one agent: who, which machine, what state, and the two
+   actions that belong at this level.
+
+   Two things that were broken here:
+     • "All Agents" navigated to /dashboard, not /agents.
+     • "Remove" had no onClick at all — a destructive-looking button that did
+       nothing when pressed.
+   Both fixed; Remove now confirms, reports, and returns to the list. */
 
 interface Props {
   agentId: string;
@@ -10,44 +20,71 @@ interface Props {
   status: string;
   version: string;
   ipAddress: string;
+  os?: string;
   department?: string;
   onDepartmentChange?: (next: string | null) => void;
+  /** Right-hand slot — the date-range picker sits here so the two share a row. */
+  children?: React.ReactNode;
 }
 
 type DeptRow = { id: string; name: string; color: string | null };
 
-const COLOR_MAP: Record<string, string> = {
-  emerald: 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30',
-  cyan:    'bg-cyan-500/15 text-cyan-300 border border-cyan-500/30',
-  violet:  'bg-violet-500/15 text-violet-300 border border-violet-500/30',
-  amber:   'bg-amber-500/15 text-amber-300 border border-amber-500/30',
-  rose:    'bg-rose-500/15 text-rose-300 border border-rose-500/30',
-  blue:    'bg-blue-500/15 text-blue-300 border border-blue-500/30',
-  pink:    'bg-pink-500/15 text-pink-300 border border-pink-500/30',
-  teal:    'bg-teal-500/15 text-teal-300 border border-teal-500/30',
+// org_departments stores a colour NAME; map it onto the categorical tokens so
+// department colours match the rest of the app in both themes.
+const DEPT_TOKEN: Record<string, string> = {
+  emerald: 'var(--d-cat-7)',
+  teal: 'var(--d-cat-2)',
+  cyan: 'var(--d-cat-5)',
+  blue: 'var(--d-cat-5)',
+  violet: 'var(--d-cat-6)',
+  pink: 'var(--d-cat-4)',
+  rose: 'var(--d-cat-4)',
+  amber: 'var(--d-cat-3)',
 };
 
-const COLOR_DOT: Record<string, string> = {
-  emerald: 'bg-emerald-500', cyan: 'bg-cyan-500', violet: 'bg-violet-500',
-  amber: 'bg-amber-500', rose: 'bg-rose-500', blue: 'bg-blue-500',
-  pink: 'bg-pink-500', teal: 'bg-teal-500',
+/** Stable fallback colour when a department has none set. */
+const hashColor = (label: string) => {
+  let h = 0;
+  for (let i = 0; i < label.length; i++) h = (h * 31 + label.charCodeAt(i)) >>> 0;
+  return `var(--d-cat-${(h % 8) + 1})`;
+};
+
+const OS_ICON = (os: string) => {
+  if (os.includes('Windows')) return 'ri-windows-fill';
+  if (os.includes('macOS') || os.includes('Darwin')) return 'ri-apple-fill';
+  if (os.includes('Unknown')) return 'ri-question-line';
+  return 'ri-ubuntu-fill';
 };
 
 export default function AgentHeader({
-  agentId, orgId, name, machine, status, version, ipAddress,
-  department, onDepartmentChange,
+  agentId,
+  orgId,
+  name,
+  machine,
+  status,
+  version,
+  ipAddress,
+  os,
+  department,
+  onDepartmentChange,
+  children,
 }: Props) {
   const navigate = useNavigate();
-  const [dept, setDept] = useState<string | null>(department && department !== 'Unassigned' ? department : null);
+  const [dept, setDept] = useState<string | null>(
+    department && department !== 'Unassigned' ? department : null,
+  );
   const [editing, setEditing] = useState(false);
   const [departments, setDepartments] = useState<DeptRow[]>([]);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [removing, setRemoving] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => { setDept(department && department !== 'Unassigned' ? department : null); }, [department]);
+  useEffect(() => {
+    setDept(department && department !== 'Unassigned' ? department : null);
+  }, [department]);
 
-  // Fetch the org's department list whenever the dropdown opens (cheap; up-to-date).
+  // Fetch the org's department list when the dropdown opens — cheap, and always
+  // current.
   useEffect(() => {
     if (!editing || !orgId) return;
     (async () => {
@@ -60,130 +97,185 @@ export default function AgentHeader({
     })();
   }, [editing, orgId]);
 
-  // Click outside closes the dropdown
   useEffect(() => {
     if (!editing) return;
     const onDoc = (e: MouseEvent) => {
       if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setEditing(false);
     };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setEditing(false);
+    };
     document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
   }, [editing]);
 
-  const getInitial = (n: string) => n.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+  const initials = name
+    .split(' ')
+    .map((w) => w[0])
+    .filter(Boolean)
+    .slice(0, 2)
+    .join('')
+    .toUpperCase();
 
-  const statusColor =
-    status === 'online' ? 'bg-emerald-500/20 text-emerald-300'
-    : status === 'idle' ? 'bg-amber-500/20 text-amber-300'
-    : 'bg-red-500/20 text-red-300';
-
-  const colorOf = (d: DeptRow | null) => {
-    if (!d || !d.color) return 'bg-dark-700 text-gray-200 border border-dark-600';
-    return COLOR_MAP[d.color] ?? 'bg-dark-700 text-gray-200 border border-dark-600';
+  const colorFor = (row: DeptRow | null, label: string | null) => {
+    if (row?.color && DEPT_TOKEN[row.color]) return DEPT_TOKEN[row.color];
+    return label ? hashColor(label) : 'var(--d-neutral)';
   };
 
-  const currentDeptRow = departments.find((d) => d.name === dept) ?? null;
-  const pillClass = dept ? colorOf(currentDeptRow ?? { id: '', name: dept, color: null }) : 'bg-dark-700 text-gray-300 border border-dark-600';
+  const currentRow = departments.find((d) => d.name === dept) ?? null;
 
   const assign = async (next: string | null) => {
-    if (!agentId) return;
-    setSaving(true); setError(null);
-    const { error } = await supabase
-      .from('agents')
-      .update({ department: next })
-      .eq('id', agentId);
+    setSaving(true);
+    const { error } = await supabase.from('agents').update({ department: next }).eq('id', agentId);
     setSaving(false);
-    if (error) { setError(error.message); return; }
-    setDept(next);
     setEditing(false);
+    if (error) {
+      notify.fail('Could not change department', error);
+      return;
+    }
+    setDept(next);
+    notify.success(next ? `Moved to ${next}` : 'Department cleared', { description: name });
     onDepartmentChange?.(next);
   };
 
+  const remove = async () => {
+    const ok = await confirmDialog({
+      title: `Remove ${name}?`,
+      body: 'This frees the licence seat. Historical activity, screenshots and alerts are kept.',
+      confirmLabel: 'Remove agent',
+      tone: 'danger',
+    });
+    if (!ok) return;
+    setRemoving(true);
+    const { error } = await supabase.from('agents').delete().eq('id', agentId);
+    setRemoving(false);
+    if (error) {
+      notify.fail('Could not remove agent', error);
+      return;
+    }
+    notify.success(`${name} removed`, { description: 'One licence seat is now free.' });
+    navigate('/agents');
+  };
+
+  const statusTone =
+    status === 'online' ? 't-success' : status === 'idle' ? 't-warning' : 't3';
+  const statusLabel = status === 'online' ? 'Online' : status === 'idle' ? 'Idle' : 'Offline';
+
+  // Skip anything the agent hasn't reported — an empty "</> —" chip is noise.
+  const meta = [
+    { icon: 'ri-computer-line', value: machine },
+    { icon: OS_ICON(os ?? ''), value: os ?? '' },
+    { icon: 'ri-global-line', value: ipAddress },
+    { icon: 'ri-code-s-slash-line', value: version },
+  ].filter((m) => m.value && m.value !== '—' && m.value !== 'Unknown');
+
   return (
-    <div className="bg-dark-800 border border-dark-700 rounded-xl p-4 md:p-5">
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-        <div className="flex items-center gap-4">
-          <div className="w-14 h-14 rounded-xl bg-violet-500/20 flex items-center justify-center flex-shrink-0">
-            <span className="text-xl font-bold text-violet-300">{getInitial(name)}</span>
-          </div>
-          <div>
-            <div className="flex items-center gap-3 mb-1 flex-wrap">
-              <h2 className="text-lg font-poppins font-bold text-white">{name}</h2>
-              <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide ${statusColor}`}>
-                {status === 'online' ? 'Active Now' : status === 'idle' ? 'Idle' : 'Offline'}
+    <div className="panel rise p-3.5" style={{ ['--i' as string]: 0 }}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-start gap-3 min-w-0">
+          <span
+            className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 text-[13px] font-semibold"
+            style={{
+              color: colorFor(currentRow, dept),
+              background: 'var(--d-sunken)',
+              border: '1px solid var(--d-line-soft)',
+            }}
+          >
+            {initials}
+          </span>
+
+          <div className="min-w-0">
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <h1 className="num" style={{ fontSize: 17 }}>
+                {name}
+              </h1>
+              <span className={`inline-flex items-center gap-1.5 text-[11px] ${statusTone}`}>
+                <span
+                  className={`live-dot ${status === 'online' ? '' : 'is-off'}`}
+                  style={status === 'idle' ? { background: 'var(--d-warning)' } : undefined}
+                />
+                {statusLabel}
               </span>
-              <div className="relative" ref={wrapRef}>
+
+              <span className="relative inline-flex" ref={wrapRef}>
                 <button
                   onClick={() => setEditing(!editing)}
                   disabled={saving}
-                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium ${pillClass} flex items-center gap-1.5 cursor-pointer hover:opacity-90 disabled:opacity-50`}
+                  className="chip chip-quiet text-[10px]"
+                  title="Change department"
                 >
-                  {currentDeptRow?.color && <span className={`w-2 h-2 rounded-full ${COLOR_DOT[currentDeptRow.color] ?? 'bg-gray-400'}`} />}
+                  <span
+                    className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                    style={{ background: colorFor(currentRow, dept) }}
+                  />
                   {dept ?? 'Unassigned'}
-                  <i className="ri-arrow-down-s-line" />
+                  <i className={saving ? 'ri-loader-4-line animate-spin' : 'ri-arrow-down-s-line'} />
                 </button>
+
                 {editing && (
-                  <div className="absolute top-full left-0 mt-1 bg-dark-800 border border-dark-700 rounded-lg shadow-xl py-1 min-w-[180px] z-30 overflow-hidden">
-                    <button
-                      onClick={() => assign(null)}
-                      className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 ${
-                        dept === null ? 'text-cyan-300 bg-cyan-500/10' : 'text-gray-200 hover:bg-dark-700'
-                      }`}
-                    >
-                      <span className="w-2 h-2 rounded-full bg-gray-500" />
-                      Unassigned
-                      {dept === null && <i className="ri-check-line text-[12px] ml-auto" />}
+                  <div className="menu" style={{ left: 0, right: 'auto', top: 26, minWidth: 184 }}>
+                    <button onClick={() => void assign(null)}>
+                      <span
+                        className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                        style={{ background: 'var(--d-neutral)' }}
+                      />
+                      <span className="flex-1 text-left">Unassigned</span>
+                      {dept === null && <i className="ri-check-line text-[12px]" />}
                     </button>
-                    {departments.length > 0 && <div className="my-1 border-t border-dark-700" />}
                     {departments.map((d) => (
-                      <button
-                        key={d.id}
-                        onClick={() => assign(d.name)}
-                        className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 ${
-                          d.name === dept ? 'text-cyan-300 bg-cyan-500/10' : 'text-gray-200 hover:bg-dark-700'
-                        }`}
-                      >
-                        <span className={`w-2 h-2 rounded-full ${COLOR_DOT[d.color ?? ''] ?? 'bg-gray-400'}`} />
-                        {d.name}
-                        {d.name === dept && <i className="ri-check-line text-[12px] ml-auto" />}
+                      <button key={d.id} onClick={() => void assign(d.name)}>
+                        <span
+                          className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                          style={{ background: colorFor(d, d.name) }}
+                        />
+                        <span className="flex-1 text-left truncate">{d.name}</span>
+                        {d.name === dept && <i className="ri-check-line text-[12px]" />}
                       </button>
                     ))}
-                    <div className="border-t border-dark-700 mt-1">
+                    <div className="hair-t mt-1 pt-1">
                       <button
-                        onClick={() => { setEditing(false); navigate('/admin-portal?tab=departments'); }}
-                        className="w-full text-left px-3 py-1.5 text-xs text-cyan-300 hover:bg-dark-700 flex items-center gap-2"
+                        onClick={() => {
+                          setEditing(false);
+                          navigate('/admin-portal?tab=departments');
+                        }}
                       >
-                        <i className="ri-add-line" /> Manage departments
+                        <i className="ri-settings-3-line" />
+                        <span className="flex-1 text-left">Manage departments</span>
                       </button>
                     </div>
                   </div>
                 )}
-              </div>
+              </span>
             </div>
-            {error && <p className="text-[11px] text-red-400 mb-1">{error}</p>}
-            <div className="flex items-center gap-3 text-xs text-gray-300 flex-wrap">
-              <span className="flex items-center gap-1">
-                <i className="ri-computer-line" /> {machine}
-              </span>
-              <span className="flex items-center gap-1">
-                <i className="ri-code-s-slash-line" /> {version}
-              </span>
-              <span className="flex items-center gap-1">
-                <i className="ri-wifi-line" /> {ipAddress}
-              </span>
+
+            <div className="flex items-center gap-3 flex-wrap mt-1.5">
+              {meta.map((m) => (
+                <span key={m.value} className="flex items-center gap-1.5 text-[11px] t3">
+                  <i className={`${m.icon} text-[12px]`} />
+                  {m.value}
+                </span>
+              ))}
             </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            onClick={() => navigate('/dashboard')}
-            className="px-3 py-1.5 rounded-lg border border-dark-600 text-gray-200 text-xs font-medium hover:bg-dark-700 transition-colors flex items-center gap-1.5"
-          >
-            <i className="ri-arrow-left-line" /> All Agents
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {children}
+          <button onClick={() => navigate('/agents')} className="chip chip-quiet text-[10.5px]">
+            <i className="ri-arrow-left-line" />
+            All agents
           </button>
-          <button className="px-3 py-1.5 rounded-lg border border-red-500/40 text-red-300 text-xs font-medium hover:bg-red-500/10 transition-colors flex items-center gap-1.5">
-            <i className="ri-delete-bin-line" /> Remove
+          <button
+            onClick={() => void remove()}
+            disabled={removing}
+            className="chip chip-danger text-[10.5px]"
+          >
+            <i className={removing ? 'ri-loader-4-line animate-spin' : 'ri-delete-bin-line'} />
+            Remove
           </button>
         </div>
       </div>

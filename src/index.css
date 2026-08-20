@@ -183,9 +183,17 @@ html:not(.dark) .dashboard-shell .text-gray-700  { color: var(--text-faint) !imp
 html:not(.dark) .dashboard-shell .border-dark-700,
 html:not(.dark) .dashboard-shell .border-dark-600,
 html:not(.dark) .dashboard-shell .border-dark-800  { border-color: var(--border) !important; }
+html:not(.dark) .dashboard-shell .border-dark-700\/60,
 html:not(.dark) .dashboard-shell .border-dark-700\/50,
 html:not(.dark) .dashboard-shell .border-dark-700\/40,
-html:not(.dark) .dashboard-shell .border-dark-700\/30 { border-color: var(--border) !important; opacity: 0.6; }
+html:not(.dark) .dashboard-shell .border-dark-700\/25,
+html:not(.dark) .dashboard-shell .border-dark-700\/30 { border-color: var(--border) !important; }
+/* Divider utilities set border-color on the child, so they need their own
+   mapping — the `.border-dark-*` rules above never match them. */
+html:not(.dark) .dashboard-shell .divide-dark-700\/60 > :not([hidden]) ~ :not([hidden]),
+html:not(.dark) .dashboard-shell .divide-dark-700 > :not([hidden]) ~ :not([hidden]) {
+  border-color: var(--border) !important;
+}
 
 /* === Sticky chrome (page header) === white with backdrop blur — Linear-style */
 html:not(.dark) .dashboard-shell .bg-dark-900\/95,
@@ -209,11 +217,19 @@ html:not(.dark) .dashboard-shell .bg-dark-800\/30 {
   border-color: var(--border) !important;
 }
 
-/* Subtle hover surfaces */
+/* Subtle hover surfaces.
+   NOTE: every opacity step used anywhere in the app must be listed here. A
+   missing step (this list was silently lacking /60 and /25) falls through to
+   raw Tailwind `#333333` at that alpha, which paints mid-grey blocks on the
+   light theme — it showed up as opaque grey cells in the dashboard heatmap. */
+html:not(.dark) .dashboard-shell .bg-dark-700\/60,
 html:not(.dark) .dashboard-shell .bg-dark-700\/50,
 html:not(.dark) .dashboard-shell .bg-dark-700\/40,
 html:not(.dark) .dashboard-shell .bg-dark-700\/30,
+html:not(.dark) .dashboard-shell .bg-dark-700\/25,
 html:not(.dark) .dashboard-shell .bg-dark-700\/20 { background-color: var(--bg-subtle) !important; }
+html:not(.dark) .dashboard-shell .bg-dark-900\/60,
+html:not(.dark) .dashboard-shell .bg-dark-800\/60 { background-color: var(--bg-subtle) !important; }
 html:not(.dark) .dashboard-shell .hover\:bg-dark-700\/30:hover,
 html:not(.dark) .dashboard-shell .hover\:bg-dark-700\/40:hover,
 html:not(.dark) .dashboard-shell .hover\:bg-dark-700\/50:hover,
@@ -660,3 +676,1430 @@ html:not(.dark) .dashboard-shell textarea.bg-transparent:focus-visible {
   outline: none;
 }
 
+
+/* ============================================================================
+   DASHBOARD SURFACE  ·  scoped design system
+   ----------------------------------------------------------------------------
+   Everything under `.dash` opts OUT of the global `bg-dark-*` → light-token
+   remapping above and drives its own palette from custom properties instead.
+   That's deliberate: the remapper can only flatten every surface onto three
+   tones, which is exactly why the dashboard read as a stack of identical grey
+   boxes. Here each surface, hairline and accent is a token, so both themes get
+   real depth from one implementation.
+
+   Depth recipe (dark): base tone + a top-down white gradient wash + a 1px
+   hairline + an inset top highlight. The highlight is what makes a dark panel
+   look like a lit object instead of a hole.
+   Depth recipe (light): white + hairline + a two-stop micro shadow, no wash.
+   ========================================================================== */
+
+/* Tokens live at the root so the shell chrome (sidebar, header) draws from the
+   same palette as the dashboard panels. `.dash` only claims the base text
+   colour. */
+:root {
+  /* -- surfaces -- */
+  --d-panel: #ffffff;
+  --d-wash-a: rgba(255, 255, 255, 0);
+  --d-wash-b: rgba(255, 255, 255, 0);
+  --d-inset: 0 0 #0000;
+  --d-shadow: 0 1px 2px rgba(17, 24, 39, 0.05), 0 1px 3px rgba(17, 24, 39, 0.04);
+  --d-shadow-hi: 0 2px 4px rgba(17, 24, 39, 0.06), 0 8px 20px -8px rgba(17, 24, 39, 0.10);
+  --d-hover: #f8f8fa;
+  --d-sunken: #f5f5f8;
+
+  /* -- lines -- */
+  --d-line: #e8e8ee;
+  --d-line-soft: #efeff4;
+  --d-line-hi: #d5d5e0;
+
+  /* -- type -- */
+  --d-t1: #17171b;
+  --d-t2: #52525b;
+  /* Was #8d8d99 — 3.28:1 on white, the same failure as the dark side. */
+  --d-t3: #6f6f7a;
+
+  /* -- accents -- */
+  --d-accent: #5b5bd6;
+  --d-accent-2: #3d63dd;
+  --d-accent-wash: rgba(91, 91, 214, 0.09);
+  --d-success: #059669;
+  --d-warning: #d97706;
+  --d-danger: #e11d48;
+  --d-sev-high: #ea580c;
+  --d-info: #2563eb;
+  --d-neutral: #9a9aa6;
+  --d-track: #ebebf1;
+  --d-heat-empty: #f1f1f6;
+
+  /* Sidebar geometry — set inline by the layout, read by the content offset. */
+  --s-w: 256px;
+}
+
+.dash { color: var(--d-t2); }
+
+html.dark {
+  --d-panel: #17171b;
+  --d-wash-a: rgba(255, 255, 255, 0.042);
+  --d-wash-b: rgba(255, 255, 255, 0.008);
+  --d-inset: inset 0 1px 0 rgba(255, 255, 255, 0.055);
+  --d-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --d-shadow-hi: 0 1px 2px rgba(0, 0, 0, 0.5), 0 14px 32px -16px rgba(0, 0, 0, 0.75);
+  --d-hover: rgba(255, 255, 255, 0.032);
+  --d-sunken: rgba(0, 0, 0, 0.26);
+
+  --d-line: rgba(255, 255, 255, 0.075);
+  --d-line-soft: rgba(255, 255, 255, 0.05);
+  --d-line-hi: rgba(255, 255, 255, 0.15);
+
+  --d-t1: #f3f3f5;
+  --d-t2: #b0b0ba;
+  /* Was #6d6d79 — 3.50:1 against the panel, under the 4.5:1 minimum for body
+     text, and it carries the 10px captions and every .label on the page. They
+     read as faded. #8a8a96 is 5.24:1 on the panel and still clearly the third
+     tier below t1/t2. */
+  --d-t3: #8a8a96;
+
+  --d-accent: #8e8ff7;
+  --d-accent-2: #6aa5ff;
+  --d-accent-wash: rgba(142, 143, 247, 0.15);
+  --d-success: #34d399;
+  --d-warning: #fbbf24;
+  --d-danger: #fb7185;
+  --d-sev-high: #fb923c;
+  --d-info: #60a5fa;
+  --d-neutral: #8a8a96;
+  --d-track: rgba(255, 255, 255, 0.085);
+  --d-heat-empty: rgba(255, 255, 255, 0.045);
+}
+
+/* ---------------------------------------------------------------- panels --- */
+
+.dash .panel {
+  position: relative;
+  border-radius: 10px;
+  background-image: linear-gradient(180deg, var(--d-wash-a), var(--d-wash-b));
+  background-color: var(--d-panel);
+  border: 1px solid var(--d-line);
+  box-shadow: var(--d-inset), var(--d-shadow);
+  transition: border-color 0.22s ease, box-shadow 0.22s ease;
+  min-width: 0;
+}
+.dash .panel:hover {
+  border-color: var(--d-line-hi);
+  box-shadow: var(--d-inset), var(--d-shadow-hi);
+}
+/* `.rise` uses animation-fill-mode: both, so a transform stays applied to the
+   element after the entrance finishes — and a transformed element is its own
+   stacking context. That traps every dropdown inside its panel: a `.menu` or
+   `.filter-pop` with z-index 20/40 still paints BELOW the next panel in the
+   DOM, because the comparison happens between the two panels (both z-index
+   auto), not between the popover and the panel. The department menu and the
+   date-range popover in the agent header were both sliced in half by the KPI
+   strip underneath them.
+   Fix: lift the whole panel while it holds an open overlay. */
+.dash .panel:has(.menu),
+.dash .panel:has(.filter-pop) {
+  z-index: 50;
+}
+
+.dash .panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  height: 36px;
+  padding: 0 0.75rem;
+  border-bottom: 1px solid var(--d-line-soft);
+}
+.dash .panel-title {
+  font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--d-t1);
+}
+.dash .panel-body { padding: 0.6875rem 0.75rem; }
+
+/* Section band label -- gives the page rhythm instead of an undifferentiated
+   wall of panels. */
+.dash .sec {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0 0.125rem;
+}
+.dash .sec-label {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--d-t3);
+  white-space: nowrap;
+}
+.dash .sec-rule {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, var(--d-line), transparent);
+}
+
+/* ------------------------------------------------------------------ type --- */
+
+.dash .t1 { color: var(--d-t1); }
+.dash .t2 { color: var(--d-t2); }
+.dash .t3 { color: var(--d-t3); }
+.dash .t-accent  { color: var(--d-accent); }
+.dash .t-success { color: var(--d-success); }
+.dash .t-warning { color: var(--d-warning); }
+.dash .t-danger  { color: var(--d-danger); }
+.dash .t-info    { color: var(--d-info); }
+
+.dash .label {
+  display: block;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--d-t3);
+}
+
+/* Headline figures. Tabular + negative tracking so columns of numbers align
+   and read as data rather than prose. */
+.dash .num {
+  font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  color: var(--d-t1);
+  line-height: 1;
+}
+.dash .num-xl { font-size: 21px; }
+.dash .num-lg { font-size: 19px; }
+.dash .num-md { font-size: 16px; }
+.dash .tnum { font-variant-numeric: tabular-nums; }
+
+/* ---------------------------------------------------------------- pieces --- */
+
+.dash .hair-t { border-top: 1px solid var(--d-line-soft); }
+.dash .hair-b { border-bottom: 1px solid var(--d-line-soft); }
+.dash .hair-l { border-left: 1px solid var(--d-line-soft); }
+.dash .sunken { background: var(--d-sunken); }
+
+/* Interactive cell: KPI strip, table rows, list links. */
+.dash .cell { transition: background-color 0.18s ease; }
+.dash .cell:hover { background-color: var(--d-hover); }
+
+/* Segmented control */
+.dash .seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--d-sunken);
+  border: 1px solid var(--d-line-soft);
+}
+.dash .seg-btn {
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--d-t3);
+  white-space: nowrap;
+  transition: color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease;
+}
+.dash .seg-btn:hover { color: var(--d-t2); }
+.dash .seg-btn.is-on {
+  color: var(--d-t1);
+  background: var(--d-panel);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
+}
+html.dark .dash .seg-btn.is-on {
+  background: rgba(255, 255, 255, 0.09);
+  box-shadow: none;
+}
+
+/* Chip / pill */
+.dash .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-weight: 500;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+.dash .chip-accent  { background: var(--d-accent-wash); color: var(--d-accent); }
+.dash .chip-success { background: rgba(5, 150, 105, 0.10);  color: var(--d-success); }
+.dash .chip-warning { background: rgba(217, 119, 6, 0.11);  color: var(--d-warning); }
+.dash .chip-danger  { background: rgba(225, 29, 72, 0.10);  color: var(--d-danger); }
+html.dark .dash .chip-success { background: rgba(52, 211, 153, 0.13); }
+html.dark .dash .chip-warning { background: rgba(251, 191, 36, 0.14); }
+html.dark .dash .chip-danger  { background: rgba(251, 113, 133, 0.14); }
+.dash .chip-quiet {
+  background: var(--d-sunken);
+  color: var(--d-t2);
+  border-color: var(--d-line-soft);
+}
+.dash .chip-quiet:hover { border-color: var(--d-line-hi); color: var(--d-t1); }
+
+/* Proportion bar */
+.dash .track {
+  width: 100%;
+  border-radius: 999px;
+  background: var(--d-track);
+  overflow: hidden;
+}
+.dash .track > i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transform-origin: left center;
+}
+
+/* Live dot with a soft expanding halo -- the one place a pulse earns its keep. */
+.dash .live-dot {
+  position: relative;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--d-success);
+  flex-shrink: 0;
+}
+.dash .live-dot::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 999px;
+  background: var(--d-success);
+  animation: d-halo 2.4s ease-out infinite;
+}
+.dash .live-dot.is-off { background: var(--d-neutral); }
+.dash .live-dot.is-off::after { display: none; }
+
+/* -------------------------------------------------------------- motion --- */
+
+@keyframes d-rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes d-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes d-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes d-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes d-halo {
+  0%   { transform: scale(0.5); opacity: 0.45; }
+  70%  { transform: scale(1.6); opacity: 0; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+
+/* Staggered entrance; `--i` is the panel's index down the page. */
+.dash .rise {
+  animation: d-rise 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: calc(var(--i, 0) * 55ms);
+}
+/* Chart lines self-draw. Paths carry pathLength="1" so the dash maths is exact
+   at any rendered width. */
+.dash .draw {
+  stroke-dasharray: 1;
+  animation: d-draw 1.05s cubic-bezier(0.33, 1, 0.68, 1) both 0.12s;
+}
+.dash .fade-in { animation: d-fade 0.7s ease both 0.28s; }
+.dash .track > i.grow { animation: d-grow 0.75s cubic-bezier(0.16, 1, 0.3, 1) both 0.15s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .dash .rise,
+  .dash .draw,
+  .dash .fade-in,
+  .dash .track > i.grow,
+  .dash .live-dot::after {
+    animation: none !important;
+  }
+}
+
+/* Focus rings inside the dashboard use the accent, not the global cyan. */
+.dash *:focus-visible {
+  outline: 2px solid var(--d-accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* Form controls on the dashboard surface. The global rules target
+   `.dashboard-shell input` with !important, so these need equal reach.
+   Matched on "not the exceptions" rather than input[type='text']: an <input>
+   with no type attribute, or type="email" / "search" / "number", did not match
+   that selector and fell through to the global white background — a white slab
+   on the dark surface. The wrapper (.field) owns the visible chrome; .filter-date
+   and the boolean controls own their own. */
+.dash input:not([type='checkbox']):not([type='radio']):not([type='range']):not(.filter-date):not(.cbx),
+.dash select:not(.filter-date),
+.dash textarea:not(.filter-date) {
+  background-color: transparent !important;
+  border-color: transparent !important;
+  color: var(--d-t1) !important;
+}
+.dash input::placeholder,
+.dash textarea::placeholder { color: var(--d-t3) !important; }
+.dash input:focus,
+.dash select:focus,
+.dash textarea:focus {
+  box-shadow: none !important;
+  outline: none !important;
+}
+/* Chrome paints autofilled fields with its own near-white wash and ignores
+   background-color; the inset shadow is the only way to override it. */
+.dash input:-webkit-autofill,
+.dash input:-webkit-autofill:hover,
+.dash input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--d-t1);
+  -webkit-box-shadow: 0 0 0 1000px var(--d-panel) inset;
+  caret-color: var(--d-t1);
+}
+.dash .field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 8px;
+  background: var(--d-panel);
+  border: 1px solid var(--d-line);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+.dash .field:hover { border-color: var(--d-line-hi); }
+.dash .field:focus-within {
+  border-color: var(--d-accent);
+  box-shadow: 0 0 0 3px var(--d-accent-wash);
+}
+
+/* KPI strip grid. Hairlines between cells only — the panel border draws the
+   outer edge — and they have to move as the column count changes, which is
+   why this lives in CSS rather than as per-cell responsive utilities. */
+.dash .kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.dash .kpi-grid > *:nth-child(2n) { border-left: 1px solid var(--d-line-soft); }
+.dash .kpi-grid > *:nth-child(n + 3) { border-top: 1px solid var(--d-line-soft); }
+
+@media (min-width: 640px) {
+  .dash .kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .dash .kpi-grid > * { border-left: 0; border-top: 0; }
+  .dash .kpi-grid > *:not(:nth-child(3n + 1)) { border-left: 1px solid var(--d-line-soft); }
+  .dash .kpi-grid > *:nth-child(n + 4) { border-top: 1px solid var(--d-line-soft); }
+}
+
+@media (min-width: 1280px) {
+  .dash .kpi-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .dash .kpi-grid > * { border-top: 0; border-left: 0; }
+  .dash .kpi-grid > *:not(:first-child) { border-left: 1px solid var(--d-line-soft); }
+}
+
+/* Same divider treatment for a four-cell strip. .kpi-grid is tuned for exactly
+   six cells — reusing it for four leaves two empty columns at ≥1280px. */
+.dash .quad-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.dash .quad-grid > *:nth-child(2n) { border-left: 1px solid var(--d-line-soft); }
+.dash .quad-grid > *:nth-child(n + 3) { border-top: 1px solid var(--d-line-soft); }
+
+@media (min-width: 900px) {
+  .dash .quad-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .dash .quad-grid > * { border-top: 0; border-left: 0; }
+  .dash .quad-grid > *:not(:first-child) { border-left: 1px solid var(--d-line-soft); }
+}
+
+/* Five-cell strip. Same divider treatment; separate from .quad-grid/.kpi-grid
+   because the hairline positions depend on the column count. */
+.dash .pent-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.dash .pent-grid > *:nth-child(2n) { border-left: 1px solid var(--d-line-soft); }
+.dash .pent-grid > *:nth-child(n + 3) { border-top: 1px solid var(--d-line-soft); }
+
+@media (min-width: 700px) {
+  .dash .pent-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .dash .pent-grid > * { border-left: 0; border-top: 0; }
+  .dash .pent-grid > *:not(:nth-child(3n + 1)) { border-left: 1px solid var(--d-line-soft); }
+  .dash .pent-grid > *:nth-child(n + 4) { border-top: 1px solid var(--d-line-soft); }
+}
+
+@media (min-width: 1150px) {
+  .dash .pent-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .dash .pent-grid > * { border-top: 0; border-left: 0; }
+  .dash .pent-grid > *:not(:first-child) { border-left: 1px solid var(--d-line-soft); }
+}
+
+/* Heatmap: rounded cells on a continuous accent ramp, with the out-of-hours
+   columns sitting on a faint warm band instead of each cell carrying its own
+   outline. The band reads as a shape; the outlines read as noise. */
+.dash .heat-grid { display: grid; gap: 2px; }
+/* Rows stretch to fill whatever height the panel has, so the grid uses the
+   slack when its row neighbour is taller instead of leaving a dead gap — and
+   the cells get bigger, which makes the chart easier to read. Bounded so a very
+   tall row doesn't turn the cells into slabs. */
+.dash .heat-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.dash .heat-row {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  flex: 1 1 0;
+  min-height: 11px;
+  max-height: 26px;
+}
+.dash .heat-cell {
+  height: 100%;
+  min-height: 11px;
+  border-radius: 2.5px;
+  background: var(--d-heat-empty);
+  transition: transform 0.14s ease, box-shadow 0.14s ease;
+}
+.dash .heat-cell > i {
+  display: block;
+  height: 100%;
+  border-radius: 2.5px;
+  background: var(--d-accent);
+}
+.dash .heat-cell:hover {
+  transform: scale(1.28);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  z-index: 1;
+}
+.dash .heat-band {
+  background: rgba(24, 24, 32, 0.032);
+  border-radius: 5px;
+}
+html.dark .dash .heat-band { background: rgba(255, 255, 255, 0.022); }
+
+/* Presence strip in the agent table — 24 slim bars, one per hour. */
+.dash .pres { display: flex; align-items: center; gap: 1.5px; }
+.dash .pres > span {
+  width: 3px;
+  height: 12px;
+  border-radius: 1.5px;
+  background: var(--d-heat-empty);
+}
+.dash .pres > span > i {
+  display: block;
+  height: 100%;
+  border-radius: 1.5px;
+  background: var(--d-accent);
+}
+
+/* Table rows */
+.dash .d-table { width: 100%; border-collapse: collapse; }
+.dash .d-table th {
+  text-align: left;
+  padding: 5px 10px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--d-t3);
+  white-space: nowrap;
+  border-bottom: 1px solid var(--d-line-soft);
+}
+.dash .d-table td { padding: 5px 10px; }
+.dash .d-table tbody tr {
+  border-bottom: 1px solid var(--d-line-soft);
+  transition: background-color 0.16s ease;
+  cursor: pointer;
+}
+.dash .d-table tbody tr:last-child { border-bottom: 0; }
+.dash .d-table tbody tr:hover { background: var(--d-hover); }
+
+/* Avatar bubble */
+.dash .avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--d-t2);
+  background: var(--d-sunken);
+  border: 1px solid var(--d-line-soft);
+}
+
+/* Dropdown menu (row actions) */
+.dash .menu {
+  position: absolute;
+  right: 8px;
+  top: 32px;
+  z-index: 20;
+  min-width: 168px;
+  padding: 4px;
+  border-radius: 10px;
+  background: var(--d-panel);
+  border: 1px solid var(--d-line);
+  box-shadow: 0 8px 28px -8px rgba(0, 0, 0, 0.4), var(--d-inset);
+  animation: d-rise 0.16s ease both;
+}
+.dash .menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  color: var(--d-t2);
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+.dash .menu button:hover { background: var(--d-hover); color: var(--d-t1); }
+
+/* Icon button */
+.dash .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  color: var(--d-t3);
+  transition: background-color 0.16s ease, color 0.16s ease;
+}
+.dash .icon-btn:hover { background: var(--d-hover); color: var(--d-t1); }
+
+/* Ranked list row (departments, apps, severities) */
+.dash .rank-row { display: block; }
+.dash .rank-row + .rank-row { margin-top: 8px; }
+
+/* Stacked proportion bar — one row showing a mix (DLP severity split). Beats
+   four separate bars, which all render full-width whenever the largest count
+   is 1 and so imply "everything is maxed out". */
+.dash .stack {
+  display: flex;
+  width: 100%;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--d-track);
+}
+.dash .stack > i {
+  display: block;
+  height: 100%;
+  transition: flex-basis 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ============================================================================
+   SHELL CHROME  ·  sidebar + header
+   ----------------------------------------------------------------------------
+   Same tokens as the dashboard panels, so the chrome and the content read as
+   one surface. The sidebar is collapsible (icons only) and resizable by
+   dragging its right edge; both are persisted by the layout and expressed
+   through `--s-w`, which the content margin also reads — so there is exactly
+   one source of truth for the width.
+   ========================================================================== */
+
+.s-aside {
+  background-color: var(--d-panel);
+  background-image: linear-gradient(180deg, var(--d-wash-a), var(--d-wash-b));
+  border-right: 1px solid var(--d-line);
+  width: var(--s-w);
+  transition: width 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+/* While dragging, width follows the pointer — a transition here would lag. */
+.s-aside.is-dragging { transition: none; }
+
+.s-main {
+  /* The drawer overlays on mobile, so only the desktop rail pushes content. */
+  margin-left: 0;
+  transition: margin-left 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@media (min-width: 768px) {
+  .s-main { margin-left: var(--s-w); }
+}
+.s-main.is-dragging { transition: none; }
+
+/* ------------------------------------------------------------------ brand -- */
+
+.s-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 48px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--d-line-soft);
+  flex-shrink: 0;
+}
+.s-brand-name {
+  font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--d-t1);
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------------- nav -- */
+
+.s-nav {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px;
+  scrollbar-width: thin;
+}
+.s-nav::-webkit-scrollbar { width: 6px; }
+.s-nav::-webkit-scrollbar-thumb {
+  background: var(--d-line-hi);
+  border-radius: 999px;
+  border: none;
+}
+
+.s-sec {
+  padding: 10px 9px 4px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--d-t3);
+  white-space: nowrap;
+}
+.s-nav > div:first-child .s-sec { padding-top: 4px; }
+
+/* One row shape for links and group headers alike. */
+.s-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: 12.5px;
+  color: var(--d-t2);
+  white-space: nowrap;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.s-row + .s-row { margin-top: 1px; }
+.s-row:hover { background-color: var(--d-hover); color: var(--d-t1); }
+.s-row .s-ico {
+  font-size: 16px;
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+  color: var(--d-t3);
+  transition: color 0.15s ease;
+}
+.s-row:hover .s-ico { color: var(--d-t2); }
+.s-label { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+
+/* Active: accent wash, accent text, and a flush left indicator that lines up
+   with the panel edge rather than floating inside the row. */
+.s-row.is-active {
+  background-color: var(--d-accent-wash);
+  color: var(--d-accent);
+  font-weight: 500;
+}
+.s-row.is-active .s-ico { color: var(--d-accent); }
+.s-row.is-active::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 50%;
+  width: 3px;
+  height: 18px;
+  border-radius: 0 3px 3px 0;
+  background: var(--d-accent);
+  transform: translateY(-50%);
+}
+/* A group whose child route is active gets the text weight but not the wash —
+   the child row below it owns the highlight. */
+.s-row.is-within { color: var(--d-t1); }
+.s-row.is-within .s-ico { color: var(--d-t2); }
+
+.s-row.is-child {
+  height: 27px;
+  font-size: 12px;
+}
+.s-row.is-child .s-ico { font-size: 14px; width: 16px; }
+
+.s-kids {
+  margin: 2px 0 2px 19px;
+  padding-left: 9px;
+  border-left: 1px solid var(--d-line-soft);
+}
+/* Animated disclosure. max-height rather than the grid-rows trick so it still
+   opens on browsers without interpolate-size support. */
+.s-kids-wrap {
+  overflow: hidden;
+  max-height: 0;
+  opacity: 0;
+  transition: max-height 0.24s ease, opacity 0.18s ease;
+}
+.s-kids-wrap.is-open {
+  max-height: 640px;
+  opacity: 1;
+}
+
+.s-chev {
+  font-size: 15px;
+  color: var(--d-t3);
+  flex-shrink: 0;
+  transition: transform 0.2s ease;
+}
+.s-chev.is-open { transform: rotate(90deg); }
+
+.s-badge {
+  min-width: 15px;
+  height: 15px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--d-danger);
+  color: #fff;
+  flex-shrink: 0;
+}
+html.dark .s-badge { color: #1a0d12; }
+
+/* -------------------------------------------------------------- footer/user -- */
+
+.s-foot {
+  padding: 8px;
+  border-top: 1px solid var(--d-line-soft);
+  flex-shrink: 0;
+}
+.s-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 8px;
+  border-radius: 9px;
+  text-align: left;
+  transition: background-color 0.15s ease;
+}
+.s-user:hover { background-color: var(--d-hover); }
+.s-user-av {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--d-accent);
+  background: var(--d-accent-wash);
+}
+
+/* ------------------------------------------------------------------ resize -- */
+
+.s-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -3px;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 40;
+  touch-action: none;
+}
+.s-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background-color 0.15s ease;
+}
+.s-handle:hover::after,
+.s-handle.is-active::after { background: var(--d-accent); }
+/* Kill text selection everywhere while a drag is in flight. */
+body.s-resizing { cursor: col-resize; user-select: none; }
+
+/* --------------------------------------------------------------- collapsed -- */
+
+.s-aside.is-collapsed .s-brand { justify-content: center; padding: 0; }
+.s-aside.is-collapsed .s-row {
+  justify-content: center;
+  gap: 0;
+  padding: 0;
+}
+.s-aside.is-collapsed .s-sec {
+  height: 1px;
+  padding: 0;
+  margin: 10px 10px 9px;
+  overflow: hidden;
+  background: var(--d-line-soft);
+  color: transparent;
+}
+.s-aside.is-collapsed .s-label,
+.s-aside.is-collapsed .s-chev,
+.s-aside.is-collapsed .s-brand-name,
+.s-aside.is-collapsed .s-user-meta { display: none; }
+.s-aside.is-collapsed .s-row.is-active::before { left: -8px; }
+.s-aside.is-collapsed .s-user { justify-content: center; padding: 7px 0; }
+/* Count badges become a corner dot when there's no room for the number. */
+.s-aside.is-collapsed .s-badge {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  min-width: 7px;
+  height: 7px;
+  padding: 0;
+  font-size: 0;
+}
+
+/* ------------------------------------------------------------------ header -- */
+
+.s-header {
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 16px;
+  background-color: var(--d-panel);
+  border-bottom: 1px solid var(--d-line);
+}
+@supports (backdrop-filter: blur(12px)) {
+  .s-header {
+    background-color: color-mix(in srgb, var(--d-panel) 82%, transparent);
+    backdrop-filter: saturate(140%) blur(14px);
+  }
+}
+.s-title {
+  font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--d-t1);
+}
+.s-hbtn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  color: var(--d-t3);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.s-hbtn:hover { background-color: var(--d-hover); color: var(--d-t1); }
+.s-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: var(--d-sunken);
+  border: 1px solid var(--d-line-soft);
+  transition: border-color 0.15s ease;
+}
+.s-search:focus-within { border-color: var(--d-line-hi); }
+.s-search input {
+  background: transparent !important;
+  border: 0 !important;
+  outline: none !important;
+  box-shadow: none !important;
+  font-size: 12.5px;
+  color: var(--d-t1) !important;
+}
+.s-search input::placeholder { color: var(--d-t3) !important; }
+
+.s-pop {
+  position: absolute;
+  right: 0;
+  top: 40px;
+  z-index: 50;
+  border-radius: 12px;
+  background: var(--d-panel);
+  border: 1px solid var(--d-line);
+  box-shadow: 0 12px 36px -10px rgba(0, 0, 0, 0.35), var(--d-inset);
+  overflow: hidden;
+  animation: d-rise 0.16s ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .s-aside,
+  .s-main,
+  .s-kids-wrap,
+  .s-chev,
+  .s-pop { transition: none !important; animation: none !important; }
+}
+
+/* Popover internals + a danger variant of the nav row (sign-out). Text colour
+   utilities are duplicated outside `.dash` because the shell chrome sits above
+   the dashboard page in the tree. */
+.dashboard-shell .t1 { color: var(--d-t1); }
+.dashboard-shell .t2 { color: var(--d-t2); }
+.dashboard-shell .t3 { color: var(--d-t3); }
+.dashboard-shell .t-accent { color: var(--d-accent); }
+.dashboard-shell .cell { transition: background-color 0.16s ease; }
+.dashboard-shell .cell:hover { background-color: var(--d-hover); }
+
+.s-pop-head { border-bottom: 1px solid var(--d-line-soft); }
+.s-pop-foot { border-top: 1px solid var(--d-line-soft); }
+
+.s-row-danger { color: var(--d-danger); }
+.s-row-danger .s-ico { color: var(--d-danger); }
+.s-row-danger:hover { color: var(--d-danger); }
+.s-row-danger:hover .s-ico { color: var(--d-danger); }
+
+/* ----------------------------------------------------------------------------
+   Undo the legacy tiny-text inflation inside the new chrome.
+
+   Further up this file, `[class*="bg-dark-"] .text-[10px]` bumps 10px → 11px
+   and 11px → 12px with !important, for legibility on the OLD dark surfaces.
+   `.dashboard-shell` carries `bg-dark-900`, so every label in the redesigned
+   dashboard and sidebar was silently rendering a pixel larger than specified —
+   which is a good part of why the page felt oversized. Same specificity, but
+   later in the file, so these win.
+   -------------------------------------------------------------------------- */
+.dash .text-\[8\.5px\],
+.s-aside .text-\[8\.5px\],
+.s-header .text-\[8\.5px\] { font-size: 8.5px !important; }
+.dash .text-\[9px\],
+.s-aside .text-\[9px\],
+.s-header .text-\[9px\] { font-size: 9px !important; }
+.dash .text-\[9\.5px\],
+.s-aside .text-\[9\.5px\],
+.s-header .text-\[9\.5px\] { font-size: 9.5px !important; }
+.dash .text-\[10px\],
+.s-aside .text-\[10px\],
+.s-header .text-\[10px\] { font-size: 10px !important; }
+.dash .text-\[10\.5px\],
+.s-aside .text-\[10\.5px\],
+.s-header .text-\[10\.5px\] { font-size: 10.5px !important; }
+.dash .text-\[11px\],
+.s-aside .text-\[11px\],
+.s-header .text-\[11px\] { font-size: 11px !important; }
+
+/* Status check row. A failing check gets a faint tinted bed so it separates
+   from the passing ones without needing a second colour on the text. */
+.dash .check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  margin: 0 -6px;
+  border-radius: 6px;
+}
+.dash .check.is-bad { background: rgba(225, 29, 72, 0.065); }
+html.dark .dash .check.is-bad { background: rgba(251, 113, 133, 0.09); }
+
+/* Filter bar: agent + date-range pickers. Same surface language as the panels,
+   one line tall so it reads as chrome rather than content. */
+.dash .filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 9px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  background-color: var(--d-panel);
+  background-image: linear-gradient(180deg, var(--d-wash-a), var(--d-wash-b));
+  border: 1px solid var(--d-line);
+  box-shadow: var(--d-inset);
+  transition: border-color 0.16s ease, background-color 0.16s ease;
+}
+.dash .filter-btn:hover { border-color: var(--d-line-hi); }
+
+.dash .filter-pop {
+  position: absolute;
+  left: 0;
+  top: 36px;
+  z-index: 40;
+  border-radius: 10px;
+  background: var(--d-panel);
+  border: 1px solid var(--d-line);
+  box-shadow: 0 12px 34px -10px rgba(0, 0, 0, 0.35), var(--d-inset);
+  overflow: hidden;
+  animation: d-rise 0.15s ease both;
+}
+
+.dash .filter-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  color: var(--d-t2);
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+.dash .filter-opt:hover { background: var(--d-hover); color: var(--d-t1); }
+.dash .filter-opt.is-on {
+  background: var(--d-accent-wash);
+  color: var(--d-accent);
+  font-weight: 500;
+}
+
+/* Matches every input type this class is actually used on. It used to say
+   input[type='date'] only, so the agent-detail custom-range fields — which are
+   datetime-local — got no styling and rendered as white native boxes on the
+   dark surface. */
+.dash .filter-date,
+.dash input[type='date'].filter-date,
+.dash input[type='datetime-local'].filter-date,
+.dash input[type='time'].filter-date {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 7px;
+  border-radius: 7px;
+  font-size: 11px;
+  background-color: var(--d-panel) !important;
+  border: 1px solid var(--d-line) !important;
+  color: var(--d-t1) !important;
+}
+.dash .filter-date:focus { border-color: var(--d-accent) !important; }
+/* The native picker glyph is near-invisible on a dark surface. */
+html.dark .dash .filter-date::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  opacity: 0.55;
+}
+
+/* Marks a panel whose numbers are "right now" and so ignore the date range. */
+.dash .live-tag {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--d-t3);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ----------------------------------------------------------------------------
+   Categorical palette. Used for things with no inherent order — departments,
+   for instance — where a colour just needs to be stable and distinguishable.
+   Indexed by a hash of the label, so a department keeps its colour across
+   pages and sessions without anyone maintaining a mapping.
+   -------------------------------------------------------------------------- */
+:root {
+  --d-cat-1: #5b5bd6;
+  --d-cat-2: #0d9488;
+  --d-cat-3: #b45309;
+  --d-cat-4: #be123c;
+  --d-cat-5: #0369a1;
+  --d-cat-6: #7c3aed;
+  --d-cat-7: #15803d;
+  --d-cat-8: #c2410c;
+}
+html.dark {
+  --d-cat-1: #8e8ff7;
+  --d-cat-2: #2dd4bf;
+  --d-cat-3: #fbbf24;
+  --d-cat-4: #fb7185;
+  --d-cat-5: #38bdf8;
+  --d-cat-6: #c084fc;
+  --d-cat-7: #4ade80;
+  --d-cat-8: #fb923c;
+}
+
+/* Checkbox. Native inputs can't be styled consistently across the two themes,
+   so this is a button that looks like one. */
+.dash .cbx {
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  border: 1px solid var(--d-line-hi);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background-color 0.14s ease, border-color 0.14s ease;
+}
+.dash .cbx:hover { border-color: var(--d-accent); }
+.dash .cbx i {
+  font-size: 10px;
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.dash .cbx.is-on {
+  background: var(--d-accent);
+  border-color: var(--d-accent);
+}
+.dash .cbx.is-on i { opacity: 1; }
+html.dark .dash .cbx.is-on i { color: #14142b; }
+
+/* A panel the user has ticked. */
+.dash .panel.is-sel {
+  border-color: var(--d-accent);
+  box-shadow: var(--d-inset), 0 0 0 1px var(--d-accent);
+}
+
+/* Card grid: the whole card is a click target, so give it a pointer and a
+   slightly stronger hover than a static panel. */
+.dash .card-link { cursor: pointer; }
+.dash .card-link:hover { background-color: var(--d-hover); }
+
+/* Small stat tile inside an agent card. */
+.dash .tile {
+  padding: 7px 8px;
+  border-radius: 7px;
+  background: var(--d-sunken);
+  border: 1px solid var(--d-line-soft);
+  text-align: center;
+  min-width: 0;
+}
+
+/* Inline banner (seat-locked warning). */
+.dash .banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: rgba(225, 29, 72, 0.07);
+  border: 1px solid rgba(225, 29, 72, 0.22);
+}
+html.dark .dash .banner {
+  background: rgba(251, 113, 133, 0.09);
+  border-color: rgba(251, 113, 133, 0.24);
+}
+
+/* Media thumbnail tile — screenshot / video grids. The accent edge on hover is
+   the only affordance; a coloured border at rest would fight the grid. */
+.dash .tile-media {
+  border: 1px solid var(--d-line);
+  transition: border-color 0.16s ease, transform 0.16s ease;
+}
+.dash .tile-media:hover {
+  border-color: var(--d-accent);
+  transform: translateY(-1px);
+}
+
+/* Same shape in the warning tone, for "here's why this looks empty" notices
+   that aren't failures. */
+.dash .banner.is-notice {
+  background: rgba(217, 119, 6, 0.08);
+  border-color: rgba(217, 119, 6, 0.22);
+}
+html.dark .dash .banner.is-notice {
+  background: rgba(251, 191, 36, 0.09);
+  border-color: rgba(251, 191, 36, 0.22);
+}
+
+/* Selection action bar. */
+.dash .selbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 9px;
+  background: var(--d-accent-wash);
+  border: 1px solid transparent;
+}
+
+/* ============================================================================
+   DIALOGS + TOASTS
+   Replaces the browser's alert()/confirm()/prompt(). Drawn from the same tokens
+   as the rest of the app, and defined outside `.dash` where needed because both
+   surfaces mount at the document root.
+   ========================================================================== */
+
+@keyframes dlg-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes dlg-fade { from { opacity: 0; } to { opacity: 1; } }
+
+.dlg-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(9, 9, 14, 0.45);
+  backdrop-filter: blur(2px);
+  animation: dlg-fade 0.14s ease both;
+}
+html.dark .dlg-backdrop { background: rgba(0, 0, 0, 0.62); }
+
+.dlg {
+  width: 100%;
+  max-width: 400px;
+  padding: 16px;
+  border-radius: 13px;
+  background-color: var(--d-panel);
+  background-image: linear-gradient(180deg, var(--d-wash-a), var(--d-wash-b));
+  border: 1px solid var(--d-line);
+  box-shadow: var(--d-inset), 0 24px 60px -18px rgba(0, 0, 0, 0.5);
+  animation: dlg-in 0.18s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.dlg-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  color: var(--d-accent);
+  background: var(--d-accent-wash);
+}
+.dlg-icon.is-danger {
+  color: var(--d-danger);
+  background: rgba(225, 29, 72, 0.1);
+}
+html.dark .dlg-icon.is-danger { background: rgba(251, 113, 133, 0.13); }
+
+.dlg-title {
+  font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--d-t1);
+  line-height: 1.35;
+}
+.dlg-body {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--d-t2);
+  margin-top: 5px;
+}
+
+.dlg-btn {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--d-t2);
+  background: transparent;
+  border: 1px solid var(--d-line);
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.dlg-btn:hover { background: var(--d-hover); color: var(--d-t1); border-color: var(--d-line-hi); }
+.dlg-btn.is-primary {
+  color: #fff;
+  background: var(--d-accent);
+  border-color: var(--d-accent);
+}
+.dlg-btn.is-primary:hover { filter: brightness(1.08); }
+.dlg-btn.is-primary.is-danger {
+  background: var(--d-danger);
+  border-color: var(--d-danger);
+}
+html.dark .dlg-btn.is-primary { color: #14142b; }
+.dlg-btn:focus-visible { outline: 2px solid var(--d-accent); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .dlg-backdrop, .dlg { animation: none !important; }
+}
+
+/* ------------------------------------------------------------------ toasts --- */
+/* sonner ships its own CSS variables; point them at our tokens so toasts match
+   the app in both themes instead of carrying their own palette. */
+[data-sonner-toaster] {
+  --normal-bg: var(--d-panel);
+  --normal-border: var(--d-line);
+  --normal-text: var(--d-t1);
+  --border-radius: 10px;
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+}
+[data-sonner-toast] {
+  box-shadow: var(--d-inset), 0 12px 32px -12px rgba(0, 0, 0, 0.38) !important;
+  backdrop-filter: none;
+}
+[data-sonner-toast] [data-title] {
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+}
+[data-sonner-toast] [data-description] {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--d-t2);
+  margin-top: 2px;
+}
+[data-sonner-toast] [data-icon] { margin-right: 9px; }
+[data-sonner-toast] [data-close-button] {
+  background: var(--d-panel);
+  border-color: var(--d-line);
+  color: var(--d-t3);
+}
+[data-sonner-toast] [data-close-button]:hover { color: var(--d-t1); }
+
+/* Toggle switch. Each row passes its own accent through `--tg`, so the six
+   capture controls keep their distinct colours without six copies of the
+   markup carrying hardcoded Tailwind classes. */
+.dash .toggle {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background: var(--d-track);
+  transition: background-color 0.18s ease, opacity 0.18s ease;
+}
+.dash .toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.dash .toggle.is-on { background: var(--tg, var(--d-accent)); }
+.dash .toggle.is-on::after { transform: translateX(16px); }
+.dash .toggle:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* One capture-control row. */
+.dash .ctl-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: var(--d-sunken);
+  border: 1px solid var(--d-line-soft);
+}
+.dash .ctl-row + .dash .ctl-row { margin-top: 8px; }
+.dash .ctl-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  background: var(--d-panel);
+  border: 1px solid var(--d-line-soft);
+  color: var(--d-t3);
+}
+.dash .ctl-icon.is-on { color: var(--tg, var(--d-accent)); }

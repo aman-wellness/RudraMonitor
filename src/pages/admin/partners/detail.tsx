@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import AdminLayout from '../AdminLayout';
 import { supabase, type Partner } from '@/lib/supabase';
+import { confirmDialog } from '@/lib/notify';
 
 type EditForm = {
   name: string;
@@ -132,7 +133,7 @@ export default function PartnerDetail() {
 
   const resetPassword = async () => {
     if (!partner) return;
-    if (!confirm(`Send password-reset email to ${partner.contact_email}?`)) return;
+    if (!await confirmDialog({ title: `Send password-reset email to ${partner.contact_email}?`, tone: 'danger' })) return;
     setError(null);
     const { error } = await supabase.auth.resetPasswordForEmail(partner.contact_email, {
       redirectTo: `${window.location.origin}/reset-password`,
@@ -143,7 +144,7 @@ export default function PartnerDetail() {
 
   const deletePartner = async () => {
     if (!partner) return;
-    if (!confirm(`Delete partner "${partner.name}"? This detaches all customers/licenses linked to them. Auth users + their data are NOT deleted.`)) return;
+    if (!await confirmDialog({ title: `Delete partner "${partner.name}"? This detaches all customers/licenses linked to them. Auth users + their data are NOT deleted.`, tone: 'danger' })) return;
     setError(null);
     const { error } = await supabase.from('partners').delete().eq('id', partner.id);
     if (error) { setError(`Delete failed: ${error.message}`); return; }

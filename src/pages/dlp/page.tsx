@@ -1,31 +1,42 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
-import { useAuth } from '@/context/AuthContext';
-import { useFeatures } from '@/lib/useFeatures';
 import UpgradeRequired from '@/components/UpgradeRequired';
-import {
-  supabase,
-  type DlpEvent,
-  type DlpAlertRecipient,
-  type DlpSettings,
-  type DlpSeverity,
-} from '@/lib/supabase';
+import { useFeatures } from '@/lib/useFeatures';
+import EventsTable from './components/EventsTable';
+import SettingsPanel from './components/SettingsPanel';
+import { eventTypeIcon, eventTypeLabel, sevTone, SEVERITIES, useDlp } from './useDlp';
+import type { DlpSeverity } from '@/lib/supabase';
 
-type Tab = 'usb' | 'email' | 'settings';
-
-const sevColor: Record<DlpSeverity, string> = {
-  low:      'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
-  medium:   'bg-amber-500/15 text-amber-300 border-amber-500/30',
-  high:     'bg-orange-500/15 text-orange-300 border-orange-500/30',
-  critical: 'bg-red-500/15 text-red-300 border-red-500/30',
-};
-
-const ALL_SEVERITIES: DlpSeverity[] = ['low', 'medium', 'high', 'critical'];
+type Tab = string; // an event_type, or 'settings'
 
 export default function DlpPage() {
-  const { organization } = useAuth();
   const features = useFeatures();
-  const [tab, setTab] = useState<Tab>('usb');
+  const { rows, settings, types, countsByType, summary, loading, error, refresh, orgId } = useDlp();
+  const [tab, setTab] = useState<Tab>('');
+  const [sevFilter, setSevFilter] = useState<DlpSeverity | 'all' | 'unauthorized'>('all');
+  const [search, setSearch] = useState('');
+
+  // Land on the first channel that exists. The old page hardcoded 'usb' as the
+  // opening tab even for an org that only monitors email.
+  useEffect(() => {
+    if (tab === '' && types.length > 0) setTab(types[0]);
+    if (tab === '' && types.length === 0 && !loading) setTab('settings');
+  }, [tab, types, loading]);
+
+  const visible = useMemo(() => {
+    if (tab === 'settings') return [];
+    const q = search.trim().toLowerCase();
+    return rows.filter((r) => {
+      if (r.event_type !== tab) return false;
+      if (sevFilter === 'unauthorized' && r.ai_authorized !== false) return false;
+      if (sevFilter !== 'all' && sevFilter !== 'unauthorized' && r.ai_severity !== sevFilter) return false;
+      if (!q) return true;
+      return [
+        r.agents?.agent_name, r.file_name, r.file_path, r.device_name, r.device_serial,
+        r.recipient_email, r.sender_email, r.mail_provider, r.ai_reason, r.active_window,
+      ].some((v) => (v ?? '').toLowerCase().includes(q));
+    });
+  }, [rows, tab, sevFilter, search]);
 
   // Gate the whole page behind the DLP feature flag. While useFeatures is
   // still resolving, fall through to the normal render — we don't want a
@@ -41,315 +52,214 @@ export default function DlpPage() {
       </DashboardLayout>
     );
   }
-  const [rows, setRows] = useState<(DlpEvent & { agents?: { agent_name: string } | null })[]>([]);
-  const [loading, setLoading] = useState(true);
 
-  // Fetch events
-  const load = async () => {
-    if (!organization) return;
-    setLoading(true);
-    const eventType = tab === 'usb' ? 'usb_transfer' : 'email_attachment';
-    if (tab !== 'settings') {
-      const { data } = await supabase
-        .from('dlp_events')
-        .select('*, agents(agent_name)')
-        .eq('org_id', organization.id)
-        .eq('event_type', eventType)
-        .order('occurred_at', { ascending: false })
-        .limit(200);
-      setRows(((data as unknown as (DlpEvent & { agents?: { agent_name: string } | null })[]) ?? []));
-    }
-    setLoading(false);
-  };
-  useEffect(() => { load(); }, [organization?.id, tab]);
+  const enabledFor = (t: string) =>
+    t === 'usb_transfer' ? !!settings?.usb_enabled
+    : t === 'email_attachment' ? !!settings?.email_enabled
+    : t === 'clipboard_exfil' ? !!settings?.clipboard_enabled
+    : true;
 
-  // Realtime: subscribe to new events for this org
-  useEffect(() => {
-    if (!organization || tab === 'settings') return;
-    const channel = supabase.channel(`dlp:${organization.id}:${tab}`)
-      .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'dlp_events', filter: `org_id=eq.${organization.id}` },
-        () => { void load(); }
-      )
-      .subscribe();
-    return () => { void supabase.removeChannel(channel); };
-  }, [organization?.id, tab]);
+  const sevOrder: DlpSeverity[] = ['critical', 'high', 'medium', 'low'];
+  const oldest = summary.oldest
+    ? new Date(summary.oldest).toLocaleDateString(undefined, { day: '2-digit', month: 'short' })
+    : null;
 
   return (
     <DashboardLayout>
-      <div className="space-y-4 min-w-0 max-w-full">
-        <div className="flex items-center justify-between flex-wrap gap-3">
-          <div>
-            <h1 className="text-xl font-semibold text-white flex items-center gap-2">
-              <i className="ri-shield-keyhole-line text-cyan-400" /> Data Loss Prevention
-            </h1>
-            <p className="text-xs text-gray-400 mt-1">
-              AI-classified transfers from this organisation. Unauthorized events trigger an email alert.
-            </p>
+      <div className="dash min-w-0 max-w-full">
+        <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <h1 className="num" style={{ fontSize: 17 }}>Data loss prevention</h1>
+            {/* Says what the numbers below actually cover. The query is capped at
+                500 rows, not a time window, so naming a period would be a guess. */}
+            {oldest && (
+              <span className="text-[11px] t3">
+                {summary.total} event{summary.total === 1 ? '' : 's'} since {oldest}
+              </span>
+            )}
           </div>
+          <button onClick={() => void refresh()} className="chip chip-quiet text-[10.5px]">
+            <i className={`ri-refresh-line ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </button>
         </div>
 
-        <div className="flex items-center gap-1 bg-dark-900 rounded-lg p-1 w-fit">
-          <TabButton active={tab === 'usb'} onClick={() => setTab('usb')} icon="ri-usb-line" label="USB Transfers" />
-          <TabButton active={tab === 'email'} onClick={() => setTab('email')} icon="ri-mail-send-line" label="Email Attachments" />
-          <TabButton active={tab === 'settings'} onClick={() => setTab('settings')} icon="ri-settings-3-line" label="Settings" />
+        {error && (
+          <div className="banner mb-2.5">
+            <span className="flex items-start gap-2 min-w-0">
+              <i className="ri-error-warning-line text-[13px] t-danger mt-px" />
+              <span className="text-[11.5px] t-danger">{error}</span>
+            </span>
+          </div>
+        )}
+
+        {/* Risk summary — the page opened straight onto a raw event list, so
+            nothing told an owner whether anything needed attention. */}
+        {summary.total > 0 && (
+          <div className="panel overflow-hidden mb-3">
+            <div className="quad-grid">
+              <div className="px-3.5 py-3 min-w-0">
+                <span className="flex items-center gap-1.5">
+                  <i className="ri-shield-keyhole-line text-[12px] t3" />
+                  <span className="label">Events</span>
+                </span>
+                <p className="num num-lg mt-1.5">{summary.total}</p>
+                <p className="text-[10px] t3 mt-1 truncate">
+                  across {summary.people || 0} employee{summary.people === 1 ? '' : 's'}
+                </p>
+              </div>
+
+              <div className="px-3.5 py-3 min-w-0">
+                <span className="flex items-center gap-1.5">
+                  <i className="ri-close-circle-line text-[12px] t3" />
+                  <span className="label">Unauthorized</span>
+                </span>
+                <p className={`num num-lg mt-1.5 ${summary.unauthorized > 0 ? 't-danger' : ''}`}>
+                  {summary.unauthorized}
+                </p>
+                <p className="text-[10px] t3 mt-1 truncate">
+                  {summary.unauthorized === 0 ? 'nothing flagged' : 'flagged by the classifier'}
+                </p>
+              </div>
+
+              <div className="px-3.5 py-3 min-w-0">
+                <span className="flex items-center gap-1.5">
+                  <i className="ri-bar-chart-horizontal-line text-[12px] t3" />
+                  <span className="label">Severity mix</span>
+                </span>
+                <div className="flex items-baseline gap-2.5 mt-1.5 flex-wrap">
+                  {sevOrder.map((s) =>
+                    summary.bySeverity[s] > 0 ? (
+                      <span key={s} className="inline-flex items-baseline gap-1">
+                        <span className="num num-md" style={{ color: sevTone(s) }}>
+                          {summary.bySeverity[s]}
+                        </span>
+                        <span className="text-[10px]" style={{ color: sevTone(s) }}>{s}</span>
+                      </span>
+                    ) : null,
+                  )}
+                  {summary.unclassified > 0 && (
+                    <span className="inline-flex items-baseline gap-1">
+                      <span className="num num-md t3">{summary.unclassified}</span>
+                      <span className="text-[10px] t3">unclassified</span>
+                    </span>
+                  )}
+                </div>
+                <span className="stack block mt-2" style={{ height: 4 }}>
+                  {sevOrder.map((s) =>
+                    summary.bySeverity[s] > 0 ? (
+                      <i
+                        key={s}
+                        style={{
+                          flexBasis: `${(summary.bySeverity[s] / summary.total) * 100}%`,
+                          background: sevTone(s),
+                        }}
+                      />
+                    ) : null,
+                  )}
+                </span>
+              </div>
+
+              <div className="px-3.5 py-3 min-w-0">
+                <span className="flex items-center gap-1.5">
+                  <i className="ri-mail-check-line text-[12px] t3" />
+                  <span className="label">Alerts</span>
+                </span>
+                <p className="num num-lg mt-1.5">{summary.alerted}</p>
+                <p className="text-[10px] t3 mt-1 truncate">
+                  {summary.queued > 0 ? `${summary.queued} still queued` : 'emails sent'}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="seg overflow-x-auto max-w-full mb-3">
+          {types.map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`seg-btn ${tab === t ? 'is-on' : ''}`}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <i className={`${eventTypeIcon(t)} text-[12px]`} />
+                {eventTypeLabel(t)}
+                <span className="t3">{countsByType[t] ?? 0}</span>
+              </span>
+            </button>
+          ))}
+          <button
+            onClick={() => setTab('settings')}
+            className={`seg-btn ${tab === 'settings' ? 'is-on' : ''}`}
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <i className="ri-settings-3-line text-[12px]" />
+              Settings
+            </span>
+          </button>
         </div>
 
         {tab === 'settings' ? (
-          <DlpSettingsPanel orgId={organization?.id ?? null} />
+          <SettingsPanel orgId={orgId} settings={settings} onSaved={() => void refresh()} />
         ) : (
-          <EventsTable rows={rows} loading={loading} mode={tab} />
+          <div className="space-y-2.5">
+            <div className="flex flex-wrap items-center gap-2 justify-between">
+              <div className="seg">
+                <button
+                  onClick={() => setSevFilter('all')}
+                  className={`seg-btn ${sevFilter === 'all' ? 'is-on' : ''}`}
+                >
+                  All
+                </button>
+                <button
+                  onClick={() => setSevFilter('unauthorized')}
+                  className={`seg-btn ${sevFilter === 'unauthorized' ? 'is-on' : ''}`}
+                >
+                  Unauthorized
+                </button>
+                {/* Only offer a severity that this channel actually has. */}
+                {SEVERITIES.filter((s) => rows.some((r) => r.event_type === tab && r.ai_severity === s)).map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setSevFilter(s)}
+                    className={`seg-btn ${sevFilter === s ? 'is-on' : ''}`}
+                  >
+                    <span className="inline-flex items-center gap-1.5 capitalize">
+                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: sevTone(s) }} />
+                      {s}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-2">
+                {visible.length > 0 && (
+                  <span className="text-[10.5px] t3 tnum">
+                    {visible.length} of {countsByType[tab] ?? 0}
+                  </span>
+                )}
+                <label className="field" style={{ minWidth: 210 }}>
+                  <i className="ri-search-line text-[12px] t3" />
+                  <input
+                    type="text"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="File, device, employee, reason…"
+                    className="w-full text-[11.5px]"
+                  />
+                  {search && (
+                    <button onClick={() => setSearch('')} className="t3 hover:opacity-70" aria-label="Clear search">
+                      <i className="ri-close-line text-[12px]" />
+                    </button>
+                  )}
+                </label>
+              </div>
+            </div>
+
+            <EventsTable rows={visible} type={tab} loading={loading} enabled={enabledFor(tab)} />
+          </div>
         )}
       </div>
     </DashboardLayout>
   );
 }
-
-function TabButton({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: string; label: string }) {
-  return (
-    <button
-      onClick={onClick}
-      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-        active ? 'bg-dark-700 text-white' : 'text-gray-400 hover:text-white'
-      }`}
-    >
-      <i className={icon} /> {label}
-    </button>
-  );
-}
-
-function EventsTable({ rows, loading, mode }: { rows: (DlpEvent & { agents?: { agent_name: string } | null })[]; loading: boolean; mode: 'usb' | 'email' }) {
-  return (
-    <div className="bg-dark-800 border border-dark-700 rounded-xl overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead className="bg-dark-900/50 text-[10px] uppercase tracking-wider text-gray-400">
-          <tr>
-            <th className="px-4 py-3 text-left">When</th>
-            <th className="px-4 py-3 text-left">Agent</th>
-            <th className="px-4 py-3 text-left">{mode === 'usb' ? 'Device' : 'Mail provider'}</th>
-            <th className="px-4 py-3 text-left">{mode === 'usb' ? 'File' : 'Recipient + File'}</th>
-            <th className="px-4 py-3 text-left">Severity</th>
-            <th className="px-4 py-3 text-left">AI Reason</th>
-            <th className="px-4 py-3 text-left">Alert</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-dark-700">
-          {loading && <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-500 text-xs">Loading…</td></tr>}
-          {!loading && rows.length === 0 && (
-            <tr><td colSpan={7} className="px-4 py-12 text-center">
-              <i className={`${mode === 'usb' ? 'ri-usb-line' : 'ri-mail-send-line'} text-3xl text-gray-600 block mb-2`} />
-              <p className="text-sm text-gray-300">No {mode === 'usb' ? 'USB transfers' : 'email attachments'} captured yet.</p>
-              <p className="text-[11px] text-gray-500 mt-1">DLP events appear here within seconds of detection.</p>
-            </td></tr>
-          )}
-          {rows.map((e) => (
-            <tr key={e.id} className="hover:bg-dark-700/30">
-              <td className="px-4 py-3 text-gray-300 text-[11px] whitespace-nowrap">
-                {new Date(e.occurred_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
-              </td>
-              <td className="px-4 py-3 text-white">{e.agents?.agent_name ?? '—'}</td>
-              <td className="px-4 py-3 text-gray-300">
-                {mode === 'usb'
-                  ? <>{e.device_name ?? '—'}{e.device_serial && <div className="text-[10px] text-gray-500 font-mono">{e.device_serial}</div>}</>
-                  : <span className="capitalize">{e.mail_provider ?? '—'}</span>}
-              </td>
-              <td className="px-4 py-3 text-gray-200 max-w-md truncate">
-                {mode === 'usb'
-                  ? <>{e.file_name ?? e.file_path ?? '—'}{e.file_size_bytes && <span className="text-[10px] text-gray-500 ml-2">({formatBytes(e.file_size_bytes)})</span>}</>
-                  : <>{e.recipient_email && <div className="text-cyan-300">{e.recipient_email}</div>}{e.file_name && <div className="text-[11px] text-gray-400">📎 {e.file_name}</div>}</>}
-              </td>
-              <td className="px-4 py-3">
-                {e.ai_severity ? (
-                  <span className={`px-2 py-0.5 text-[10px] rounded-md border capitalize ${sevColor[e.ai_severity]}`}>
-                    {e.ai_severity}
-                  </span>
-                ) : <span className="text-gray-500 text-[11px]">classifying…</span>}
-              </td>
-              <td className="px-4 py-3 text-gray-300 text-[11px] max-w-sm">
-                {e.ai_reason ?? <span className="text-gray-500">—</span>}
-              </td>
-              <td className="px-4 py-3 text-[11px]">
-                {e.alert_sent_at ? (
-                  <span className="text-emerald-300"><i className="ri-mail-check-line mr-1" />Sent</span>
-                ) : e.ai_authorized === false ? (
-                  <span className="text-amber-400">queued</span>
-                ) : (
-                  <span className="text-gray-500">—</span>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function DlpSettingsPanel({ orgId }: { orgId: string | null }) {
-  const [settings, setSettings] = useState<DlpSettings | null>(null);
-  const [recipients, setRecipients] = useState<DlpAlertRecipient[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [newEmail, setNewEmail] = useState('');
-  const [newName, setNewName] = useState('');
-
-  const load = async () => {
-    if (!orgId) return;
-    const [{ data: s }, { data: r }] = await Promise.all([
-      supabase.from('dlp_settings').select('*').eq('org_id', orgId).maybeSingle(),
-      supabase.from('dlp_alert_recipients').select('*').eq('org_id', orgId).order('created_at'),
-    ]);
-    setSettings(s as DlpSettings | null);
-    setRecipients((r as DlpAlertRecipient[]) ?? []);
-  };
-  useEffect(() => { load(); }, [orgId]);
-
-  const update = async (patch: Partial<DlpSettings>) => {
-    if (!orgId) return;
-    setBusy(true); setError(null);
-    const { error } = await supabase.from('dlp_settings').upsert({ org_id: orgId, ...settings, ...patch });
-    if (error) setError(error.message);
-    else await load();
-    setBusy(false);
-  };
-
-  const addRecipient = async () => {
-    if (!orgId || !newEmail.trim()) return;
-    setBusy(true); setError(null);
-    const { error } = await supabase.from('dlp_alert_recipients').insert({
-      org_id: orgId,
-      email: newEmail.trim().toLowerCase(),
-      full_name: newName.trim() || null,
-      severities: ['high', 'critical'],
-    });
-    if (error) setError(error.message);
-    else { setNewEmail(''); setNewName(''); await load(); }
-    setBusy(false);
-  };
-
-  const removeRecipient = async (id: string) => {
-    await supabase.from('dlp_alert_recipients').delete().eq('id', id);
-    await load();
-  };
-
-  const toggleSeverity = async (rec: DlpAlertRecipient, sev: DlpSeverity) => {
-    const next = rec.severities.includes(sev) ? rec.severities.filter((s) => s !== sev) : [...rec.severities, sev];
-    await supabase.from('dlp_alert_recipients').update({ severities: next }).eq('id', rec.id);
-    await load();
-  };
-
-  if (!settings) return <div className="text-sm text-gray-400">Loading settings…</div>;
-
-  return (
-    <div className="space-y-4">
-      {error && <p className="text-red-400 text-sm">{error}</p>}
-
-      <div className="bg-dark-800 border border-dark-700 rounded-xl p-5 space-y-4">
-        <h2 className="text-sm font-semibold text-white">What to monitor</h2>
-        <Toggle label="USB transfers" sub="Files copied to/from removable drives" checked={settings.usb_enabled} onChange={(v) => update({ usb_enabled: v })} disabled={busy} />
-        <Toggle label="Email attachments" sub="Files attached on Gmail / Yahoo / Outlook / Rediffmail" checked={settings.email_enabled} onChange={(v) => update({ email_enabled: v })} disabled={busy} />
-        <Toggle label="Clipboard exfiltration (beta)" sub="Detect large copy-paste of sensitive content into mail/chat apps" checked={settings.clipboard_enabled} onChange={(v) => update({ clipboard_enabled: v })} disabled={busy} />
-      </div>
-
-      <div className="bg-dark-800 border border-dark-700 rounded-xl p-5 space-y-3">
-        <h2 className="text-sm font-semibold text-white">Authorized email domains (whitelist)</h2>
-        <p className="text-xs text-gray-400">
-          Comma-separated. <strong>By default every personal-mail attachment is flagged</strong>.
-          List your company / partner / client domains here so legitimate business email isn't alerted on.
-          Recipients ending in <code className="text-cyan-300">@&lt;listed domain&gt;</code> become LOW severity, authorized.
-        </p>
-        <input
-          defaultValue={settings.authorized_domains.join(', ')}
-          placeholder="company.com, partner.in, client.co"
-          className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white"
-          onBlur={(e) => {
-            const list = e.target.value.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
-            update({ authorized_domains: list });
-          }}
-        />
-        <p className="text-[11px] text-gray-500">
-          <strong className="text-amber-300">Note:</strong> USB transfers are always flagged regardless of this list — no whitelist for removable drives.
-        </p>
-      </div>
-
-      <div className="bg-dark-800 border border-dark-700 rounded-xl p-5 space-y-3">
-        <h2 className="text-sm font-semibold text-white">Custom AI policy (optional)</h2>
-        <p className="text-xs text-gray-400">
-          Default behaviour: <strong>track every USB transfer + every personal-mail attachment</strong>, regardless of file content.
-          Add extra rules here if you want stricter classification (e.g. critical severity on specific keywords).
-        </p>
-        <textarea
-          defaultValue={settings.ai_policy_prompt ?? ''}
-          rows={3}
-          placeholder='e.g. "Mark CRITICAL when file name contains payroll, customer_db, source_code, or NDA. Mark HIGH for any large transfer (>10 MB)."'
-          className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white"
-          onBlur={(e) => update({ ai_policy_prompt: e.target.value || null })}
-        />
-      </div>
-
-      <div className="bg-dark-800 border border-dark-700 rounded-xl p-5 space-y-3">
-        <h2 className="text-sm font-semibold text-white">Alert recipients</h2>
-        <p className="text-xs text-gray-400">Who should receive the DLP alert email when an unauthorized event is detected.</p>
-        <div className="flex flex-col sm:flex-row gap-2">
-          <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Name (optional)" className="flex-1 bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white" />
-          <input value={newEmail} onChange={(e) => setNewEmail(e.target.value)} type="email" placeholder="alerts@company.com" className="flex-[2] bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-white" />
-          <button onClick={addRecipient} disabled={busy || !newEmail.trim()} className="px-4 py-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-dark-950 text-sm font-medium disabled:opacity-50">
-            Add
-          </button>
-        </div>
-        <div className="space-y-2">
-          {recipients.map((r) => (
-            <div key={r.id} className="flex items-center justify-between bg-dark-900 border border-dark-700 rounded-lg px-3 py-2.5">
-              <div>
-                <p className="text-sm text-white">{r.full_name ?? r.email}</p>
-                {r.full_name && <p className="text-[11px] text-gray-400">{r.email}</p>}
-              </div>
-              <div className="flex items-center gap-1.5">
-                {ALL_SEVERITIES.map((s) => (
-                  <button key={s} onClick={() => toggleSeverity(r, s)}
-                    className={`px-2 py-0.5 text-[10px] rounded-md border capitalize ${
-                      r.severities.includes(s) ? sevColor[s] : 'bg-dark-700 border-dark-600 text-gray-500'
-                    }`}>
-                    {s}
-                  </button>
-                ))}
-                <button onClick={() => removeRecipient(r.id)} className="text-red-400 hover:text-red-300 ml-2">
-                  <i className="ri-delete-bin-line" />
-                </button>
-              </div>
-            </div>
-          ))}
-          {recipients.length === 0 && <p className="text-xs text-gray-500 text-center py-3">No recipients yet — DLP alerts will go nowhere until you add one.</p>}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Toggle({ label, sub, checked, onChange, disabled }: { label: string; sub?: string; checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
-  return (
-    <label className="flex items-start justify-between gap-3 cursor-pointer">
-      <div>
-        <p className="text-sm text-white font-medium">{label}</p>
-        {sub && <p className="text-[11px] text-gray-400 mt-0.5">{sub}</p>}
-      </div>
-      <button
-        type="button" disabled={disabled}
-        onClick={() => onChange(!checked)}
-        className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full transition-colors ${checked ? 'bg-cyan-500' : 'bg-dark-700'} disabled:opacity-50`}
-      >
-        <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform mt-0.5 ${checked ? 'translate-x-5' : 'translate-x-0.5'}`} />
-      </button>
-    </label>
-  );
-}
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024*1024) return `${(n/1024).toFixed(1)} KB`;
-  if (n < 1024*1024*1024) return `${(n/1024/1024).toFixed(1)} MB`;
-  return `${(n/1024/1024/1024).toFixed(2)} GB`;
-}
-
-// Suppress unused warnings (useMemo imported in case we extend later)
-void useMemo;

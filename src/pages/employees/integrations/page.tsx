@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import { supabase } from '@/lib/supabase';
+import { confirmDialog } from '@/lib/notify';
 
 type OrgIntegration = {
   id: string;
@@ -199,11 +200,9 @@ export default function EmployeesIntegrations() {
 
   const disconnect = async (provider: 'm365' | 'google') => {
     const label = provider === 'm365' ? 'Microsoft 365' : 'Google Workspace';
-    if (!confirm(
-      `Disconnect ${label}?\n\n` +
+    if (!await confirmDialog({ title: `Disconnect ${label}?\n\n` +
       `This wipes ALL synced users, groups, and team memberships for ${label} from Wellness Extract. ` +
-      `Reconnecting and re-syncing will re-populate them. Continue?`,
-    )) return;
+      `Reconnecting and re-syncing will re-populate them. Continue?`, tone: 'danger' })) return;
     setBusy(provider === 'm365' ? 'disconnect-m365' : 'disconnect-google');
     setMsg(null);
     try {

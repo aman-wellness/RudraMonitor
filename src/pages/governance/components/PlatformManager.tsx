@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabase';
 import { RolePill } from './Pill';
 import AccessGrantModal from './AccessGrantModal';
 import type { GovPillar, GovPillarPlatform, GovAccessRegister, OrgUser, GovRole } from '../types';
+import { confirmDialog, notify } from '@/lib/notify';
 
 // ── Platform Manager ──────────────────────────────────────────────────────
 // Full CRUD for governance platforms with deep credentials-vault integration.
@@ -114,10 +115,10 @@ export default function PlatformManager({
   }, [filteredPlatforms, pillarById]);
 
   const handleDelete = async (platformId: string) => {
-    if (!confirm('Delete this platform? Linked access register rows will be removed.')) return;
+    if (!await confirmDialog({ title: 'Delete this platform? Linked access register rows will be removed.', tone: 'danger' })) return;
     // RLS lets writers delete. Cascades to gov_access_register via FK on delete cascade.
     const { error } = await supabase.from('gov_pillar_platforms').delete().eq('id', platformId);
-    if (error) { alert(`Delete failed: ${error.message}`); return; }
+    if (error) { notify.error('Delete failed', { description: String(error.message) }); return; }
     onReload();
   };
 

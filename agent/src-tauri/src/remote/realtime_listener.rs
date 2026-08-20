@@ -327,8 +327,16 @@ async fn handle_request(
         return Ok(());
     }
 
-    // Spawn rustdesk subprocess.
-    let host = match rustdesk_host::start(&req.rustdesk_server, &req.session_token).await {
+    // Spawn rustdesk subprocess. The relay's public key is deployment-specific,
+    // so resolve it from config (env -> agent.json -> compiled default) rather
+    // than trusting a constant baked into the binary.
+    let hbbs_pubkey = {
+        let cfg = state.config.lock().await;
+        crate::config::hbbs_pubkey(&cfg)
+    };
+    let host = match rustdesk_host::start(
+        &req.rustdesk_server, &req.session_token, &hbbs_pubkey,
+    ).await {
         Ok(h) => h,
         Err(e) => {
             log::warn!("remote: rustdesk_host start failed: {e}");

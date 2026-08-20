@@ -1,343 +1,597 @@
-import { useState, useMemo } from 'react';
-import DashboardLayout from '@/pages/dashboard/DashboardLayout';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { useAgents, useProductivityPerAgent } from '@/lib/dataHooks';
+import DashboardLayout from '@/pages/dashboard/DashboardLayout';
+import { useAgents, useProductivityPerAgent, type UiAgent } from '@/lib/dataHooks';
 import { supabase } from '@/lib/supabase';
+import { Bar, EmptyNote, Panel, Segmented } from '@/pages/dashboard/components/ui';
+import { C, formatHm } from '@/pages/dashboard/components/chartKit';
+import { confirmDialog, notify } from '@/lib/notify';
 
-// Format helpers for the merged stats. Match the agent-detail page's
-// "Xh Ym" / "Xm" conventions so users see consistent numbers when they
-// drill in from a card.
-const formatActive = (seconds: number) => {
-  const m = Math.floor(seconds / 60);
-  if (m < 60) return `0h ${m}m`;
-  const h = Math.floor(m / 60);
-  const r = m % 60;
-  return `${h}h ${r}m`;
+/* All Agents.
+
+   Everything on this page is derived from the agents actually enrolled — the
+   previous version shipped a hardcoded department list (Development / HR /
+   Finance / Design / Marketing) that matched no real data, and colour-coded
+   only those names. Departments, their counts and their colours now all come
+   from the rows themselves, and a department can be created inline.
+
+   Density and surfaces match the dashboard's design system so the two pages
+   read as one product. */
+
+type StatusFilter = 'all' | 'online' | 'idle' | 'offline';
+type ViewMode = 'grid' | 'list';
+type StatWindow = '24' | '168' | '720';
+
+const WINDOWS: { id: StatWindow; label: string }[] = [
+  { id: '24', label: '24H' },
+  { id: '168', label: '7D' },
+  { id: '720', label: '30D' },
+];
+
+const STATUSES: { id: StatusFilter; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'online', label: 'Online' },
+  { id: 'idle', label: 'Idle' },
+  { id: 'offline', label: 'Offline' },
+];
+
+const UNASSIGNED = 'Unassigned';
+
+/** Stable colour per label: same department, same colour, everywhere, without
+ *  anyone maintaining a name→colour map. */
+const catColor = (label: string) => {
+  let h = 0;
+  for (let i = 0; i < label.length; i++) h = (h * 31 + label.charCodeAt(i)) >>> 0;
+  return `var(--d-cat-${(h % 8) + 1})`;
 };
-const formatIdle = (seconds: number) => `${Math.round(seconds / 60)}m`;
 
-const departments = ['All', 'Development', 'HR', 'Finance', 'Design', 'Sales', 'Support', 'Marketing', 'Unassigned'];
-const deptOptions = departments.filter((d) => d !== 'All');
-const statuses = ['All', 'online', 'idle', 'offline'];
+const OS_ICON = (os: string) => {
+  if (os.includes('Windows')) return 'ri-windows-fill';
+  if (os.includes('macOS') || os.includes('Darwin')) return 'ri-apple-fill';
+  if (os.includes('Unknown')) return 'ri-question-line';
+  return 'ri-ubuntu-fill';
+};
+
+const relative = (iso: string) => {
+  if (!iso || iso === '-') return 'never';
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return 'now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+};
+
+const STATUS_TONE: Record<string, string> = {
+  online: 't-success',
+  idle: 't-warning',
+  offline: 't3',
+};
+
+/** Agent plus the stats merged in from the aggregation RPC. */
+type Row = UiAgent & {
+  /** null = no activity matched a productivity rule, which is not the same as 0%. */
+  score: number | null;
+  activeSeconds: number;
+  idleSeconds: number;
+};
 
 export default function AgentsPage() {
   const navigate = useNavigate();
-  const { agents: rawAgents, loading, updateDepartment, deleteAgent, refresh: refreshAgents } = useAgents();
-  // Per-agent productivity / active / idle stats over the last 24 hours.
-  // useAgents itself hard-codes these to zero on the UI shape because it doesn't
-  // join activity_logs; without this lookup the All Agents page shows every
-  // card at 0% / 0h 0m / 0m even when the agent has been reporting all day.
-  const { byAgent: productivityByAgent } = useProductivityPerAgent(24);
-  const agents = useMemo(
-    () => rawAgents.map((a) => {
-      const p = productivityByAgent[a.id];
-      if (!p) return a;
-      return {
-        ...a,
-        productivity: p.productivity_pct ?? 0,
-        activeHours: formatActive(p.active_seconds ?? 0),
-        idleTime: formatIdle(p.idle_seconds ?? 0),
-      };
-    }),
-    [rawAgents, productivityByAgent],
-  );
-  const [removing, setRemoving] = useState<string | null>(null);
-  const [bulkBusy, setBulkBusy] = useState(false);
+  const {
+    agents: rawAgents,
+    loading,
+    updateDepartment,
+    deleteAgent,
+    refresh: refreshAgents,
+  } = useAgents();
 
-  const handleDelete = async (e: React.MouseEvent, agentId: string, agentName: string) => {
+  const [win, setWin] = useState<StatWindow>('24');
+  // useAgents hardcodes productivity/active/idle to zero (it doesn't join
+  // activity_logs), so the real numbers are merged in from the RPC.
+  const { byAgent } = useProductivityPerAgent(Number(win));
+
+  const agents: Row[] = useMemo(
+    () =>
+      rawAgents.map((a) => {
+        const p = byAgent[a.id];
+        const matched = p ? p.weighted_seconds + p.unproductive_seconds : 0;
+        return {
+          ...a,
+          score: matched > 0 ? Math.round((p!.weighted_seconds / matched) * 100) : null,
+          activeSeconds: p?.active_seconds ?? 0,
+          idleSeconds: p?.idle_seconds ?? 0,
+        };
+      }),
+    [rawAgents, byAgent],
+  );
+
+  const [search, setSearch] = useState('');
+  const [deptFilter, setDeptFilter] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [viewMode, setViewMode] = useState<ViewMode>('grid');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [editingDeptId, setEditingDeptId] = useState<string | null>(null);
+  // Screen coords of the trigger. The table view wraps rows in an
+  // overflow-x-auto container, which clips absolutely-positioned children —
+  // so the popover is positioned against the viewport instead.
+  const [deptAnchor, setDeptAnchor] = useState<{ left: number; top: number } | null>(null);
+  const [newDept, setNewDept] = useState('');
+
+  const bulkRef = useRef<HTMLDivElement | null>(null);
+
+  // Dismiss the open popovers on an outside click, on Escape, or on scroll —
+  // a viewport-anchored menu would otherwise detach from its trigger.
+  useEffect(() => {
+    if (!bulkOpen && !editingDeptId) return;
+    const dismiss = () => {
+      setBulkOpen(false);
+      setEditingDeptId(null);
+      setDeptAnchor(null);
+      setNewDept('');
+    };
+    const onDown = (e: MouseEvent) => {
+      if (bulkRef.current?.contains(e.target as Node)) return;
+      if ((e.target as HTMLElement).closest?.('.menu')) return;
+      dismiss();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') dismiss();
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('scroll', dismiss, true);
+    window.addEventListener('resize', dismiss);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('scroll', dismiss, true);
+      window.removeEventListener('resize', dismiss);
+    };
+  }, [bulkOpen, editingDeptId]);
+
+  /** Departments that actually exist, with their headcounts. */
+  const departments = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const a of agents) counts.set(a.department, (counts.get(a.department) ?? 0) + 1);
+    return [...counts.entries()]
+      .map(([name, count]) => ({ name, count }))
+      // Unassigned last; otherwise biggest first, then alphabetical.
+      .sort((a, b) =>
+        a.name === UNASSIGNED
+          ? 1
+          : b.name === UNASSIGNED
+            ? -1
+            : b.count - a.count || a.name.localeCompare(b.name),
+      );
+  }, [agents]);
+
+  const counts = useMemo(
+    () => ({
+      all: agents.length,
+      online: agents.filter((a) => a.status === 'online').length,
+      idle: agents.filter((a) => a.status === 'idle').length,
+      offline: agents.filter((a) => a.status === 'offline').length,
+      locked: agents.filter((a) => a.seatLocked).length,
+    }),
+    [agents],
+  );
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return agents.filter((a) => {
+      if (deptFilter !== 'all' && a.department !== deptFilter) return false;
+      if (statusFilter !== 'all' && a.status !== statusFilter) return false;
+      if (!q) return true;
+      return (
+        a.name.toLowerCase().includes(q) ||
+        a.machine.toLowerCase().includes(q) ||
+        a.department.toLowerCase().includes(q) ||
+        a.ipAddress.toLowerCase().includes(q) ||
+        a.os.toLowerCase().includes(q)
+      );
+    });
+  }, [agents, search, deptFilter, statusFilter]);
+
+  // Selection is cleared of anything the current filter hides, so a bulk action
+  // can never touch a row the user can't see.
+  useEffect(() => {
+    setSelected((prev) => {
+      const visible = new Set(filtered.map((a) => a.id));
+      const next = new Set([...prev].filter((id) => visible.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [filtered]);
+
+  const allVisibleSelected = filtered.length > 0 && selected.size === filtered.length;
+
+  const toggleSelect = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const selectAll = () =>
+    setSelected(allVisibleSelected ? new Set() : new Set(filtered.map((a) => a.id)));
+
+  const handleDelete = async (e: React.MouseEvent, id: string, name: string) => {
     e.stopPropagation();
-    if (!confirm(`Remove agent "${agentName}"? This frees the license but keeps historical data.`)) return;
-    setRemoving(agentId);
+    const ok = await confirmDialog({
+      title: `Remove ${name}?`,
+      body: 'This frees the licence seat. Historical activity, screenshots and alerts are kept.',
+      confirmLabel: 'Remove agent',
+      tone: 'danger',
+    });
+    if (!ok) return;
+    setRemoving(id);
     try {
-      await deleteAgent(agentId);
+      await deleteAgent(id);
+      notify.success(`${name} removed`, { description: 'One licence seat is now free.' });
     } catch (err) {
-      alert(`Failed to remove agent: ${err instanceof Error ? err.message : String(err)}`);
+      notify.fail('Could not remove agent', err);
     } finally {
       setRemoving(null);
     }
   };
 
-  const handleBulkCapture = async (column: 'screenshots_enabled' | 'videos_enabled', value: boolean) => {
+  const handleBulkCapture = async (
+    column: 'screenshots_enabled' | 'videos_enabled',
+    value: boolean,
+  ) => {
     if (selected.size === 0) return;
+    const n = selected.size;
+    const what = column === 'screenshots_enabled' ? 'Screenshots' : 'Videos';
     setBulkBusy(true);
-    setBulkActionOpen(false);
+    setBulkOpen(false);
     try {
       const { error } = await supabase
         .from('agents')
         .update({ [column]: value })
-        .in('id', Array.from(selected));
+        .in('id', [...selected]);
       if (error) throw error;
       await refreshAgents();
+      notify.success(`${what} ${value ? 'enabled' : 'disabled'}`, {
+        description: `Applied to ${n} agent${n === 1 ? '' : 's'}.`,
+      });
     } catch (err) {
-      alert(`Bulk update failed: ${err instanceof Error ? err.message : String(err)}`);
+      notify.fail(`Could not ${value ? 'enable' : 'disable'} ${what.toLowerCase()}`, err);
     } finally {
       setBulkBusy(false);
     }
   };
 
   const handleBulkRemove = async () => {
-    if (selected.size === 0) return;
-    if (!confirm(`Remove ${selected.size} agent${selected.size === 1 ? '' : 's'}? This frees ${selected.size} license${selected.size === 1 ? '' : 's'} but keeps historical data.`)) return;
+    const n = selected.size;
+    if (n === 0) return;
+    const ok = await confirmDialog({
+      title: `Remove ${n} agent${n === 1 ? '' : 's'}?`,
+      body: `This frees ${n} licence seat${n === 1 ? '' : 's'}. Historical activity, screenshots and alerts are kept.`,
+      confirmLabel: `Remove ${n} agent${n === 1 ? '' : 's'}`,
+      tone: 'danger',
+    });
+    if (!ok) return;
     setBulkBusy(true);
-    setBulkActionOpen(false);
+    setBulkOpen(false);
     try {
-      const { error } = await supabase.from('agents').delete().in('id', Array.from(selected));
+      const { error } = await supabase.from('agents').delete().in('id', [...selected]);
       if (error) throw error;
       setSelected(new Set());
       await refreshAgents();
+      notify.success(`${n} agent${n === 1 ? '' : 's'} removed`, {
+        description: `${n} licence seat${n === 1 ? '' : 's'} freed.`,
+      });
     } catch (err) {
-      alert(`Bulk remove failed: ${err instanceof Error ? err.message : String(err)}`);
+      notify.fail('Could not remove agents', err);
     } finally {
       setBulkBusy(false);
     }
   };
-  const [search, setSearch] = useState('');
-  const [deptFilter, setDeptFilter] = useState('All');
-  const [statusFilter, setStatusFilter] = useState('All');
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [bulkActionOpen, setBulkActionOpen] = useState(false);
-  const [editingDeptId, setEditingDeptId] = useState<string | null>(null);
 
-  const filtered = useMemo(() => {
-    return agents.filter((a) => {
-      const matchesSearch =
-        search === '' ||
-        a.name.toLowerCase().includes(search.toLowerCase()) ||
-        a.machine.toLowerCase().includes(search.toLowerCase()) ||
-        a.department.toLowerCase().includes(search.toLowerCase());
-      const matchesDept = deptFilter === 'All' || a.department === deptFilter;
-      const matchesStatus = statusFilter === 'All' || a.status === statusFilter;
-      return matchesSearch && matchesDept && matchesStatus;
-    });
-  }, [agents, search, deptFilter, statusFilter]);
-
-  const toggleSelect = (id: string) => {
-    const next = new Set(selected);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    setSelected(next);
-  };
-
-  const selectAll = () => {
-    if (selected.size === filtered.length) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(filtered.map((a) => a.id)));
+  const assignDept = async (agentId: string, dept: string) => {
+    const name = dept.trim();
+    if (!name) return;
+    const agent = agents.find((a) => a.id === agentId);
+    if (agent?.department === name) {
+      setEditingDeptId(null);
+      setDeptAnchor(null);
+      return;
     }
-  };
-
-  const handleDeptChange = async (agentId: string, newDept: string) => {
     setEditingDeptId(null);
-    await updateDepartment(agentId, newDept);
+    setDeptAnchor(null);
+    setNewDept('');
+    await updateDepartment(agentId, name);
+    notify.success(`Moved to ${name}`, { description: agent?.name });
   };
 
-  const DeptDropdown = ({ agentId, currentDept }: { agentId: string; currentDept: string }) => (
-    <div className="relative z-30">
-      <div className="absolute top-0 left-0 bg-dark-800 border border-dark-700 rounded-lg shadow-xl py-1 min-w-[140px] overflow-hidden">
-        {deptOptions.map((d) => (
-          <button
-            key={d}
-            onClick={(e) => { e.stopPropagation(); handleDeptChange(agentId, d); }}
-            className={`w-full text-left px-3 py-1.5 text-xs transition-colors flex items-center gap-2 ${
-              d === currentDept ? 'text-emerald-400 bg-emerald-500/10' : 'text-gray-300 hover:bg-dark-700'
-            }`}
-          >
-            {d === currentDept && (
-              <span className="w-3 h-3 flex items-center justify-center">
-                <i className="ri-check-line text-[10px]" />
-              </span>
-            )}
-            {d}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
+  const openDeptMenu = (e: React.MouseEvent, agentId: string) => {
+    e.stopPropagation();
+    if (editingDeptId === agentId) {
+      setEditingDeptId(null);
+      setDeptAnchor(null);
+      return;
+    }
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    // Estimated menu height; flip above the trigger when it wouldn't fit below.
+    const height = departments.length * 28 + 62;
+    const below = window.innerHeight - r.bottom;
+    setDeptAnchor({
+      left: Math.min(r.left, window.innerWidth - 196),
+      top: below < height ? Math.max(8, r.top - height - 4) : r.bottom + 4,
+    });
+    setEditingDeptId(agentId);
+    setNewDept('');
+  };
 
-  const getInitials = (name: string) =>
+  const initials = (name: string) =>
     name
       .split(' ')
       .map((w) => w[0])
-      .join('')
+      .filter(Boolean)
       .slice(0, 2)
+      .join('')
       .toUpperCase();
 
-  const statusBadge = (status: string) => {
-    switch (status) {
-      case 'online':
-        return 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/25';
-      case 'idle':
-        return 'bg-amber-500/15 text-amber-400 border border-amber-500/25';
-      default:
-        return 'bg-red-500/15 text-red-400 border border-red-500/25';
-    }
-  };
+  const scoreColor = (score: number) =>
+    score >= 80 ? C.success : score >= 55 ? C.accent : C.warning;
 
-  const statusLabel = (status: string) => {
-    switch (status) {
-      case 'online':
-        return 'Active';
-      case 'idle':
-        return 'Idle';
-      default:
-        return 'Offline';
-    }
-  };
+  /* ---- department badge + its assign popover ---- */
+  const DeptBadge = ({ agent }: { agent: Row }) => (
+    <button
+      onClick={(e) => openDeptMenu(e, agent.id)}
+      className="chip chip-quiet text-[9.5px]"
+      title="Change department"
+    >
+      <span
+        className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+        style={{ background: catColor(agent.department) }}
+      />
+      {agent.department}
+      <i className="ri-arrow-down-s-line" />
+    </button>
+  );
 
-  const deptColor = (dept: string) => {
-    const map: Record<string, string> = {
-      Development: 'bg-blue-500/15 text-blue-400 border border-blue-500/25',
-      HR: 'bg-pink-500/15 text-pink-400 border border-pink-500/25',
-      Finance: 'bg-amber-500/15 text-amber-400 border border-amber-500/25',
-      Design: 'bg-violet-500/15 text-violet-400 border border-violet-500/25',
-      Sales: 'bg-teal-500/15 text-teal-400 border border-teal-500/25',
-      Support: 'bg-cyan-500/15 text-cyan-400 border border-cyan-500/25',
-      Marketing: 'bg-orange-500/15 text-orange-400 border border-orange-500/25',
-    };
-    return map[dept] || 'bg-gray-500/15 text-gray-400 border border-gray-500/25';
-  };
+  // Rendered once at the page root, not inside the row, so the table's
+  // horizontal scroll container can't clip it.
+  const deptMenu = (() => {
+    const agent = filtered.find((a) => a.id === editingDeptId);
+    if (!agent || !deptAnchor) return null;
+    return (
+      <div
+        className="menu"
+        style={{ position: 'fixed', left: deptAnchor.left, top: deptAnchor.top, right: 'auto', minWidth: 188 }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {departments.map((d) => (
+          <button key={d.name} onClick={() => void assignDept(agent.id, d.name)}>
+            <span
+              className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+              style={{ background: catColor(d.name) }}
+            />
+            <span className="flex-1 text-left truncate">{d.name}</span>
+            {d.name === agent.department && <i className="ri-check-line text-[12px]" />}
+          </button>
+        ))}
+        {/* Without this, deriving the list from existing rows would make a new
+            department impossible to create. */}
+        <div className="p-1 hair-t mt-1">
+          <span className="field">
+            <i className="ri-add-line text-[12px] t3" />
+            <input
+              type="text"
+              autoFocus
+              value={newDept}
+              onChange={(e) => setNewDept(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void assignDept(agent.id, newDept);
+              }}
+              placeholder="New department"
+              className="w-full text-[11px]"
+            />
+          </span>
+        </div>
+      </div>
+    );
+  })();
 
-  const getOSIcon = (os: string) => {
-    if (os.includes('Windows')) return 'ri-windows-fill text-blue-400';
-    if (os.includes('macOS')) return 'ri-apple-fill text-gray-300';
-    return 'ri-ubuntu-fill text-orange-400';
-  };
+  const StatusPill = ({ agent }: { agent: Row }) =>
+    agent.seatLocked ? (
+      <span
+        className="chip chip-danger text-[9.5px]"
+        title="Beyond your licensed seat count — this agent has stopped reporting. Upgrade, or remove another agent to free a seat."
+      >
+        <i className="ri-lock-2-line" />
+        Locked
+      </span>
+    ) : (
+      <span className={`inline-flex items-center gap-1.5 text-[10.5px] ${STATUS_TONE[agent.status]}`}>
+        <span
+          className={`live-dot ${agent.status === 'online' ? '' : 'is-off'}`}
+          style={agent.status === 'idle' ? { background: 'var(--d-warning)' } : undefined}
+        />
+        {agent.status === 'online' ? 'Online' : agent.status === 'idle' ? 'Idle' : 'Offline'}
+      </span>
+    );
+
+  const winLabel = WINDOWS.find((x) => x.id === win)?.label ?? '';
 
   return (
     <DashboardLayout>
-      <div className="space-y-5">
-        {/* Breadcrumb */}
-        <div className="flex items-center gap-2 text-xs text-gray-500">
-          <span className="flex items-center gap-1">
-            <span className="w-3 h-3 flex items-center justify-center"><i className="ri-dashboard-line" /></span>
+      <div className="dash">
+        {deptMenu}
+        {/* ------------------------------------------------------- header ---- */}
+        <div className="flex items-center gap-1.5 text-[10.5px] t3 mb-3">
+          <Link to="/dashboard" className="hover:underline flex items-center gap-1">
+            <i className="ri-dashboard-line text-[12px]" />
             Dashboard
-          </span>
-          <i className="ri-arrow-right-s-line text-gray-600" />
-          <span className="text-white font-medium">Agents</span>
+          </Link>
+          <i className="ri-arrow-right-s-line" />
+          <span className="t1 font-medium">Agents</span>
         </div>
 
-        {/* Page Header */}
-        {(() => {
-          const lockedCount = agents.filter((a) => a.seatLocked).length;
-          if (lockedCount === 0) return null;
-          return (
-            <div className="bg-rose-500/10 border border-rose-500/30 rounded-xl px-4 py-3 mb-4 flex items-start justify-between gap-3">
-              <div>
-                <p className="text-sm font-medium text-rose-200">
-                  <i className="ri-lock-2-line mr-1" />
-                  {lockedCount} agent{lockedCount === 1 ? '' : 's'} locked — over your licensed seat count.
-                </p>
-                <p className="text-xs text-rose-300/80 mt-0.5">
-                  Locked agents stop reporting data. Upgrade your subscription to re-activate them, or remove other agents to free up seats.
-                </p>
-              </div>
-              <Link to="/subscription" className="text-xs font-medium bg-rose-500/20 hover:bg-rose-500/30 text-rose-100 border border-rose-500/40 rounded-lg px-3 py-1.5 whitespace-nowrap">
-                Upgrade plan
-              </Link>
+        {counts.locked > 0 && (
+          <div className="banner mb-4">
+            <div className="min-w-0">
+              <p className="text-[11.5px] t-danger font-medium">
+                <i className="ri-lock-2-line mr-1" />
+                {counts.locked} agent{counts.locked === 1 ? '' : 's'} locked — over your licensed
+                seat count.
+              </p>
+              <p className="text-[10.5px] t3 mt-0.5">
+                Locked agents stop reporting. Upgrade your plan to re-activate them, or remove
+                others to free seats.
+              </p>
             </div>
-          );
-        })()}
+            <Link to="/subscription" className="chip chip-danger text-[10px] flex-shrink-0">
+              Upgrade plan
+              <i className="ri-arrow-right-line" />
+            </Link>
+          </div>
+        )}
 
-        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-poppins font-bold text-white mb-1">All Agents</h1>
-            <p className="text-sm text-gray-500">
-              {filtered.length} of {agents.length} agents connected
+        <div className="flex flex-wrap items-end justify-between gap-4 mb-4">
+          <div className="min-w-0">
+            <h1 className="num" style={{ fontSize: 18 }}>
+              All agents
+            </h1>
+            <p className="text-[11.5px] t3 mt-1">
+              {counts.all === 0 ? (
+                'No agents enrolled yet'
+              ) : (
+                <>
+                  <span className="t-success">{counts.online} online</span>
+                  {counts.idle > 0 && <> · {counts.idle} idle</>}
+                  {counts.offline > 0 && <> · {counts.offline} offline</>}
+                  <> · {counts.all} enrolled</>
+                </>
+              )}
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            {/* View Toggle */}
-            <div className="flex items-center bg-dark-800 border border-dark-700 rounded-lg p-0.5">
-              <button
-                onClick={() => setViewMode('grid')}
-                className={`px-2.5 py-1.5 rounded-md text-xs transition-all ${
-                  viewMode === 'grid' ? 'bg-dark-600 text-white' : 'text-gray-500 hover:text-gray-300'
-                }`}
-              >
-                <span className="w-4 h-4 flex items-center justify-center"><i className="ri-grid-fill text-sm" /></span>
-              </button>
-              <button
-                onClick={() => setViewMode('list')}
-                className={`px-2.5 py-1.5 rounded-md text-xs transition-all ${
-                  viewMode === 'list' ? 'bg-dark-600 text-white' : 'text-gray-500 hover:text-gray-300'
-                }`}
-              >
-                <span className="w-4 h-4 flex items-center justify-center"><i className="ri-list-check text-sm" /></span>
-              </button>
-            </div>
-            <button
-              onClick={() => navigate('/setup')}
-              className="px-4 py-2 rounded-lg bg-emerald-500/15 text-emerald-400 text-xs font-medium border border-emerald-500/25 hover:bg-emerald-500/25 transition-colors flex items-center gap-2"
-            >
-              <span className="w-4 h-4 flex items-center justify-center"><i className="ri-add-line text-sm" /></span>
-              Add Agent
+
+          <div className="flex items-center gap-2 flex-wrap">
+            <Segmented value={win} options={WINDOWS} onChange={setWin} />
+            <Segmented
+              value={viewMode}
+              options={[
+                { id: 'grid', label: 'Cards' },
+                { id: 'list', label: 'Table' },
+              ]}
+              onChange={setViewMode}
+            />
+            <button onClick={() => navigate('/setup')} className="chip chip-accent text-[11px]">
+              <i className="ri-add-line" />
+              Add agent
             </button>
           </div>
         </div>
 
-        {/* Bulk Actions Bar */}
-        {selected.size > 0 && (
-          <div className="flex items-center justify-between bg-emerald-500/10 border border-emerald-500/20 rounded-lg px-4 py-2.5">
-            <span className="text-xs text-emerald-400 font-medium">{selected.size} agents selected</span>
-            <div className="flex items-center gap-2">
+        {/* ------------------------------------------------------ filters ----
+            Two rows: the department list grows with the org and would otherwise
+            squeeze the search box and the status group off the line. */}
+        <div className="flex items-center justify-between gap-3 flex-wrap mb-2.5">
+          <span className="field flex-1" style={{ minWidth: 240, maxWidth: 380 }}>
+            <i className="ri-search-line text-[12px] t3" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Name, machine, department, IP…"
+              className="w-full text-[11.5px]"
+            />
+            {search && (
+              <button onClick={() => setSearch('')} className="t3 hover:opacity-70" aria-label="Clear search">
+                <i className="ri-close-line text-[12px]" />
+              </button>
+            )}
+          </span>
+
+          <div className="seg flex-shrink-0">
+            {STATUSES.map((s) => (
               <button
-                onClick={() => setBulkActionOpen(!bulkActionOpen)}
-                className="px-3 py-1.5 rounded-lg bg-dark-700 text-gray-300 text-xs font-medium border border-dark-600 hover:bg-dark-600 transition-colors flex items-center gap-1.5"
+                key={s.id}
+                onClick={() => setStatusFilter(s.id)}
+                className={`seg-btn ${statusFilter === s.id ? 'is-on' : ''}`}
               >
+                {s.label}
+                <span className="t3"> {counts[s.id]}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Departments come from the data, with live counts. */}
+        <div className="flex items-center gap-2 flex-wrap mb-4">
+          <div className="seg overflow-x-auto max-w-full">
+            <button
+              onClick={() => setDeptFilter('all')}
+              className={`seg-btn ${deptFilter === 'all' ? 'is-on' : ''}`}
+            >
+              All<span className="t3"> {counts.all}</span>
+            </button>
+            {departments.map((d) => (
+              <button
+                key={d.name}
+                onClick={() => setDeptFilter(d.name)}
+                className={`seg-btn ${deptFilter === d.name ? 'is-on' : ''}`}
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  <span
+                    className="w-1.5 h-1.5 rounded-full"
+                    style={{ background: catColor(d.name) }}
+                  />
+                  {d.name}
+                  <span className="t3">{d.count}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* --------------------------------------------------- selection ---- */}
+        {selected.size > 0 && (
+          <div className="selbar mb-4" ref={bulkRef}>
+            <span className="text-[11px] t-accent font-medium">
+              {selected.size} of {filtered.length} selected
+            </span>
+            <div className="flex items-center gap-1.5 relative">
+              <button
+                onClick={() => setBulkOpen((v) => !v)}
+                disabled={bulkBusy}
+                className="chip chip-quiet text-[10.5px]"
+              >
+                {bulkBusy && <i className="ri-loader-4-line animate-spin" />}
                 Actions
-                <span className="w-3 h-3 flex items-center justify-center"><i className="ri-arrow-down-s-line text-xs" /></span>
+                <i className="ri-arrow-down-s-line" />
               </button>
               <button
                 onClick={() => setSelected(new Set())}
-                className="px-3 py-1.5 rounded-lg text-gray-500 text-xs hover:text-white transition-colors"
+                className="text-[10.5px] t3 hover:opacity-70 px-1"
               >
                 Clear
               </button>
-              {bulkActionOpen && (
-                <div className="absolute mt-24 right-6 md:right-auto bg-dark-800 border border-dark-700 rounded-lg shadow-xl z-40 overflow-hidden min-w-[180px]">
-                  <button
-                    onClick={() => handleBulkCapture('screenshots_enabled', true)}
-                    disabled={bulkBusy}
-                    className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-dark-700 transition-colors flex items-center gap-2 disabled:opacity-50"
-                  >
-                    <span className="w-3.5 h-3.5 flex items-center justify-center"><i className="ri-image-line text-xs" /></span>
-                    Enable Screenshots
+
+              {bulkOpen && (
+                <div className="menu" style={{ top: 28, minWidth: 196 }}>
+                  <button onClick={() => handleBulkCapture('screenshots_enabled', true)} disabled={bulkBusy}>
+                    <i className="ri-camera-line" /> Enable screenshots
                   </button>
-                  <button
-                    onClick={() => handleBulkCapture('screenshots_enabled', false)}
-                    disabled={bulkBusy}
-                    className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-dark-700 transition-colors flex items-center gap-2 disabled:opacity-50"
-                  >
-                    <span className="w-3.5 h-3.5 flex items-center justify-center"><i className="ri-eye-off-line text-xs" /></span>
-                    Disable Screenshots
+                  <button onClick={() => handleBulkCapture('screenshots_enabled', false)} disabled={bulkBusy}>
+                    <i className="ri-camera-off-line" /> Disable screenshots
                   </button>
-                  <button
-                    onClick={() => handleBulkCapture('videos_enabled', true)}
-                    disabled={bulkBusy}
-                    className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-dark-700 transition-colors flex items-center gap-2 disabled:opacity-50"
-                  >
-                    <span className="w-3.5 h-3.5 flex items-center justify-center"><i className="ri-video-line text-xs" /></span>
-                    Enable Videos
+                  <button onClick={() => handleBulkCapture('videos_enabled', true)} disabled={bulkBusy}>
+                    <i className="ri-video-line" /> Enable videos
                   </button>
-                  <button
-                    onClick={() => handleBulkCapture('videos_enabled', false)}
-                    disabled={bulkBusy}
-                    className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-dark-700 transition-colors flex items-center gap-2 disabled:opacity-50"
-                  >
-                    <span className="w-3.5 h-3.5 flex items-center justify-center"><i className="ri-eye-off-line text-xs" /></span>
-                    Disable Videos
+                  <button onClick={() => handleBulkCapture('videos_enabled', false)} disabled={bulkBusy}>
+                    <i className="ri-video-off-line" /> Disable videos
                   </button>
-                  <div className="border-t border-dark-700" />
-                  <button
-                    onClick={handleBulkRemove}
-                    disabled={bulkBusy}
-                    className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-red-500/10 transition-colors flex items-center gap-2 disabled:opacity-50"
-                  >
-                    <span className="w-3.5 h-3.5 flex items-center justify-center">
-                      <i className={`${bulkBusy ? 'ri-loader-4-line animate-spin' : 'ri-delete-bin-line'} text-xs`} />
-                    </span>
-                    Remove Selected ({selected.size})
+                  <div className="hair-t my-1" />
+                  <button onClick={handleBulkRemove} disabled={bulkBusy} className="s-row-danger">
+                    <i className={bulkBusy ? 'ri-loader-4-line animate-spin' : 'ri-delete-bin-line'} />
+                    Remove {selected.size} agent{selected.size === 1 ? '' : 's'}
                   </button>
                 </div>
               )}
@@ -345,144 +599,254 @@ export default function AgentsPage() {
           </div>
         )}
 
-        {/* Filters */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 flex-wrap">
-          <div className="flex items-center bg-dark-800 border border-dark-700 rounded-lg px-3 py-2 w-full sm:w-auto sm:min-w-[260px]">
-            <span className="w-4 h-4 flex items-center justify-center text-gray-500 mr-2">
-              <i className="ri-search-line text-sm" />
-            </span>
-            <input
-              type="text"
-              placeholder="Search by name, machine, department..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="bg-transparent text-sm text-white placeholder-gray-600 focus:outline-none w-full"
+        {/* -------------------------------------------------------- empty ---- */}
+        {!loading && filtered.length === 0 && (
+          <Panel title="Agents">
+            <EmptyNote
+              title={counts.all === 0 ? 'No agents enrolled yet' : 'No agents match your filters'}
+              hint={
+                counts.all === 0
+                  ? 'Install the desktop agent on employee machines using your licence key.'
+                  : 'Try clearing the search or switching the department and status filters.'
+              }
             />
-          </div>
-          <div className="flex items-center gap-1 bg-dark-800 border border-dark-700 rounded-lg p-1 overflow-x-auto">
-            {departments.map((d) => (
-              <button
-                key={d}
-                onClick={() => setDeptFilter(d)}
-                className={`px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap transition-all ${
-                  deptFilter === d ? 'bg-dark-600 text-white' : 'text-gray-500 hover:text-gray-300'
-                }`}
-              >
-                {d}
-              </button>
-            ))}
-          </div>
-          <div className="flex items-center gap-1 bg-dark-800 border border-dark-700 rounded-lg p-1">
-            {statuses.map((s) => (
-              <button
-                key={s}
-                onClick={() => setStatusFilter(s)}
-                className={`px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap transition-all capitalize ${
-                  statusFilter === s ? 'bg-dark-600 text-white' : 'text-gray-500 hover:text-gray-300'
-                }`}
-              >
-                {s === 'All' ? 'All Status' : s}
-              </button>
-            ))}
-          </div>
-        </div>
+            {counts.all === 0 && (
+              <div className="flex justify-center pb-1">
+                <button onClick={() => navigate('/setup')} className="chip chip-accent text-[11px]">
+                  <i className="ri-add-line" />
+                  Add your first agent
+                </button>
+              </div>
+            )}
+          </Panel>
+        )}
+        {loading && agents.length === 0 && (
+          <Panel title="Agents">
+            <EmptyNote title="Loading agents…" />
+          </Panel>
+        )}
 
-        {/* LIST VIEW */}
-        {viewMode === 'list' && (
-          <div className="bg-dark-800 border border-dark-700 rounded-xl overflow-hidden">
+        {/* --------------------------------------------------- card view ---- */}
+        {viewMode === 'grid' && filtered.length > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3.5">
+            {filtered.map((agent, i) => (
+              <section
+                key={agent.id}
+                className={`panel rise card-link p-4 ${selected.has(agent.id) ? 'is-sel' : ''}`}
+                style={{ ['--i' as string]: Math.min(i, 8) }}
+                onClick={() => navigate(`/agents/${agent.id}`)}
+              >
+                <div className="flex items-start gap-2.5">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleSelect(agent.id);
+                    }}
+                    className={`cbx mt-1 ${selected.has(agent.id) ? 'is-on' : ''}`}
+                    aria-label={`Select ${agent.name}`}
+                  >
+                    <i className="ri-check-line" />
+                  </button>
+
+                  <span
+                    className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 text-[11px] font-semibold"
+                    style={{
+                      color: catColor(agent.department),
+                      background: 'var(--d-sunken)',
+                      border: '1px solid var(--d-line-soft)',
+                    }}
+                  >
+                    {initials(agent.name)}
+                  </span>
+
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-[12.5px] t1 font-medium truncate">{agent.name}</p>
+                        <p className="text-[10.5px] t3 truncate">{agent.machine}</p>
+                      </div>
+                      <StatusPill agent={agent} />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap mt-3.5">
+                  <DeptBadge agent={agent} />
+                  <span className="chip chip-quiet text-[9.5px]">
+                    <i className={`${OS_ICON(agent.os)} text-[11px]`} />
+                    {agent.os}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 mt-3">
+                  <span className="tile">
+                    <span className="num block" style={{ fontSize: 13 }}>
+                      {agent.score === null ? '—' : `${agent.score}%`}
+                    </span>
+                    <span className="block text-[9px] t3 mt-1">Productive</span>
+                  </span>
+                  <span className="tile">
+                    <span className="num block" style={{ fontSize: 13 }}>
+                      {formatHm(agent.activeSeconds)}
+                    </span>
+                    <span className="block text-[9px] t3 mt-1">Active</span>
+                  </span>
+                  <span className="tile">
+                    <span className="num block" style={{ fontSize: 13 }}>
+                      {formatHm(agent.idleSeconds)}
+                    </span>
+                    <span className="block text-[9px] t3 mt-1">Idle</span>
+                  </span>
+                </div>
+
+                {agent.score !== null && (
+                  <div className="mt-2.5">
+                    <Bar pct={agent.score} color={scoreColor(agent.score)} height={3} />
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between gap-2 mt-3.5 pt-2.5 hair-t">
+                  <span className="text-[10px] t3 truncate flex items-center gap-1.5">
+                    <i className="ri-global-line text-[11px]" />
+                    {agent.ipAddress}
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="text-[10px] t3" title={agent.lastActive}>
+                      <i className="ri-time-line text-[11px] mr-1" />
+                      {relative(agent.lastActive)}
+                    </span>
+                    <button
+                      onClick={(e) => handleDelete(e, agent.id, agent.name)}
+                      disabled={removing === agent.id}
+                      title="Remove agent (frees licence)"
+                      className="icon-btn"
+                      style={{ width: 22, height: 22 }}
+                    >
+                      <i
+                        className={`${removing === agent.id ? 'ri-loader-4-line animate-spin' : 'ri-delete-bin-line'} text-[12px]`}
+                      />
+                    </button>
+                  </span>
+                </div>
+              </section>
+            ))}
+          </div>
+        )}
+
+        {/* --------------------------------------------------- table view ---- */}
+        {viewMode === 'list' && filtered.length > 0 && (
+          <Panel title="Agents" hint={`Stats over ${winLabel}`} flush>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[750px]">
+              <table className="d-table min-w-[880px]">
                 <thead>
-                  <tr className="border-b border-dark-700">
-                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 w-10">
-                      <button onClick={selectAll} className="w-4 h-4 flex items-center justify-center">
-                        <div className={`w-4 h-4 rounded border ${selected.size === filtered.length && filtered.length > 0 ? 'bg-emerald-500 border-emerald-500' : 'border-gray-600'} flex items-center justify-center`}>
-                          {selected.size === filtered.length && filtered.length > 0 && <i className="ri-check-line text-[10px] text-white" />}
-                        </div>
+                  <tr>
+                    <th style={{ width: 34 }}>
+                      <button
+                        onClick={selectAll}
+                        className={`cbx ${allVisibleSelected ? 'is-on' : ''}`}
+                        aria-label="Select all visible agents"
+                      >
+                        <i className="ri-check-line" />
                       </button>
                     </th>
-                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3">Agent</th>
-                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3">Machine</th>
-                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3">OS</th>
-                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3">Status</th>
-                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3">Productivity</th>
-                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3">Active Hours</th>
-                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3">Department</th>
-                    <th className="text-right text-xs text-gray-500 font-medium px-4 py-3 w-12"></th>
+                    <th>Agent</th>
+                    <th>Machine</th>
+                    <th>Status</th>
+                    <th>Productive</th>
+                    <th>Active</th>
+                    <th>Department</th>
+                    <th>Last seen</th>
+                    <th style={{ width: 40 }} />
                   </tr>
                 </thead>
                 <tbody>
                   {filtered.map((agent) => (
-                    <tr
-                      key={agent.id}
-                      onClick={() => navigate(`/agents/${agent.id}`)}
-                      className="border-b border-dark-700/50 hover:bg-dark-700/30 transition-colors cursor-pointer"
-                    >
-                      <td className="px-4 py-3" onClick={(e) => { e.stopPropagation(); toggleSelect(agent.id); }}>
-                        <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${selected.has(agent.id) ? 'bg-emerald-500 border-emerald-500' : 'border-gray-600 hover:border-gray-400'}`}>
-                          {selected.has(agent.id) && <i className="ri-check-line text-[10px] text-white" />}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 rounded-full bg-dark-700 flex items-center justify-center">
-                            <span className="text-xs text-gray-400 font-medium">{agent.name.charAt(0)}</span>
-                          </div>
-                          <div>
-                            <p className="text-sm text-white font-medium">{agent.name}</p>
-                            <p className="text-xs text-gray-500">{agent.ipAddress}</p>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-300">{agent.machine}</td>
-                      <td className="px-4 py-3">
-                        <span className="flex items-center gap-1.5 text-xs text-gray-400">
-                          <span className="w-4 h-4 flex items-center justify-center"><i className={`${getOSIcon(agent.os)} text-sm`} /></span>
-                          {agent.os}
+                    <tr key={agent.id} onClick={() => navigate(`/agents/${agent.id}`)}>
+                      <td onClick={(e) => { e.stopPropagation(); toggleSelect(agent.id); }}>
+                        <span
+                          className={`cbx ${selected.has(agent.id) ? 'is-on' : ''}`}
+                          role="checkbox"
+                          aria-checked={selected.has(agent.id)}
+                        >
+                          <i className="ri-check-line" />
                         </span>
                       </td>
-                      <td className="px-4 py-3">
-                        {agent.seatLocked ? (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide bg-rose-500/15 text-rose-300 border border-rose-500/30"
-                                title="This agent is beyond your licensed seat count. Upgrade your subscription or remove another agent to re-activate it.">
-                            🔒 Locked
-                          </span>
-                        ) : (
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide ${statusBadge(agent.status)}`}>
-                            {statusLabel(agent.status)}
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
+
+                      <td className="whitespace-nowrap">
                         <div className="flex items-center gap-2">
-                          <div className="w-16 h-2 bg-dark-700 rounded-full overflow-hidden">
-                            <div className={`h-full rounded-full ${agent.productivity >= 80 ? 'bg-emerald-500' : agent.productivity >= 60 ? 'bg-amber-500' : 'bg-red-500'}`} style={{ width: `${agent.productivity}%` }} />
-                          </div>
-                          <span className="text-xs text-gray-400">{agent.productivity}%</span>
+                          <span
+                            className="avatar"
+                            style={{ color: catColor(agent.department) }}
+                          >
+                            {initials(agent.name)}
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block text-[12px] t1 font-medium leading-tight">
+                              {agent.name}
+                            </span>
+                            <span className="block text-[10px] t3 mt-0.5">{agent.ipAddress}</span>
+                          </span>
                         </div>
                       </td>
-                      <td className="px-4 py-3">
-                        <p className="text-sm text-gray-300">{agent.activeHours}</p>
-                        <p className="text-xs text-gray-500">Idle: {agent.idleTime}</p>
+
+                      <td className="whitespace-nowrap">
+                        <span className="flex items-center gap-2">
+                          <i className={`${OS_ICON(agent.os)} text-[13px] t3`} />
+                          <span className="min-w-0">
+                            <span className="block text-[11.5px] t2 leading-tight">
+                              {agent.machine}
+                            </span>
+                            <span className="block text-[10px] t3 mt-0.5">{agent.os}</span>
+                          </span>
+                        </span>
                       </td>
-                      <td className="px-4 py-3 relative">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setEditingDeptId(editingDeptId === agent.id ? null : agent.id); }}
-                          className={`px-2 py-0.5 rounded text-[10px] font-medium ${deptColor(agent.department)} flex items-center gap-1 cursor-pointer hover:opacity-80`}
-                        >
-                          {agent.department}
-                          <span className="w-3 h-3 flex items-center justify-center"><i className="ri-arrow-down-s-line" /></span>
-                        </button>
-                        {editingDeptId === agent.id && <DeptDropdown agentId={agent.id} currentDept={agent.department} />}
+
+                      <td className="whitespace-nowrap">
+                        <StatusPill agent={agent} />
                       </td>
-                      <td className="px-4 py-3 text-right">
+
+                      <td style={{ width: 116 }}>
+                        {agent.score === null ? (
+                          <span className="text-[11px] t3">—</span>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <span className="block w-12">
+                              <Bar pct={agent.score} height={4} color={scoreColor(agent.score)} />
+                            </span>
+                            <span className="text-[11px] t2 tnum">{agent.score}%</span>
+                          </div>
+                        )}
+                      </td>
+
+                      <td className="whitespace-nowrap">
+                        <span className="block text-[11.5px] t2 tnum leading-tight">
+                          {formatHm(agent.activeSeconds)}
+                        </span>
+                        <span className="block text-[10px] t3 mt-0.5">
+                          idle {formatHm(agent.idleSeconds)}
+                        </span>
+                      </td>
+
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <DeptBadge agent={agent} />
+                      </td>
+
+                      <td className="whitespace-nowrap">
+                        <span className="text-[11px] t3" title={agent.lastActive}>
+                          {relative(agent.lastActive)}
+                        </span>
+                      </td>
+
+                      <td className="text-right">
                         <button
                           onClick={(e) => handleDelete(e, agent.id, agent.name)}
                           disabled={removing === agent.id}
-                          title="Remove agent (frees license)"
-                          className="w-7 h-7 inline-flex items-center justify-center rounded-md text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50"
+                          title="Remove agent (frees licence)"
+                          className="icon-btn"
                         >
-                          <i className={`${removing === agent.id ? 'ri-loader-4-line animate-spin' : 'ri-delete-bin-line'} text-sm`} />
+                          <i
+                            className={`${removing === agent.id ? 'ri-loader-4-line animate-spin' : 'ri-delete-bin-line'} text-[12px]`}
+                          />
                         </button>
                       </td>
                     </tr>
@@ -490,129 +854,20 @@ export default function AgentsPage() {
                 </tbody>
               </table>
             </div>
-          </div>
+
+            <div className="px-3 py-2 hair-t">
+              <span className="text-[10px] t3">
+                {filtered.length} of {counts.all} agents
+              </span>
+            </div>
+          </Panel>
         )}
 
-        {/* GRID VIEW */}
-        {viewMode === 'grid' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
-            {filtered.map((agent) => (
-              <div
-                key={agent.id}
-                className={`group bg-dark-800 border rounded-xl p-5 cursor-pointer transition-all duration-300 hover:border-dark-600 hover:scale-[1.01] relative ${
-                  selected.has(agent.id) ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-dark-700'
-                }`}
-              >
-                {/* Checkbox - absolute top-left */}
-                <button
-                  onClick={(e) => { e.stopPropagation(); toggleSelect(agent.id); }}
-                  className="absolute top-3 left-3 w-5 h-5 flex items-center justify-center z-10"
-                >
-                  <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${selected.has(agent.id) ? 'bg-emerald-500 border-emerald-500' : 'border-gray-600 hover:border-gray-400'}`}>
-                    {selected.has(agent.id) && <i className="ri-check-line text-[10px] text-white" />}
-                  </div>
-                </button>
-
-                {/* Remove button - bottom-right, hover-reveal so it doesn't fight the status badge */}
-                <button
-                  onClick={(e) => handleDelete(e, agent.id, agent.name)}
-                  disabled={removing === agent.id}
-                  title="Remove agent (frees license)"
-                  className="absolute bottom-3 right-3 w-7 h-7 flex items-center justify-center rounded-md bg-dark-900/80 border border-dark-700 text-gray-500 hover:text-red-400 hover:border-red-500/30 hover:bg-red-500/10 transition-all z-10 opacity-0 group-hover:opacity-100 disabled:opacity-50"
-                >
-                  <i className={`${removing === agent.id ? 'ri-loader-4-line animate-spin' : 'ri-delete-bin-line'} text-sm`} />
-                </button>
-
-                <div onClick={() => navigate(`/agents/${agent.id}`)} className="pl-7">
-                  {/* Top row: Avatar + Name + Status */}
-                  <div className="flex items-start justify-between gap-3 mb-4">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-11 h-11 rounded-xl bg-violet-500/15 flex items-center justify-center flex-shrink-0">
-                        <span className="text-sm font-bold text-violet-400">{getInitials(agent.name)}</span>
-                      </div>
-                      <div className="min-w-0">
-                        <h3 className="text-sm font-semibold text-white truncate">{agent.name}</h3>
-                        <p className="text-[11px] text-gray-500">{agent.machine}</p>
-                      </div>
-                    </div>
-                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide flex-shrink-0 mt-1 ${statusBadge(agent.status)}`}>
-                      {statusLabel(agent.status)}
-                    </span>
-                  </div>
-
-                  {/* Department + OS */}
-                  <div className="flex items-center gap-2 mb-4 flex-wrap relative">
-                    <button
-                      onClick={(e) => { e.stopPropagation(); setEditingDeptId(editingDeptId === agent.id ? null : agent.id); }}
-                      className={`px-2 py-0.5 rounded-md text-[10px] font-medium ${deptColor(agent.department)} flex items-center gap-1 cursor-pointer hover:opacity-80`}
-                    >
-                      {agent.department}
-                      <span className="w-3 h-3 flex items-center justify-center"><i className="ri-arrow-down-s-line" /></span>
-                    </button>
-                    {editingDeptId === agent.id && <DeptDropdown agentId={agent.id} currentDept={agent.department} />}
-                    <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-dark-900 text-gray-400 border border-dark-700">
-                      {agent.os}
-                    </span>
-                  </div>
-
-                  {/* Stats row */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-4">
-                    <div className="bg-dark-900 rounded-lg border border-dark-700 p-2.5 text-center">
-                      <p className="text-xs font-bold text-white">{agent.productivity}%</p>
-                      <p className="text-[10px] text-gray-500 mt-0.5">Productivity</p>
-                    </div>
-                    <div className="bg-dark-900 rounded-lg border border-dark-700 p-2.5 text-center">
-                      <p className="text-xs font-bold text-white">{agent.activeHours}</p>
-                      <p className="text-[10px] text-gray-500 mt-0.5">Active</p>
-                    </div>
-                    <div className="bg-dark-900 rounded-lg border border-dark-700 p-2.5 text-center">
-                      <p className="text-xs font-bold text-white">{agent.idleTime}</p>
-                      <p className="text-[10px] text-gray-500 mt-0.5">Idle</p>
-                    </div>
-                  </div>
-
-                  {/* Footer info */}
-                  <div className="flex items-center justify-between pt-3 border-t border-dark-700">
-                    <div className="flex items-center gap-1.5 text-[11px] text-gray-500">
-                      <span className="w-3 h-3 flex items-center justify-center"><i className="ri-wifi-line" /></span>
-                      {agent.ipAddress}
-                    </div>
-                    <div className="flex items-center gap-1.5 text-[11px] text-gray-500">
-                      <span className="w-3 h-3 flex items-center justify-center"><i className="ri-time-line" /></span>
-                      {agent.lastActive && agent.lastActive !== '-'
-                        ? new Date(agent.lastActive).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                        : '—'}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {!loading && filtered.length === 0 && (
-          <div className="bg-dark-800 border border-dark-700 rounded-xl p-12 text-center">
-            <span className="w-12 h-12 flex items-center justify-center mx-auto mb-3 text-gray-600">
-              <i className="ri-search-2-line text-3xl" />
-            </span>
-            <p className="text-sm text-gray-500 mb-1">
-              {agents.length === 0 ? 'No agents enrolled yet' : 'No agents match your filters'}
-            </p>
-            {agents.length === 0 && (
-              <button
-                onClick={() => navigate('/setup')}
-                className="mt-3 px-4 py-2 rounded-lg bg-emerald-500/15 text-emerald-400 text-xs font-medium border border-emerald-500/25 hover:bg-emerald-500/25 transition-colors inline-flex items-center gap-2"
-              >
-                <i className="ri-add-line text-sm" />
-                Add your first agent
-              </button>
-            )}
-          </div>
-        )}
-        {loading && (
-          <div className="bg-dark-800 border border-dark-700 rounded-xl p-8 text-center text-xs text-gray-500">
-            Loading agents…
-          </div>
+        {viewMode === 'grid' && filtered.length > 0 && (
+          <p className="text-[10px] t3 mt-3.5">
+            {filtered.length} of {counts.all} agents · productivity, active and idle over{' '}
+            {winLabel}
+          </p>
         )}
       </div>
     </DashboardLayout>

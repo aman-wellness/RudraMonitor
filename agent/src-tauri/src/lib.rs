@@ -841,7 +841,7 @@ fn spawn_background_loop(state: AppState) {
             loop {
                 if ready(&state).await {
                     if let Err(e) = settings_tick(&state).await {
-                        log::warn!("settings tick failed: {e}");
+                        log::warn!("settings tick failed: {e:#}");
                     }
                 }
                 sleep(Duration::from_secs(SETTINGS_REFRESH_SECS)).await;
@@ -859,7 +859,7 @@ fn spawn_background_loop(state: AppState) {
                     continue;
                 }
                 if let Err(e) = window_tick(&state).await {
-                    log::warn!("window tick failed: {e}");
+                    log::warn!("window tick failed: {e:#}");
                     *state.last_error.lock().await = Some(e.to_string());
                 }
             }
@@ -876,7 +876,7 @@ fn spawn_background_loop(state: AppState) {
                     continue;
                 }
                 if let Err(e) = idle_tick(&state).await {
-                    log::warn!("idle tick failed: {e}");
+                    log::warn!("idle tick failed: {e:#}");
                     *state.last_error.lock().await = Some(e.to_string());
                 }
             }
@@ -897,7 +897,7 @@ fn spawn_background_loop(state: AppState) {
                     continue;
                 }
                 if let Err(e) = screenshot_tick(&state).await {
-                    log::warn!("screenshot tick failed: {e}");
+                    log::warn!("screenshot tick failed: {e:#}");
                     *state.last_error.lock().await = Some(e.to_string());
                     // We used to permanently disable screenshot capture on macOS
                     // after a single failure to avoid a re-prompt loop. The
@@ -960,7 +960,7 @@ fn spawn_background_loop(state: AppState) {
                 if last_attempt.elapsed() < Duration::from_secs(interval.max(60)) { continue; }
                 last_attempt = tokio::time::Instant::now();
                 if let Err(e) = video_tick(&state).await {
-                    log::warn!("video tick failed: {e}");
+                    log::warn!("video tick failed: {e:#}");
                     *state.last_error.lock().await = Some(e.to_string());
                     // Same change as screenshot poller above — no permanent
                     // kill-switch on transient failure. Natural interval
@@ -980,7 +980,7 @@ fn spawn_background_loop(state: AppState) {
                 continue;
             }
             if let Err(e) = metrics_tick(&state).await {
-                log::warn!("metrics tick failed: {e}");
+                log::warn!("metrics tick failed: {e:#}");
                 *state.last_error.lock().await = Some(e.to_string());
             } else {
                 *state.last_sync.lock().await = Some(Utc::now().to_rfc3339());
@@ -1541,7 +1541,7 @@ fn spawn_wallpaper_loop(state: AppState) {
             };
             let (enforced, url, updated_at) = snap;
             if let Err(e) = wm.tick(enforced, url.as_deref(), updated_at.as_deref()).await {
-                log::warn!("wallpaper tick failed: {e}");
+                log::warn!("wallpaper tick failed: {e:#}");
             }
             sleep(Duration::from_secs(60)).await;
         }

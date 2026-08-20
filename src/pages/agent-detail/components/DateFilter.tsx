@@ -4,10 +4,11 @@
 //     inputs + Apply. Choosing a custom range flips the active chip to
 //     "Custom" and emits a range string the parent can decode.
 //
-// The previous version had a hard-coded "May 07, 00:00 → May 07, 10:05" pill
-// that did absolutely nothing. This version actually works.
+// Collapsed into a single button so it can share the header row with the agent's
+// identity instead of taking a row of its own.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { notify } from '@/lib/notify';
 
 const presets = ['Today', 'Yesterday', '7 days', '30 days', 'All time'] as const;
 type Preset = typeof presets[number];
@@ -45,9 +46,9 @@ function computeRange(active: Preset | 'Custom', from?: Date, to?: Date): { from
 }
 
 function fmt(d: Date | null): string {
-  if (!d) return 'beginning';
-  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) +
-         ', ' + d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  if (!d) return 'the beginning';
+  return d.toLocaleDateString(undefined, { day: '2-digit', month: 'short' }) +
+    ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
 // Helper: convert a Date into the "YYYY-MM-DDTHH:MM" string the
@@ -94,7 +95,7 @@ export default function DateFilter({ onChange }: Props) {
   const applyCustom = () => {
     if (!customFrom || !customTo) return;
     if (customFrom > customTo) {
-      alert('From date must be before To date.');
+      notify.error('From date must be before To date.');
       return;
     }
     setActive('Custom');
@@ -114,76 +115,73 @@ export default function DateFilter({ onChange }: Props) {
   };
 
   return (
-    <div className="relative flex flex-wrap items-center justify-between gap-3">
-      <div className="flex items-center gap-1 bg-dark-900 rounded-lg p-1 overflow-x-auto">
-        {presets.map((p) => (
-          <button
-            key={p}
-            onClick={() => handlePreset(p)}
-            className={`px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap transition-all ${
-              active === p ? 'bg-dark-700 text-white shadow-sm' : 'text-gray-500 hover:text-gray-400'
-            }`}
-          >
-            {p}
-          </button>
-        ))}
-        {active === 'Custom' && (
-          <span className="px-3 py-1.5 rounded-md text-xs font-medium bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
-            Custom
-          </span>
-        )}
-      </div>
+    <span className="relative inline-flex" ref={popoverRef}>
+      <button
+        type="button"
+        onClick={openPicker}
+        className="filter-btn"
+        aria-expanded={pickerOpen}
+        title="Change the window these figures cover"
+      >
+        <i className="ri-calendar-line text-[13px] t3" />
+        <span className="t1 font-medium">{active}</span>
+        <span className="t3 hidden md:inline">
+          {fmt(range.from)} → {fmt(range.to)}
+        </span>
+        <i className="ri-arrow-down-s-line text-[13px] t3" />
+      </button>
 
-      <div className="relative">
-        <button
-          type="button"
-          onClick={openPicker}
-          className="flex items-center bg-dark-800 hover:bg-dark-700 border border-dark-700 hover:border-dark-600 rounded-lg px-3 py-1.5 gap-2 text-xs text-gray-300 transition-colors"
-          title="Click to pick a custom date range"
-        >
-          <i className="ri-calendar-line" />
-          <span>{fmt(range.from)}</span>
-          <span className="text-gray-600">→</span>
-          <span>{fmt(range.to)}</span>
-          <i className={`ri-arrow-${pickerOpen ? 'up' : 'down'}-s-line text-gray-500`} />
-        </button>
+      {pickerOpen && (
+        <div className="filter-pop" style={{ left: 'auto', right: 0, top: 36, width: 262 }}>
+          <div className="p-1">
+            {presets.map((p) => (
+              <button
+                key={p}
+                onClick={() => handlePreset(p)}
+                className={`filter-opt ${active === p ? 'is-on' : ''}`}
+              >
+                <span className="flex-1 text-left">{p}</span>
+                {active === p && <i className="ri-check-line text-[13px]" />}
+              </button>
+            ))}
+          </div>
 
-        {pickerOpen && (
-          <div ref={popoverRef}
-            className="absolute right-0 top-full mt-2 z-30 w-[320px] bg-dark-800 border border-dark-700 rounded-xl shadow-2xl p-4 space-y-3">
-            <p className="text-[10px] uppercase tracking-wider text-gray-500">Custom range</p>
+          <div className="p-2.5 hair-t space-y-2">
+            <span className="label">Custom range</span>
             <label className="block">
-              <span className="text-[11px] text-gray-400 block mb-1">From</span>
+              <span className="block text-[10px] t3 mb-1">From</span>
               <input
                 type="datetime-local"
                 value={customFrom ? toLocalInput(customFrom) : ''}
                 onChange={(e) => setCustomFrom(e.target.value ? new Date(e.target.value) : null)}
-                className="w-full px-3 py-2 rounded-lg bg-dark-900 border border-dark-700 text-sm text-white focus:outline-none focus:border-cyan-500/50"
+                className="filter-date w-full"
               />
             </label>
             <label className="block">
-              <span className="text-[11px] text-gray-400 block mb-1">To</span>
+              <span className="block text-[10px] t3 mb-1">To</span>
               <input
                 type="datetime-local"
                 value={customTo ? toLocalInput(customTo) : ''}
                 onChange={(e) => setCustomTo(e.target.value ? new Date(e.target.value) : null)}
-                className="w-full px-3 py-2 rounded-lg bg-dark-900 border border-dark-700 text-sm text-white focus:outline-none focus:border-cyan-500/50"
+                className="filter-date w-full"
               />
             </label>
-            <div className="flex items-center justify-end gap-2 pt-1">
-              <button onClick={() => setPickerOpen(false)}
-                className="px-3 py-1.5 rounded-md text-xs text-gray-400 hover:text-white">
+            <div className="flex items-center justify-end gap-2 pt-0.5">
+              <button onClick={() => setPickerOpen(false)} className="dlg-btn" style={{ height: 26 }}>
                 Cancel
               </button>
-              <button onClick={applyCustom}
+              <button
+                onClick={applyCustom}
                 disabled={!customFrom || !customTo}
-                className="px-3 py-1.5 rounded-md text-xs font-medium bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-white">
+                className="dlg-btn is-primary disabled:opacity-40"
+                style={{ height: 26 }}
+              >
                 Apply
               </button>
             </div>
           </div>
-        )}
-      </div>
-    </div>
+        </div>
+      )}
+    </span>
   );
 }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { supabase, type LicenseStatus } from '@/lib/supabase';
+import { confirmDialog, notify, promptDialog } from '@/lib/notify';
 
 type LicenseRow = {
   id: string;
@@ -62,7 +63,10 @@ export default function LicensesTable({ scope, partnerId }: Props) {
     const row = Array.isArray(data) ? data[0] : data;
     setBusy(null);
     if (row) {
-      window.alert(`Invoice ${row.invoice_number} created — ₹${Number(row.total_inr).toLocaleString('en-IN')}\n\nGo to Invoices to pay or share with the customer.`);
+      notify.success(`Invoice ${row.invoice_number} created`, {
+        description:
+          `₹${Number(row.total_inr).toLocaleString('en-IN')} — go to Invoices to pay or share it with the customer.`,
+      });
     }
   };
 
@@ -79,35 +83,56 @@ export default function LicensesTable({ scope, partnerId }: Props) {
   // to a custom expiry date. Both flow through extend_license_renewal which
   // also flips the org back to active if it was trial/expired/suspended.
   const extend = async (id: string) => {
-    const periodsStr = window.prompt(
-      'Extend renewal by how many billing periods?\n\n' +
-      '• Monthly plan → "1" adds +1 month\n' +
-      '• Yearly plan  → "1" adds +1 year\n\n' +
-      'Leave blank to set a custom expiry date instead.',
-      '1',
-    );
+    const periodsStr = await promptDialog({
+      title: 'Extend renewal by how many billing periods?',
+      body: 'On a monthly plan "1" adds one month; on a yearly plan it adds one year. Leave blank to set a custom expiry date instead.',
+      defaultValue: '1',
+      placeholder: '1',
+      confirmLabel: 'Continue',
+    });
     if (periodsStr === null) return;
     let untilArg: string | null = null;
     let periodsArg = 1;
     if (periodsStr.trim() === '') {
-      const customDate = window.prompt('Enter the new expiry date (YYYY-MM-DD):');
+      const customDate = await promptDialog({
+        title: 'New expiry date',
+        body: 'Enter the date the licence should run until.',
+        placeholder: 'YYYY-MM-DD',
+      });
       if (!customDate) return;
       const d = new Date(customDate);
-      if (Number.isNaN(d.getTime())) { window.alert('Invalid date'); return; }
+      if (Number.isNaN(d.getTime())) {
+        notify.error('That date could not be read', { description: 'Use the format YYYY-MM-DD.' });
+        return;
+      }
       untilArg = d.toISOString();
     } else {
       const n = parseInt(periodsStr, 10);
-      if (!Number.isFinite(n) || n < 1) { window.alert('Invalid number of periods'); return; }
+      if (!Number.isFinite(n) || n < 1) {
+        notify.error('That is not a valid number of periods', { description: 'Enter a whole number of 1 or more.' });
+        return;
+      }
       periodsArg = n;
     }
-    if (!window.confirm(
-      `Confirm: extend license renewal${untilArg ? ` until ${new Date(untilArg).toDateString()}` : ` by ${periodsArg} period(s)`}?\n\nThis will set status to active.`,
-    )) return;
+    const ok = await confirmDialog({
+      title: untilArg
+        ? `Extend renewal until ${new Date(untilArg).toDateString()}?`
+        : `Extend renewal by ${periodsArg} period${periodsArg === 1 ? '' : 's'}?`,
+      body: 'The licence status will be set to active.',
+      confirmLabel: 'Extend renewal',
+    });
+    if (!ok) return;
     setBusy(id); setError(null);
     const { error } = await supabase.rpc('extend_license_renewal', {
       p_license_id: id, p_periods: periodsArg, p_until: untilArg,
     });
-    if (error) setError(error.message); else await load();
+    if (error) {
+      setError(error.message);
+      notify.fail('Could not extend the renewal', error);
+    } else {
+      notify.success('Renewal extended', { description: 'The licence is now active.' });
+      await load();
+    }
     setBusy(null);
   };
 
@@ -212,9 +237,14 @@ export default function LicensesTable({ scope, partnerId }: Props) {
                       )}
                       {l.status !== 'revoked' && (
                         <button
-                          onClick={() => {
-                            const r = window.prompt('Reason for revocation?') ?? '';
-                            if (r !== null) setStatus(l.id, 'revoked', r);
+                          onClick={async () => {
+                            const r = await promptDialog({
+                              title: `Revoke licence ${l.license_key}?`,
+                              body: 'The agents on this licence stop reporting immediately. Give a reason for the audit trail.',
+                              placeholder: 'Reason for revocation',
+                              confirmLabel: 'Revoke licence',
+                            });
+                            if (r !== null) await setStatus(l.id, 'revoked', r);
                           }}
                           disabled={busy === l.id}
                           className="px-2 py-1 text-[11px] rounded bg-red-600/20 text-red-400 border border-red-600/30 hover:bg-red-600/30 disabled:opacity-50">

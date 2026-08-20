@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
+import { confirmDialog } from '@/lib/notify';
 
 // Pushes a single org-wide wallpaper image to every agent that has
 // `wallpaper_enforced = true`. Agents poll agent-settings every 60 s and
@@ -80,7 +81,7 @@ export default function WallpaperUploadCard() {
 
   const handleRemove = async () => {
     if (!orgId) return;
-    if (!confirm('Remove the org wallpaper? Agents will keep whatever wallpaper they currently have — they won\'t revert to the original.')) return;
+    if (!await confirmDialog({ title: 'Remove the org wallpaper? Agents will keep whatever wallpaper they currently have — they won\'t revert to the original.', tone: 'danger' })) return;
     setBusy(true);
     setError(null);
     try {

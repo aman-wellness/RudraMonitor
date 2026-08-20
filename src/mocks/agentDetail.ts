@@ -358,15 +358,14 @@ export const agentDetails = [
 ];
 
 export const detailBottomTabs = [
-  { id: 'applications', label: 'Applications', count: 10, icon: 'ri-apps-line' },
-  { id: 'browser', label: 'Browser', count: 11, icon: 'ri-global-line' },
-  { id: 'videos', label: 'Videos', count: 33, icon: 'ri-video-line' },
-  { id: 'screenshots', label: 'Screenshots', count: 11, icon: 'ri-image-line' },
-  { id: 'timeline', label: 'Timeline', count: null, icon: 'ri-time-line' },
-  { id: 'alerts', label: 'Alerts', count: 97, icon: 'ri-notification-3-line' },
-  { id: 'system', label: 'System Health', count: null, icon: 'ri-heart-pulse-line' },
-  { id: 'capture', label: 'Capture Controls', count: null, icon: 'ri-camera-line' },
-  { id: 'ai', label: 'AI Performance Chat', count: null, icon: 'ri-bard-line' },
+  { id: 'applications', label: 'Applications', icon: 'ri-apps-line' },
+  { id: 'browser', label: 'Browser', icon: 'ri-global-line' },
+  { id: 'videos', label: 'Videos', icon: 'ri-video-line' },
+  { id: 'screenshots', label: 'Screenshots', icon: 'ri-image-line' },
+  { id: 'timeline', label: 'Timeline', icon: 'ri-time-line' },
+  { id: 'alerts', label: 'Alerts', icon: 'ri-notification-3-line' },
+  { id: 'system', label: 'System Health', icon: 'ri-heart-pulse-line' },
+  { id: 'capture', label: 'Capture Controls', icon: 'ri-camera-line' },
 ] as const;
 
 export type DetailTabId = (typeof detailBottomTabs)[number]['id'];

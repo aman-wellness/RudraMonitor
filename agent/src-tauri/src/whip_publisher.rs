@@ -39,6 +39,7 @@ use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
+use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
@@ -64,6 +65,13 @@ pub fn spawn_whip_loop(state: AppState) {
             sleep(Duration::from_secs(5)).await;
         }
         log::info!("whip: publisher loop starting");
+        // macOS: proactively preflight/request the Screen Recording grant
+        // at boot so the system prompt appears during setup rather than the
+        // operator hitting a silent black stream on their first Live click.
+        #[cfg(target_os = "macos")]
+        {
+            crate::capture::macos::ensure_screen_recording_permission();
+        }
         // Singleton session state. Two trips through the poll loop
         // simultaneously firing run_session() leads to TWO ffmpegs
         // racing for the same screen-capture device — the OS gives
@@ -88,7 +96,7 @@ pub fn spawn_whip_loop(state: AppState) {
                 Ok(Some(new_since)) => since = new_since,
                 Ok(None) => {}
                 Err(e) => {
-                    log::warn!("whip poll failed: {e}; backing off 10s");
+                    log::warn!("whip poll failed: {e:#}; backing off 10s");
                     sleep(Duration::from_secs(10)).await;
                 }
             }
@@ -125,6 +133,8 @@ async fn poll_once(
     let client = api::build_client()?;
     let resp = client
         .get(&url)
+        // Must outlast the endpoint's 25s hold — see api::LONG_POLL_TIMEOUT.
+        .timeout(api::LONG_POLL_TIMEOUT)
         .header("apikey", &anon_key)
         .header("X-Agent-Token", &enrollment.enroll_token)
         .send()
@@ -187,7 +197,10 @@ async fn poll_once(
         // observed) still falls inside.
         let now = std::time::Instant::now();
         let lock_age = now.duration_since(*last_claim.read().unwrap_or_else(|e| e.into_inner()));
-        if active.load(std::sync::atomic::Ordering::SeqCst) && lock_age < std::time::Duration::from_secs(120) {
+        // 45s is comfortably above the worst-case ~33s Windows ffmpeg cold
+        // start we've observed, but far below the old 120s that could drop
+        // an operator's "Live" click for two minutes after a bad session.
+        if active.load(std::sync::atomic::Ordering::SeqCst) && lock_age < std::time::Duration::from_secs(45) {
             log::info!("whip: livekit_start ignored — session already active ({}s ago)", lock_age.as_secs());
             continue;
         }
@@ -319,19 +332,22 @@ async fn run_session(
     room: &str,
     stop_signal: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<()> {
-    let ingress = fetch_livekit_ingress(state, room).await?;
-    // The Ingress's `url` is the exact endpoint to POST WHIP to;
-    // `stream_key` is the bearer auth that ties our session to the
-    // pre-created IngressInfo on the LiveKit server. The room JWT
-    // (returned alongside) is ignored — LiveKit owns the participant
-    // identity once Ingress is in front.
-    let whip_url = ingress.url.clone();
-    let token = ingress.stream_key.clone();
-    log::info!("whip: ingress URL={whip_url}");
+    // NOTE: LiveKit Ingress is created LATER (just before the WHIP POST),
+    // not here. Creating it costs two serial network round-trips
+    // (agent → livekit-token → LiveKit CreateIngress). Doing it up front
+    // blocked capture/encoder startup, adding those hops to the time-to-
+    // first-frame. We now build the peer connection and spawn the capture
+    // pump FIRST so the encoder warms up during those round-trips, then
+    // fetch the Ingress right before we actually need its URL.
 
     // Standard WebRTC stack — same shape as webrtc_stream::handle_session.
-    // No iceServers passed: LiveKit Ingress advertises its own TURN
-    // candidates in the answer, so we don't need to configure one here.
+    // We DO advertise STUN here: relying solely on LiveKit Ingress's
+    // answer-side candidates meant the agent gathered host-only candidates,
+    // so on NAT'd corporate networks ICE pairing was slow or never
+    // completed (the "Live takes forever / never connects" reports). Public
+    // STUN lets the agent discover its server-reflexive candidate up front
+    // and offer it, so pairing happens immediately instead of waiting on
+    // the far side.
     let mut me = MediaEngine::default();
     me.register_default_codecs()
         .map_err(|e| anyhow!("register codecs: {e}"))?;
@@ -340,9 +356,19 @@ async fn run_session(
         .with_media_engine(me)
         .with_interceptor_registry(registry)
         .build();
+    let rtc_config = RTCConfiguration {
+        ice_servers: vec![RTCIceServer {
+            urls: vec![
+                "stun:stun.l.google.com:19302".to_owned(),
+                "stun:stun1.l.google.com:19302".to_owned(),
+            ],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
     let pc = Arc::new(
         api_builder
-            .new_peer_connection(RTCConfiguration::default())
+            .new_peer_connection(rtc_config)
             .await
             .map_err(|e| anyhow!("new_peer_connection: {e}"))?,
     );
@@ -473,6 +499,23 @@ async fn run_session(
         )
         .await
     });
+
+    // Fetch the Ingress now (two network hops). The capture pump spawned
+    // just above has been warming up in parallel during this await, so by
+    // the time the WHIP exchange completes the encoder is already producing
+    // frames — this overlap is the main "time to first frame" win.
+    let ingress = match fetch_livekit_ingress(state, room).await {
+        Ok(i) => i,
+        Err(e) => {
+            // The pump is already running; signal it to stop so we don't
+            // leak a capture/ffmpeg process on this early return.
+            stop_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            return Err(e);
+        }
+    };
+    let whip_url = ingress.url.clone();
+    let token = ingress.stream_key.clone();
+    log::info!("whip: ingress URL={whip_url}");
 
     // --- WHIP exchange (running in parallel with ffmpeg startup) ---
     //

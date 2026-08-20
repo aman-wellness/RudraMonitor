@@ -33,6 +33,7 @@ export default function PricingSection() {
         </div>
 
         <PlanGrid
+          lockCurrency="INR"
           ctaLabelFor={(planCode, _isCurrent) =>
             planCode === 'enterprise' ? 'Contact Sales' : 'Start free trial'
           }

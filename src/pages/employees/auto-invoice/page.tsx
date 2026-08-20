@@ -12,6 +12,7 @@ import { Link } from 'react-router-dom';
 import DashboardLayout from '../../dashboard/DashboardLayout';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
+import { notify } from '@/lib/notify';
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -635,7 +636,7 @@ function ChannelPill({ name, connected, channel, onTested }: { name: string; con
       onTested();
     } catch (e) {
       setFlash('err');
-      alert(`Test ping failed: ${(e as Error).message}`);
+      notify.error('Test ping failed', { description: String((e as Error).message) });
     } finally { setBusy(false); }
   };
   return (

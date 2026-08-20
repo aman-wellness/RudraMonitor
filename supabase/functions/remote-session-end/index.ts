@@ -100,13 +100,21 @@ Deno.serve(async (req) => {
 
   // Broadcast to both ends — Realtime is best-effort, so each side ALSO
   // polls remote_sessions.state via the Realtime postgres-changes channel.
+  // `reason` rides along so the dashboard can say WHY a session ended instead
+  // of silently dropping back to Idle. It is already persisted to
+  // failure_reason; withholding it from the broadcast meant a session that died
+  // on the agent (e.g. "no rustdesk binary bundled in resources/rustdesk/")
+  // looked identical to a clean admin-initiated hang-up.
+  const endedPayload = {
+    session_id: sessionId,
+    ended_by: actorKind,
+    reason: reason || null,
+  };
   await admin.channel(`session:${sessionId}`).send({
-    type: "broadcast", event: "remote.ended",
-    payload: { session_id: sessionId, ended_by: actorKind },
+    type: "broadcast", event: "remote.ended", payload: endedPayload,
   });
   await admin.channel(`agent:${s.agent_id}`).send({
-    type: "broadcast", event: "remote.ended",
-    payload: { session_id: sessionId, ended_by: actorKind },
+    type: "broadcast", event: "remote.ended", payload: endedPayload,
   });
 
   return json({ ok: true, state: "ended" });

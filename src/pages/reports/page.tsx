@@ -1,5 +1,6 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
+import Breadcrumb from '@/components/Breadcrumb';
 import {
   useAgents,
   useLatestSystemMetrics,
@@ -14,19 +15,51 @@ import {
 type ReportTab = 'productivity' | 'activity' | 'time';
 type ExportFormat = 'csv' | 'excel' | 'pdf';
 
+/* Tallest a trend bar can draw. The strip is h-32 (128px) and the labels above
+   and below each bar take the rest — a percentage height can't be used here,
+   see the comment at the bar itself. */
+const BAR_MAX_PX = 88;
+
 const tabs: { id: ReportTab; label: string; icon: string; help: string }[] = [
   { id: 'productivity', label: 'Productivity', icon: 'ri-bar-chart-grouped-line', help: 'Per-agent productivity %, active hours, idle time. Top performers shown above.' },
   { id: 'activity',     label: 'Activity',     icon: 'ri-pulse-line',             help: 'How busy each agent has been — app switches, browser hits, screenshots captured.' },
   { id: 'time',         label: 'Time Tracking',icon: 'ri-time-line',              help: 'Session totals + idle breakdowns per agent. Use for billable-hour reports.' },
 ];
 
-const departments = ['All', 'Development', 'HR', 'Finance', 'Design', 'Sales', 'Support', 'Marketing', 'Unassigned'];
-
 const formatHours = (sec: number) => {
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
   return `${h}h ${m.toString().padStart(2, '0')}m`;
 };
+
+// Header "select all" checkbox. `indeterminate` can only be set via the
+// DOM property (there's no React prop for it), so we thread it through a ref.
+function SelectAllCheckbox({
+  checked,
+  indeterminate,
+  onChange,
+  title,
+}: {
+  checked: boolean;
+  indeterminate: boolean;
+  onChange: () => void;
+  title?: string;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = indeterminate;
+  }, [indeterminate]);
+  return (
+    <input
+      ref={ref}
+      type="checkbox"
+      checked={checked}
+      onChange={onChange}
+      title={title}
+      className="w-3.5 h-3.5 rounded border-dark-600 bg-dark-900 text-emerald-500 focus:ring-0 focus:ring-offset-0 cursor-pointer accent-emerald-500"
+    />
+  );
+}
 
 type ReportAgent = {
   id: string;
@@ -42,15 +75,50 @@ type ReportAgent = {
 };
 
 export default function ReportsPage() {
+  // Date-range selector. Declared before the data hooks so the chosen
+  // window can drive the per-agent productivity lookback.
+  const [dateRange, setDateRange] = useState('today');
+  const [customFrom, setCustomFrom] = useState(''); // yyyy-mm-dd, "Custom Range" start
+  const [customTo, setCustomTo] = useState('');     // yyyy-mm-dd, "Custom Range" end
+  // Both bounds are expressed as "hours ago" so the productivity hook can
+  // build since = now - rangeHours and until = now - rangeUntilHours.
+  const { rangeHours, rangeUntilHours } = useMemo(() => {
+    if (dateRange === 'week') return { rangeHours: 24 * 7, rangeUntilHours: 0 };
+    if (dateRange === 'month') return { rangeHours: 24 * 30, rangeUntilHours: 0 };
+    if (dateRange === 'custom') {
+      const now = Date.now();
+      const sinceMs = customFrom ? now - new Date(customFrom + 'T00:00:00').getTime() : 24 * 3_600_000;
+      // Include the whole "to" day (end at 23:59:59). If it's today or in
+      // the future the diff goes ≤0 → clamps to 0 → "up to now".
+      const untilMs = customTo ? now - new Date(customTo + 'T23:59:59').getTime() : 0;
+      return {
+        rangeHours: Math.max(1, Math.ceil(sinceMs / 3_600_000)),
+        rangeUntilHours: Math.max(0, Math.floor(untilMs / 3_600_000)),
+      };
+    }
+    return { rangeHours: 24, rangeUntilHours: 0 }; // today
+  }, [dateRange, customFrom, customTo]);
+  const rangeLabel =
+    dateRange === 'today' ? 'Today'
+    : dateRange === 'week' ? 'This Week'
+    : dateRange === 'month' ? 'This Month'
+    : (customFrom || customTo) ? `${customFrom || '…'} → ${customTo || 'today'}` : 'Custom Range';
+
   const { agents: dbAgents } = useAgents();
-  const { byAgent: perAgent } = useProductivityPerAgent(24);
+  const { byAgent: perAgent } = useProductivityPerAgent(rangeHours, rangeUntilHours);
   const { byAgent: latestMetrics } = useLatestSystemMetrics();
-  const { rows: dailyRows } = useOrgProductivityDaily(7);
+  // The trend used to be useOrgProductivityDaily(7) — a hardcoded week that
+  // never moved, so picking This Month changed every table on the page while the
+  // chart underneath kept showing the same seven days. It takes the selected
+  // range now (capped at 31 buckets, which is as many bars as the strip can
+  // hold), including the end of a historic custom range.
+  const trendDays = Math.min(31, Math.max(1, Math.ceil(rangeHours / 24)));
+  const { rows: dailyRows } = useOrgProductivityDaily(trendDays, rangeUntilHours);
 
   // All per-agent aggregates come from a single RPC call; each table just maps over them.
   const { agents, systemData, timeData, activityCounts, weeklyProductivity } = useMemo(() => {
     const out: ReportAgent[] = [];
-    const sysOut: Record<string, { cpu: number; memory: number; disk: number; uptime: string }> = {};
+    const sysOut: Record<string, { cpu: number | null; memory: number | null; disk: number | null; uptime: string }> = {};
     const timeOut: Record<string, { login: string; logout: string; session: string; breaks: string }> = {};
     const actOut: Record<string, { appSwitches: number; browserEvents: number; screenshots: number; videos: number; alerts: number }> = {};
 
@@ -74,9 +142,9 @@ export default function ReportsPage() {
 
       const m = latestMetrics[a.id];
       sysOut[a.id] = {
-        cpu: m?.cpu_usage ?? 0,
-        memory: m?.ram_usage ?? 0,
-        disk: m?.disk_usage ?? 0,
+        cpu: m?.cpu_usage ?? null,
+        memory: m?.ram_usage ?? null,
+        disk: m?.disk_usage ?? null,
         uptime: m ? '—' : 'Offline',
       };
 
@@ -98,12 +166,21 @@ export default function ReportsPage() {
       };
     }
 
+    // Weekday names only make sense for a week or less — beyond that "Mon"
+    // appears four times over. Longer spans get the date.
     const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const buckets = dailyRows.map((r) => ({
-      day: DAYS[new Date(r.day_bucket + 'T00:00:00Z').getUTCDay()] ?? '',
-      productivity: r.productivity_pct,
-      agents: r.active_agents,
-    }));
+    const buckets = dailyRows.map((r) => {
+      const d = new Date(r.day_bucket + 'T00:00:00Z');
+      return {
+        key: r.day_bucket,
+        day: dailyRows.length <= 7
+          ? DAYS[d.getUTCDay()] ?? ''
+          : String(d.getUTCDate()),
+        full: d.toLocaleDateString(undefined, { weekday: 'short', day: '2-digit', month: 'short' }),
+        productivity: r.productivity_pct,
+        agents: r.active_agents,
+      };
+    });
 
     return { agents: out, systemData: sysOut, timeData: timeOut, activityCounts: actOut, weeklyProductivity: buckets };
   }, [dbAgents, perAgent, latestMetrics, dailyRows]);
@@ -111,35 +188,12 @@ export default function ReportsPage() {
   const [deptFilter, setDeptFilter] = useState('All');
   const [statusFilter, setStatusFilter] = useState('All');
   const [search, setSearch] = useState('');
-  const [dateRange, setDateRange] = useState('today');
   const [exporting, setExporting] = useState<ExportFormat | null>(null);
-  // 'all' → export the current tab for every filtered agent (original
-  // behavior). An agent id → export all THREE tabs' data for that ONE
-  // agent into a single file — "complete per-agent report" customers
-  // asked for on 2026-07-27.
-  const [exportTarget, setExportTarget] = useState<string>('all');
-  // If the currently-picked agent gets filtered out (search / dept /
-  // status change), snap back to 'all' so the dropdown never shows a
-  // stale selection that doesn't correspond to a listed agent.
-  useEffect(() => {
-    if (exportTarget === 'all') return;
-    // Compute inline instead of depending on filteredAgents from below
-    // (which isn't in scope yet) — same filter logic.
-    const stillListed = agents.some((a) => {
-      if (a.id !== exportTarget) return false;
-      const matchesDept = deptFilter === 'All' || a.department === deptFilter;
-      const matchesStatus = statusFilter === 'All' || a.status === statusFilter;
-      const matchesSearch = search === '' ||
-        a.name.toLowerCase().includes(search.toLowerCase()) ||
-        a.machine.toLowerCase().includes(search.toLowerCase());
-      return matchesDept && matchesStatus && matchesSearch;
-    });
-    if (!stillListed) setExportTarget('all');
-  }, [agents, exportTarget, deptFilter, statusFilter, search]);
 
   const filteredAgents = useMemo(() => {
     return agents.filter((a) => {
-      const matchesDept = deptFilter === 'All' || a.department === deptFilter;
+      const dept = a.department?.trim() ? a.department : 'Unassigned';
+      const matchesDept = deptFilter === 'All' || dept === deptFilter;
       const matchesStatus = statusFilter === 'All' || a.status === statusFilter;
       const matchesSearch =
         search === '' ||
@@ -148,6 +202,50 @@ export default function ReportsPage() {
       return matchesDept && matchesStatus && matchesSearch;
     });
   }, [agents, deptFilter, statusFilter, search]);
+
+  // Row selection. A set of agent ids the user has ticked in the table.
+  // The selection persists across tab switches (it's keyed on agent, not
+  // tab) so ticking rows on Productivity and then exporting on Activity
+  // exports the same agents. When non-empty it drives ALL exports —
+  // CSV, Excel and PDF alike — not just the CSV button.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // Only rows that are BOTH selected and currently visible under the
+  // filters count. This keeps a stale tick on a now-hidden agent from
+  // silently leaking into an export.
+  const selectedFiltered = useMemo(
+    () => filteredAgents.filter((a) => selectedIds.has(a.id)),
+    [filteredAgents, selectedIds],
+  );
+  const allVisibleSelected = filteredAgents.length > 0 && selectedFiltered.length === filteredAgents.length;
+  const someVisibleSelected = selectedFiltered.length > 0 && !allVisibleSelected;
+
+  const toggleRow = (id: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  const toggleAllVisible = () =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (filteredAgents.every((a) => next.has(a.id))) {
+        filteredAgents.forEach((a) => next.delete(a.id));
+      } else {
+        filteredAgents.forEach((a) => next.add(a.id));
+      }
+      return next;
+    });
+  const clearSelection = () => setSelectedIds(new Set());
+
+  // Department filter options, derived from the agents actually present
+  // rather than a hardcoded list — so it always reflects real data.
+  // Agents with no department fall under "Unassigned".
+  const departments = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of agents) set.add(a.department?.trim() ? a.department : 'Unassigned');
+    return ['All', ...Array.from(set).sort((x, y) => x.localeCompare(y))];
+  }, [agents]);
 
   // Top performer card (Productivity tab). Picks the highest-productivity
   // agent with at least 30 min of activity — avoids "100% on 5 minutes of
@@ -168,26 +266,44 @@ export default function ReportsPage() {
     switch (tab) {
       case 'productivity':
         return {
-          headers: ['Agent Name', 'Department', 'Machine', 'Status', 'Productivity %', 'Active Hours', 'Idle Time', 'Efficiency Score'],
-          rows: data.map((a) => [
-            a.name,
-            a.department,
-            a.machine,
-            a.status,
-            String(a.productivity),
-            a.activeHours,
-            a.idleTime,
-            String(Math.round(a.productivity * 0.9)),
-          ]),
+          // The last three come from the newest hardware sample, not from the
+          // selected range — say so, or a monthly export reads as if the CPU
+          // figure were a monthly average.
+          headers: ['Agent Name', 'Department', 'Machine', 'OS', 'Status', 'Productivity %', 'Active Hours', 'Idle Time', 'Total Session', 'Total Events', 'Alerts', 'CPU % (latest)', 'RAM % (latest)', 'Disk % used (latest)'],
+          rows: data.map((a) => {
+            const c = activityCounts[a.id] || { appSwitches: 0, browserEvents: 0, screenshots: 0, videos: 0, alerts: 0 };
+            const t = timeData[a.id] || { session: '-', breaks: '-' };
+            const s = systemData[a.id] ?? { cpu: null, memory: null, disk: null };
+            const total = c.appSwitches + c.browserEvents + c.screenshots + c.videos + c.alerts;
+            return [
+              a.name,
+              a.department,
+              a.machine,
+              a.os,
+              a.status,
+              String(a.productivity),
+              a.activeHours,
+              a.idleTime,
+              t.session,
+              String(total),
+              String(c.alerts),
+              s.cpu === null ? '' : String(s.cpu),
+              s.memory === null ? '' : String(s.memory),
+              s.disk === null ? '' : String(s.disk),
+            ];
+          }),
         };
       case 'activity':
         return {
-          headers: ['Agent Name', 'Department', 'App Switches', 'Browser Events', 'Screenshots', 'Videos', 'Alerts', 'Total Events'],
+          headers: ['Agent Name', 'Department', 'Machine', 'OS', 'Status', 'App Switches', 'Browser Events', 'Screenshots', 'Videos', 'Alerts', 'Total Events'],
           rows: data.map((a) => {
             const c = activityCounts[a.id] || { appSwitches: 0, browserEvents: 0, screenshots: 0, videos: 0, alerts: 0 };
             return [
               a.name,
               a.department,
+              a.machine,
+              a.os,
+              a.status,
               String(c.appSwitches),
               String(c.browserEvents),
               String(c.screenshots),
@@ -199,10 +315,26 @@ export default function ReportsPage() {
         };
       case 'time':
         return {
-          headers: ['Agent Name', 'Department', 'Login Time', 'Logout Time', 'Total Session', 'Break Duration'],
+          headers: ['Agent Name', 'Department', 'Machine', 'OS', 'Status', 'Login Time', 'Logout Time', 'Total Session', 'Break Duration', 'Active Hours', 'Idle Time', 'Utilization %'],
           rows: data.map((a) => {
             const t = timeData[a.id] || { login: '-', logout: '-', session: '-', breaks: '-' };
-            return [a.name, a.department, t.login, t.logout, t.session, t.breaks];
+            const sessionMins = parseInt(t.session) || 0;
+            const breakMins = parseInt(t.breaks) || 0;
+            const util = sessionMins > 0 ? Math.round(((sessionMins - breakMins) / sessionMins) * 100) : 0;
+            return [
+              a.name,
+              a.department,
+              a.machine,
+              a.os,
+              a.status,
+              t.login,
+              t.logout,
+              t.session,
+              t.breaks,
+              a.activeHours,
+              a.idleTime,
+              String(util),
+            ];
           }),
         };
     }
@@ -225,44 +357,9 @@ export default function ReportsPage() {
     URL.revokeObjectURL(url);
   };
 
-  // Build the FULL per-agent report \u2014 every tab's data in one file,
-  // sectioned with clear headers. Used when exportTarget !== 'all'.
-  const buildAgentFullCSV = (agent: (typeof agents)[number]) => {
-    const nameSafe = agent.name.replace(/"/g, '""');
-    const header = [
-      `"AGENT REPORT \u2014 ${nameSafe}"`,
-      `"Department","${agent.department}"`,
-      `"Machine","${agent.machine}"`,
-      `"Status","${agent.status}"`,
-      `"Window","${dateRange === 'today' ? 'Today' : dateRange === 'week' ? 'This Week' : 'This Month'}"`,
-      `"Generated","${new Date().toISOString()}"`,
-      '',
-    ].join('\n');
-    // Reuse buildCSV with a single-row slice so section formatting stays
-    // consistent with the multi-agent export shape.
-    const one = [agent];
-    return [
-      header,
-      '"\u2014 Productivity \u2014"',
-      buildCSV('productivity', one),
-      '',
-      '"\u2014 Activity \u2014"',
-      buildCSV('activity', one),
-      '',
-      '"\u2014 Time Tracking \u2014"',
-      buildCSV('time', one),
-      '',
-    ].join('\n');
-  };
-
-  // Render a real PDF via jspdf + autotable. Client-side, no server round
-  // trip. Layout: title block on top (agent name / dept / machine / window /
-  // generated timestamp), then one section per tab with a striped table.
-  // For the multi-agent path, single section with the current tab's data.
+  // Render a real PDF via jspdf + autotable: a plain one-row-per-agent
+  // table for the current tab, matching the CSV / Excel export.
   const buildPDF = async (): Promise<Blob> => {
-    // Dynamic import so the ~150 KB jspdf bundle doesn't inflate the
-    // main Reports page load \u2014 only paid when the user actually clicks
-    // "PDF". Vite splits it into its own chunk.
     const [{ default: jsPDF }, autoTableModule] = await Promise.all([
       import('jspdf'),
       import('jspdf-autotable'),
@@ -270,90 +367,43 @@ export default function ReportsPage() {
     const autoTable = (autoTableModule as { default: (doc: unknown, opts: unknown) => void }).default;
     const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
 
-    const singleAgent = exportTarget !== 'all'
-      ? filteredAgents.find((a) => a.id === exportTarget) ?? null
-      : null;
-
-    const windowLabel = dateRange === 'today' ? 'Today' : dateRange === 'week' ? 'This Week' : 'This Month';
+    const dataForExport = selectedFiltered.length > 0 ? selectedFiltered : filteredAgents;
     const now = new Date().toLocaleString();
+    const label = activeTab === 'productivity' ? 'Productivity' : activeTab === 'activity' ? 'Activity' : 'Time Tracking';
 
-    // Title block. jspdf coords: (x, y) in points from the top-left.
     doc.setFontSize(16);
     doc.setTextColor(20, 20, 20);
-    doc.text(
-      singleAgent ? `Agent Report \u2014 ${singleAgent.name}` : 'Reports',
-      40, 40,
-    );
+    doc.text(`Reports - ${label}`, 40, 40);
     doc.setFontSize(9);
     doc.setTextColor(90, 90, 90);
-    const meta: string[] = singleAgent
-      ? [
-          `Department: ${singleAgent.department}`,
-          `Machine: ${singleAgent.machine}`,
-          `Status: ${singleAgent.status}`,
-          `Window: ${windowLabel}`,
-          `Generated: ${now}`,
-        ]
-      : [
-          `${filteredAgents.length} agent${filteredAgents.length === 1 ? '' : 's'}`,
-          `Tab: ${activeTab}`,
-          `Window: ${windowLabel}`,
-          `Generated: ${now}`,
-        ];
-    doc.text(meta.join('   \u00B7   '), 40, 60);
+    doc.text(`${dataForExport.length} agent${dataForExport.length === 1 ? '' : 's'}    Window: ${rangeLabel}    Generated: ${now}`, 40, 60);
 
-    const tabs: ReportTab[] = singleAgent
-      ? ['productivity', 'activity', 'time']
-      : [activeTab];
-    const dataSlice = singleAgent ? [singleAgent] : filteredAgents;
-
-    // Track cursor y between sections so multi-tab PDFs flow naturally.
-    let startY = 80;
-    for (const tab of tabs) {
-      const { headers, rows } = buildTabRows(tab, dataSlice);
-      const label = tab === 'productivity' ? 'Productivity'
-        : tab === 'activity' ? 'Activity'
-        : 'Time Tracking';
-      doc.setFontSize(11);
-      doc.setTextColor(20, 20, 20);
-      doc.text(label, 40, startY);
-      autoTable(doc, {
-        head: [headers],
-        body: rows,
-        startY: startY + 8,
-        theme: 'striped',
-        headStyles: { fillColor: [16, 185, 129], textColor: 255, fontSize: 9 },
-        bodyStyles: { fontSize: 8, textColor: 30 },
-        margin: { left: 40, right: 40 },
-        styles: { cellPadding: 4, overflow: 'linebreak' },
-      });
-      // autoTable extends the doc with a `lastAutoTable` bookkeeping
-      // object holding the finalY coord after the table renders. Read
-      // it to know where to place the NEXT section's heading without
-      // overlapping the table above.
-      const finalY = (doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? startY;
-      startY = finalY + 30;
-      // Page break if next section wouldn't fit above the footer band.
-      if (startY > doc.internal.pageSize.getHeight() - 80) {
-        doc.addPage();
-        startY = 40;
-      }
-    }
+    const { headers, rows } = buildTabRows(activeTab, dataForExport);
+    autoTable(doc, {
+      head: [headers],
+      body: rows,
+      startY: 80,
+      theme: 'striped',
+      headStyles: { fillColor: [16, 185, 129], textColor: 255, fontSize: 8 },
+      bodyStyles: { fontSize: 8, textColor: 30 },
+      margin: { left: 40, right: 40 },
+      styles: { cellPadding: 4, overflow: 'linebreak' },
+    });
 
     return doc.output('blob');
   };
+
 
   const handleExport = async (format: ExportFormat) => {
     setExporting(format);
 
     const dateStr = new Date().toISOString().split('T')[0];
-    const singleAgent = exportTarget !== 'all'
-      ? filteredAgents.find((a) => a.id === exportTarget) ?? null
-      : null;
-
-    const filename = singleAgent
-      ? `Rudrans_${singleAgent.name.replace(/[^\w-]+/g, '_')}_full_report_${dateStr}`
-      : `Rudrans_${activeTab}_report_${dateStr}`;
+    // Selection drives the export: the ticked rows, or all filtered rows
+    // when nothing is ticked. Output is a plain one-row-per-agent sheet for
+    // the current tab.
+    const dataForExport = selectedFiltered.length > 0 ? selectedFiltered : filteredAgents;
+    const selectedTag = selectedFiltered.length > 0 ? `_selected_${dataForExport.length}` : '';
+    const filename = `WellnessExtract_${activeTab}${selectedTag}_report_${dateStr}`;
 
     try {
       if (format === 'pdf') {
@@ -364,11 +414,12 @@ export default function ReportsPage() {
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
         URL.revokeObjectURL(url);
       } else {
-        const csvBody = singleAgent
-          ? buildAgentFullCSV(singleAgent)
-          : buildCSV(activeTab, filteredAgents);
+        // Simple flat table: header row + one row per agent, current tab.
+        const csvBody = buildCSV(activeTab, dataForExport);
         if (format === 'csv') {
-          downloadFile(csvBody, `${filename}.csv`, 'text/csv;charset=utf-8;');
+          // BOM so Excel/Sheets read it as UTF-8 (no mojibake on any
+          // non-ASCII values that slip into the data).
+          downloadFile('﻿' + csvBody, `${filename}.csv`, 'text/csv;charset=utf-8;');
         } else {
           // BOM prefix so Excel opens UTF-8 without garbling the header.
           downloadFile('\uFEFF' + csvBody, `${filename}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -433,38 +484,42 @@ export default function ReportsPage() {
     <DashboardLayout>
       <div className="space-y-5">
         {/* Breadcrumb */}
-        <div className="flex items-center gap-2 text-xs text-gray-500">
-          <span className="flex items-center gap-1">
-            <span className="w-3 h-3 flex items-center justify-center"><i className="ri-dashboard-line" /></span>
-            Dashboard
-          </span>
-          <i className="ri-arrow-right-s-line text-gray-600" />
-          <span className="text-white font-medium">Reports</span>
-        </div>
+        <Breadcrumb
+          items={[
+            { label: 'Dashboard', icon: 'ri-dashboard-line', to: '/dashboard' },
+            { label: 'Reports' },
+          ]}
+        />
 
         {/* Header */}
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div>
             <h1 className="text-xl font-poppins font-bold text-white mb-1">Reports</h1>
             <p className="text-sm text-gray-500">
-              {filteredAgents.length} agents · {dateRange === 'today' ? 'Today' : dateRange === 'week' ? 'This Week' : 'This Month'}
+              {filteredAgents.length} agents · {rangeLabel}
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            {/* Target selector — pick "All agents" for the current tab,
-                or a single agent to export their full multi-tab report. */}
-            <select
-              value={exportTarget}
-              onChange={(e) => setExportTarget(e.target.value)}
-              disabled={!!exporting}
-              title="Choose export target"
-              className="px-3 py-2 rounded-lg bg-dark-800 text-gray-300 text-xs font-medium border border-dark-700 hover:bg-dark-700 transition-colors focus:outline-none disabled:opacity-50 max-w-[220px] truncate"
-            >
-              <option value="all">All agents ({filteredAgents.length})</option>
-              {filteredAgents.map((a) => (
-                <option key={a.id} value={a.id}>{a.name}{a.department ? ` · ${a.department}` : ''}</option>
-              ))}
-            </select>
+            {/* Export scope hint — reflects the table row selection. Tick
+                rows to export just those; one row → full per-agent report. */}
+            {selectedFiltered.length > 0 ? (
+              <span className="flex items-center gap-1.5 mr-1 text-xs text-emerald-400">
+                {selectedFiltered.length} selected
+                <button
+                  type="button"
+                  onClick={clearSelection}
+                  disabled={!!exporting}
+                  title="Clear selection"
+                  className="text-gray-500 hover:text-gray-300 disabled:opacity-50"
+                >
+                  <i className="ri-close-line" />
+                </button>
+              </span>
+            ) : (
+              <span className="text-xs text-gray-500 mr-1">
+                All {filteredAgents.length} agent{filteredAgents.length === 1 ? '' : 's'}
+              </span>
+            )}
             <button
               onClick={() => handleExport('csv')}
               disabled={!!exporting}
@@ -621,6 +676,28 @@ export default function ReportsPage() {
             <option value="month">This Month</option>
             <option value="custom">Custom Range</option>
           </select>
+          {dateRange === 'custom' && (
+            <div className="flex items-center gap-1.5">
+              <input
+                type="date"
+                value={customFrom}
+                max={customTo || new Date().toISOString().split('T')[0]}
+                onChange={(e) => setCustomFrom(e.target.value)}
+                title="From date"
+                className="bg-dark-800 border border-dark-700 rounded-lg px-3 py-2 text-xs text-gray-300 focus:outline-none [color-scheme:dark]"
+              />
+              <span className="text-xs text-gray-500">to</span>
+              <input
+                type="date"
+                value={customTo}
+                min={customFrom || undefined}
+                max={new Date().toISOString().split('T')[0]}
+                onChange={(e) => setCustomTo(e.target.value)}
+                title="To date"
+                className="bg-dark-800 border border-dark-700 rounded-lg px-3 py-2 text-xs text-gray-300 focus:outline-none [color-scheme:dark]"
+              />
+            </div>
+          )}
         </div>
 
         {/* ─── PRODUCTIVITY TABLE ─── */}
@@ -630,19 +707,34 @@ export default function ReportsPage() {
               <table className="w-full min-w-[900px]">
                 <thead>
                   <tr className="border-b border-dark-700">
+                    <th className="w-10 px-4 py-3">
+                      <SelectAllCheckbox
+                        checked={allVisibleSelected}
+                        indeterminate={someVisibleSelected}
+                        onChange={toggleAllVisible}
+                        title="Select all visible"
+                      />
+                    </th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Agent</th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Department</th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Status</th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Productivity</th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Active Hours</th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Idle Time</th>
-                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Efficiency</th>
-                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Trend</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredAgents.map((agent) => (
                     <tr key={agent.id} className="border-b border-dark-700/50 hover:bg-dark-700/30 transition-colors">
+                      <td className="px-4 py-3">
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(agent.id)}
+                          onChange={() => toggleRow(agent.id)}
+                          title={`Select ${agent.name}`}
+                          className="w-3.5 h-3.5 rounded border-dark-600 bg-dark-900 accent-emerald-500 cursor-pointer"
+                        />
+                      </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
                           <div className="w-8 h-8 rounded-full bg-violet-500/15 flex items-center justify-center">
@@ -681,20 +773,6 @@ export default function ReportsPage() {
                       </td>
                       <td className="px-4 py-3 text-sm text-gray-300">{agent.activeHours}</td>
                       <td className="px-4 py-3 text-sm text-gray-300">{agent.idleTime}</td>
-                      <td className="px-4 py-3">
-                        <span className={`text-xs font-medium ${
-                          agent.productivity >= 80 ? 'text-emerald-400' :
-                          agent.productivity >= 60 ? 'text-amber-400' : 'text-red-400'
-                        }`}>
-                          {Math.round(agent.productivity * 0.9)}%
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="flex items-center gap-1 text-xs text-emerald-400">
-                          <span className="w-3 h-3 flex items-center justify-center"><i className="ri-arrow-up-line" /></span>
-                          +{Math.floor(Math.random() * 8) + 1}%
-                        </span>
-                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -718,6 +796,14 @@ export default function ReportsPage() {
               <table className="w-full min-w-[900px]">
                 <thead>
                   <tr className="border-b border-dark-700">
+                    <th className="w-10 px-4 py-3">
+                      <SelectAllCheckbox
+                        checked={allVisibleSelected}
+                        indeterminate={someVisibleSelected}
+                        onChange={toggleAllVisible}
+                        title="Select all visible"
+                      />
+                    </th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Agent</th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Department</th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">App Switches</th>
@@ -734,6 +820,15 @@ export default function ReportsPage() {
                     const total = c.appSwitches + c.browserEvents + c.screenshots + c.videos + c.alerts;
                     return (
                       <tr key={agent.id} className="border-b border-dark-700/50 hover:bg-dark-700/30 transition-colors">
+                        <td className="px-4 py-3">
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.has(agent.id)}
+                            onChange={() => toggleRow(agent.id)}
+                            title={`Select ${agent.name}`}
+                            className="w-3.5 h-3.5 rounded border-dark-600 bg-dark-900 accent-emerald-500 cursor-pointer"
+                          />
+                        </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-3">
                             <div className="w-8 h-8 rounded-full bg-violet-500/15 flex items-center justify-center">
@@ -787,6 +882,14 @@ export default function ReportsPage() {
               <table className="w-full min-w-[800px]">
                 <thead>
                   <tr className="border-b border-dark-700">
+                    <th className="w-10 px-4 py-3">
+                      <SelectAllCheckbox
+                        checked={allVisibleSelected}
+                        indeterminate={someVisibleSelected}
+                        onChange={toggleAllVisible}
+                        title="Select all visible"
+                      />
+                    </th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Agent</th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Department</th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Login Time</th>
@@ -804,6 +907,15 @@ export default function ReportsPage() {
                     const util = sessionMins > 0 ? Math.round(((sessionMins - breakMins) / sessionMins) * 100) : 0;
                     return (
                       <tr key={agent.id} className="border-b border-dark-700/50 hover:bg-dark-700/30 transition-colors">
+                        <td className="px-4 py-3">
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.has(agent.id)}
+                            onChange={() => toggleRow(agent.id)}
+                            title={`Select ${agent.name}`}
+                            className="w-3.5 h-3.5 rounded border-dark-600 bg-dark-900 accent-emerald-500 cursor-pointer"
+                          />
+                        </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-3">
                             <div className="w-8 h-8 rounded-full bg-violet-500/15 flex items-center justify-center">
@@ -853,17 +965,34 @@ export default function ReportsPage() {
         {activeTab === 'productivity' && (
           <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-semibold text-white">Weekly Productivity Trend</h3>
-              <span className="text-xs text-gray-500">Last 7 days</span>
+              <h3 className="text-sm font-semibold text-white">Productivity trend</h3>
+              <span className="text-xs text-gray-500">
+                {weeklyProductivity.length === 0
+                  ? rangeLabel
+                  : weeklyProductivity.length === 1
+                    ? `${rangeLabel} · one day`
+                    : `${rangeLabel} · ${weeklyProductivity.length} days`}
+              </span>
             </div>
-            <div className="flex items-end gap-2 md:gap-4 h-32">
+            {weeklyProductivity.length === 0 && (
+              <p className="text-xs text-gray-500 py-8 text-center">
+                No productivity recorded in {rangeLabel.toLowerCase()}.
+              </p>
+            )}
+            <div className="flex items-end gap-1 md:gap-2 h-32">
               {weeklyProductivity.map((d) => (
-                <div key={d.day} className="flex-1 flex flex-col items-center gap-1.5">
-                  <div className="text-xs text-gray-500 mb-1">{d.productivity}%</div>
-                  <div className="w-full bg-dark-700 rounded-t-md relative overflow-hidden" style={{ height: `${d.productivity}%`, maxHeight: '96px' }}>
+                <div key={d.key} className="flex-1 flex flex-col items-center gap-1.5 min-w-0" title={`${d.full} · ${d.productivity}% · ${d.agents} agent${d.agents === 1 ? '' : 's'}`}>
+                  {/* The per-bar percentage only fits while the bars are wide. */}
+                  {weeklyProductivity.length <= 14 && (
+                    <div className="text-xs text-gray-500 mb-1">{d.productivity}%</div>
+                  )}
+                  <div
+                    className="w-full bg-dark-700 rounded-t-md relative overflow-hidden"
+                    style={{ height: `${Math.max(2, (d.productivity / 100) * BAR_MAX_PX)}px` }}
+                  >
                     <div className="absolute inset-0 bg-emerald-500/30 rounded-t-md" />
                   </div>
-                  <span className="text-xs text-gray-400 font-medium">{d.day}</span>
+                  <span className="text-[10px] text-gray-400 font-medium truncate w-full text-center">{d.day}</span>
                 </div>
               ))}
             </div>

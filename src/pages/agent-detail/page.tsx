@@ -1,10 +1,11 @@
 import { useParams } from 'react-router-dom';
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import AgentHeader from './components/AgentHeader';
 import DateFilter from './components/DateFilter';
-import AgentStatCards from './components/AgentStatCards';
-import QuickStats from './components/QuickStats';
+import AgentKpis from './components/AgentKpis';
+import SessionPanel from './components/SessionPanel';
 import TimelineChart from './components/TimelineChart';
 import BottomTabs from './components/BottomTabs';
 import TimePerApp from './components/TimePerApp';
@@ -13,6 +14,9 @@ import { detailBottomTabs, type DetailTabId } from '@/mocks/agentDetail';
 import { useAgentDetail, type DateRange } from '@/lib/useAgentDetail';
 import { useSignedScreenshotUrls, useSignedVideoUrls } from '@/lib/dataHooks';
 import { supabase, SUPABASE_URL } from '@/lib/supabase';
+import { formatDurationShort, kindColor, prettyKind } from '@/lib/labels';
+import { Bar } from '@/pages/dashboard/components/ui';
+import { C } from '@/pages/dashboard/components/chartKit';
 
 void detailBottomTabs;
 
@@ -20,6 +24,14 @@ const formatTime = (iso: string) => {
   try { return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
   catch { return iso; }
 };
+
+/* Width of the derived "kind" caption column, measured from the longest kind
+   actually present in the rows being rendered. A fixed px width would either
+   clip a long kind or reserve space for kinds this agent never emitted.
+   The captions render upper-case, whose glyphs are wider than the `ch` unit
+   (the width of "0"), so the measured length gets a 25% allowance. */
+const kindWidthCh = (values: string[]) =>
+  Math.min(24, Math.ceil(Math.max(6, ...values.map((v) => prettyKind(v).length)) * 1.25));
 
 const formatRelative = (iso: string) => {
   const diff = Date.now() - new Date(iso).getTime();
@@ -157,7 +169,7 @@ export default function AgentDetailPage() {
   if (loading && !agent) {
     return (
       <DashboardLayout>
-        <div className="flex items-center justify-center min-h-[400px] text-sm text-gray-500">Loading agent…</div>
+        <div className="flex items-center justify-center min-h-[400px] text-[12px] t3">Loading agent…</div>
       </DashboardLayout>
     );
   }
@@ -167,11 +179,11 @@ export default function AgentDetailPage() {
       <DashboardLayout>
         <div className="flex items-center justify-center min-h-[400px]">
           <div className="text-center">
-            <span className="w-16 h-16 flex items-center justify-center mx-auto mb-4 text-gray-600">
+            <span className="w-16 h-16 flex items-center justify-center mx-auto mb-4 t3">
               <i className="ri-error-warning-line text-4xl" />
             </span>
-            <h2 className="text-lg font-bold text-white mb-2">Agent Not Found</h2>
-            <p className="text-sm text-gray-500">The agent you are looking for does not exist or you do not have access.</p>
+            <h2 className="num mb-2" style={{ fontSize: 17 }}>Agent not found</h2>
+            <p className="text-[12px] t3">The agent you are looking for does not exist or you do not have access.</p>
           </div>
         </div>
       </DashboardLayout>
@@ -189,26 +201,36 @@ export default function AgentDetailPage() {
     ai: null,
   };
 
+  // Share of system-on time that was active, from the same seconds the two
+  // figures are formatted from — no re-parsing of display strings.
+  const activeShare = agent.systemOnSeconds > 0
+    ? Math.min(100, Math.round((agent.activeSeconds / agent.systemOnSeconds) * 100))
+    : null;
+
+  // Plain consts, not useMemo — this point is past the loading/not-found early
+  // returns, so a hook here would break hook order.
+  const alertKindCh = kindWidthCh(alerts.map((a) => a.alert_type));
+  const eventKindCh = kindWidthCh(activity.map((a) => a.activity_type));
+
   const browserRows = activity.filter((a) => a.activity_type === 'browser');
   const screenshotRows = activity.filter((a) => a.activity_type === 'screenshot');
 
   return (
     <DashboardLayout>
-      <div className="space-y-4 min-w-0 max-w-full overflow-x-hidden">
-        <div className="flex items-center gap-2 text-xs text-gray-500">
-          <span className="flex items-center gap-1">
-            <span className="w-3 h-3 flex items-center justify-center"><i className="ri-dashboard-line" /></span>
+      <div className="dash min-w-0 max-w-full">
+        <div className="flex items-center gap-1.5 text-[10.5px] t3 mb-3">
+          <Link to="/dashboard" className="hover:underline flex items-center gap-1">
+            <i className="ri-dashboard-line text-[12px]" />
             Dashboard
-          </span>
-          <i className="ri-arrow-right-s-line text-gray-600" />
-          <span className="flex items-center gap-1">
-            <span className="w-3 h-3 flex items-center justify-center"><i className="ri-computer-line" /></span>
-            Agents
-          </span>
-          <i className="ri-arrow-right-s-line text-gray-600" />
-          <span className="text-white font-medium">{agent.machine}</span>
+          </Link>
+          <i className="ri-arrow-right-s-line" />
+          <Link to="/agents" className="hover:underline">Agents</Link>
+          <i className="ri-arrow-right-s-line" />
+          <span className="t1 font-medium">{agent.machine}</span>
         </div>
 
+        {/* Identity and the date range share one row — the range is the lens
+            everything below is read through, so it belongs with the subject. */}
         <AgentHeader
           agentId={agent.id}
           orgId={agent.orgId}
@@ -217,67 +239,67 @@ export default function AgentDetailPage() {
           status={agent.status}
           version={agent.version}
           ipAddress={agent.ipAddress}
+          os={agent.os}
           department={agent.department}
           onDepartmentChange={() => { void refresh(); }}
-        />
+        >
+          <DateFilter
+            onChange={(preset) => {
+              // Custom range arrives as "custom:<fromISO>|<toISO>" — pass
+              // straight through; useAgentDetail decodes it.
+              if (preset.startsWith('custom:')) {
+                setRange(preset as DateRange);
+                return;
+              }
+              const map: Record<string, DateRange> = {
+                'Today': 'today', 'Yesterday': 'yesterday',
+                '7 days': '7d', '30 days': '30d', 'All time': 'all',
+              };
+              setRange(map[preset] ?? 'today');
+            }}
+          />
+        </AgentHeader>
 
-        <DateFilter
-          onChange={(preset) => {
-            // Custom range arrives as "custom:<fromISO>|<toISO>" — pass straight
-            // through; useAgentDetail decodes it.
-            if (preset.startsWith('custom:')) {
-              setRange(preset as DateRange);
-              return;
-            }
-            const map: Record<string, DateRange> = {
-              'Today': 'today', 'Yesterday': 'yesterday',
-              '7 days': '7d', '30 days': '30d', 'All time': 'all',
-            };
-            setRange(map[preset] ?? 'today');
-          }}
-        />
+        <div className="mt-3">
+          <AgentKpis
+            activeWorked={agent.activeWorked}
+            idleTime={agent.idleTime ?? '0h 00m'}
+            systemOn={agent.systemOn}
+            appsUsed={agent.appsUsed}
+            sitesVisited={agent.sitesVisited}
+            alertsCount={agent.alertsCount}
+            activeShare={activeShare}
+            rangeLabel="in this window"
+            daysCovered={agent.daysCovered}
+          />
+        </div>
 
-        <AgentStatCards
-          firstLogin={agent.firstLogin}
-          lastActivity={agent.lastActivity}
-          stillActive={agent.stillActive}
-          logins={agent.logins}
-          logouts={agent.logouts}
-          systemOn={agent.systemOn}
-          activeWorked={agent.activeWorked}
-          idleTime={agent.idleTime ?? '0h 00m'}
-          screenshotsEnabled={agent.screenshotsEnabled}
-          videosEnabled={agent.videosEnabled}
-        />
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 mt-3">
+          <div className="lg:col-span-8 min-w-0 flex">
+            <TimelineChart
+              data={agent.timeline}
+              bucketMinutes={agent.timelineBucketMinutes}
+              index={1}
+            />
+          </div>
+          <div className="lg:col-span-4 min-w-0 flex">
+            <SessionPanel
+              firstLogin={agent.firstLogin}
+              lastActivity={agent.lastActivity}
+              stillActive={agent.stillActive}
+              logins={agent.logins}
+              logouts={agent.logouts}
+              daysCovered={agent.daysCovered}
+              index={2}
+            />
+          </div>
+        </div>
 
-        <QuickStats
-          totalActiveTime={agent.totalActiveTime}
-          appsUsed={agent.appsUsed}
-          sitesVisited={agent.sitesVisited}
-          screenshotsCount={agent.screenshotsCount}
-          alertsCount={agent.alertsCount}
-          sessionsCount={agent.sessionsCount}
-        />
+        <div className="mt-5 mb-3">
+          <BottomTabs active={activeTab} onChange={setActiveTab} counts={counts} />
+        </div>
 
-        <CaptureControls
-          screenshotsEnabled={agent.screenshotsEnabled}
-          videosEnabled={agent.videosEnabled}
-          dlpEnabled={agent.dlpEnabled}
-          removableDisksBlocked={agent.removableDisksBlocked}
-          wallpaperEnforced={agent.wallpaperEnforced}
-          trackingScheduleOverride={agent.trackingScheduleOverride}
-          screenshotIntervalSecs={agent.screenshotIntervalSecs}
-          videoIntervalSecs={agent.videoIntervalSecs}
-          dlpAddonPriceInr={dlpAddonPriceInr}
-          isTrial={isTrial}
-          onUpdate={updateCaptureSettings}
-        />
-
-        <TimelineChart data={agent.timeline} />
-
-        <BottomTabs active={activeTab} onChange={setActiveTab} counts={counts} />
-
-        {activeTab === 'applications' && <TimePerApp apps={agent.appsTime} />}
+        {activeTab === 'applications' && <TimePerApp apps={agent.appsTime} index={3} />}
 
         {activeTab === 'browser' && (() => {
           const visible = browserRows.slice(-30).reverse();
@@ -286,15 +308,16 @@ export default function AgentDetailPage() {
           return (
             <div className="space-y-3">
               {showAutomationHint && (
-                <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-3 text-xs text-amber-300 flex items-start gap-2">
-                  <i className="ri-information-line text-base mt-0.5" />
-                  <div>
-                    <p className="font-medium text-amber-200">Many sessions are missing URLs</p>
+                <div className="banner is-notice">
+                  <span className="flex items-start gap-2 min-w-0">
+                  <i className="ri-information-line text-[13px] t-warning mt-px" />
+                  <div className="min-w-0">
+                    <p className="text-[11.5px] t-warning font-medium">Many sessions are missing URLs</p>
                     {(() => {
                       const os = (agent.os ?? '').toLowerCase();
                       if (os.includes('mac')) {
                         return (
-                          <p className="text-amber-300/80 mt-0.5">
+                          <p className="text-[11px] t3 leading-relaxed mt-0.5">
                             On macOS, grant Automation permission so the agent can read browser tab URLs.
                             System Settings → Privacy &amp; Security → Automation → Security Assistant → enable Chrome / Brave / Safari.
                           </p>
@@ -302,7 +325,7 @@ export default function AgentDetailPage() {
                       }
                       if (os.includes('win')) {
                         return (
-                          <p className="text-amber-300/80 mt-0.5">
+                          <p className="text-[11px] t3 leading-relaxed mt-0.5">
                             On Windows, the agent reads URLs through the OS UI Automation API. If URLs are still missing,
                             ensure PowerShell + .NET 4.x are available and the browser window is visible (UIA cannot read
                             minimised or background windows). Restart the agent after browser updates.
@@ -311,71 +334,106 @@ export default function AgentDetailPage() {
                       }
                       if (os.includes('ubuntu') || os.includes('linux')) {
                         return (
-                          <p className="text-amber-300/80 mt-0.5">
+                          <p className="text-[11px] t3 leading-relaxed mt-0.5">
                             On Linux, browser URL extraction is not yet implemented — only window titles are captured.
                             Install xdotool / wmctrl for richer window metadata.
                           </p>
                         );
                       }
                       return (
-                        <p className="text-amber-300/80 mt-0.5">
+                        <p className="text-[11px] t3 leading-relaxed mt-0.5">
                           The agent could not extract tab URLs from the browser. Check the agent&apos;s OS-specific
                           permissions and ensure the browser window is on the foreground.
                         </p>
                       );
                     })()}
                   </div>
+                  </span>
                 </div>
               )}
-              <div className="bg-dark-800 border border-dark-700 rounded-xl overflow-hidden">
+              <div className="panel overflow-hidden">
                 {browserRows.length === 0 ? (
-                  <div className="p-8 text-center text-sm text-gray-500">No browser activity in the last 24 hours.</div>
-                ) : (
-                  <table className="w-full">
-                    <thead>
-                      <tr className="border-b border-dark-700 bg-dark-900/40">
-                        <th className="text-left text-xs text-gray-400 font-medium px-4 py-3 uppercase tracking-wider">Website</th>
-                        <th className="text-left text-xs text-gray-400 font-medium px-4 py-3 uppercase tracking-wider">Page Title</th>
-                        <th className="text-left text-xs text-gray-400 font-medium px-4 py-3 uppercase tracking-wider">Browser</th>
-                        <th className="text-right text-xs text-gray-400 font-medium px-4 py-3 uppercase tracking-wider">Duration</th>
-                        <th className="text-right text-xs text-gray-400 font-medium px-4 py-3 uppercase tracking-wider">Time</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {visible.map((r, i) => {
-                        const url = (r.url ?? '').trim();
-                        const title = (r.page_title ?? '').trim();
-                        const app = (r.application_name ?? '').trim();
-                        let host = '';
-                        try { if (url) host = new URL(url).hostname.replace(/^www\./, ''); } catch { /* ignore */ }
-                        const isUrl = url.startsWith('http');
-                        return (
-                          <tr key={i} className="border-b border-dark-700/40 hover:bg-dark-700/20">
-                            <td className="px-4 py-2.5 max-w-xs">
-                              {isUrl ? (
-                                <a href={url} target="_blank" rel="noreferrer"
-                                  className="text-cyan-400 hover:text-cyan-300 hover:underline text-xs truncate block"
-                                  title={url}>
-                                  {host || url.slice(0, 40)}
-                                </a>
-                              ) : (
-                                <span className="text-gray-500 text-xs italic" title="URL not captured">— no URL —</span>
+                  <div className="p-8 text-center text-[12px] t3">No browser activity in this window.</div>
+                ) : (() => {
+                  // Only render a column some row can actually fill. Page Title
+                  // and Browser are blank on every row unless the agent has the
+                  // OS permission to read them, and five columns of "—" spread
+                  // the three real values across the full panel width.
+                  const hasTitle = visible.some((r) => (r.page_title ?? '').trim());
+                  const hasApp = visible.some((r) => (r.application_name ?? '').trim());
+                  // Longest visit in view — the bar in the duration cell is
+                  // relative to it, so the column that would otherwise be a
+                  // 300px gap between the site and its number carries the
+                  // comparison instead.
+                  const longest = Math.max(1, ...visible.map((r) => r.duration ?? 0));
+                  return (
+                    <table className="d-table">
+                      <thead>
+                        <tr className="hair-b">
+                          <th style={{ width: hasTitle || hasApp ? '22%' : 240 }}>Website</th>
+                          {hasTitle && <th>Page title</th>}
+                          {hasApp && <th style={{ width: 120 }}>Browser</th>}
+                          <th className="text-right">Duration</th>
+                          <th className="text-right" style={{ width: 74 }}>Time</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {visible.map((r, i) => {
+                          const url = (r.url ?? '').trim();
+                          const title = (r.page_title ?? '').trim();
+                          const app = (r.application_name ?? '').trim();
+                          let host = '';
+                          try { if (url) host = new URL(url).hostname.replace(/^www\./, ''); } catch { /* ignore */ }
+                          const isUrl = url.startsWith('http');
+                          return (
+                            <tr key={i}>
+                              <td className="max-w-[280px]">
+                                {isUrl ? (
+                                  <a
+                                    href={url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="text-[11.5px] t-accent hover:underline truncate block"
+                                    title={url}
+                                  >
+                                    {host || url}
+                                  </a>
+                                ) : (
+                                  <span className="text-[11.5px] t3" title="The agent could not read the tab URL">
+                                    no URL
+                                  </span>
+                                )}
+                              </td>
+                              {hasTitle && (
+                                <td className="max-w-[380px]">
+                                  <span className="text-[11.5px] t2 truncate block" title={title || undefined}>
+                                    {title || '—'}
+                                  </span>
+                                </td>
                               )}
-                            </td>
-                            <td className="px-4 py-2.5 max-w-md">
-                              <span className="text-gray-200 text-xs truncate block" title={title || undefined}>
-                                {title || <span className="text-gray-600">—</span>}
-                              </span>
-                            </td>
-                            <td className="px-4 py-2.5 text-xs text-gray-500">{app || '—'}</td>
-                            <td className="px-4 py-2.5 text-right text-xs text-gray-300 font-medium">{r.duration ?? 0}s</td>
-                            <td className="px-4 py-2.5 text-right text-xs text-gray-500 whitespace-nowrap">{formatTime(r.created_at)}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                )}
+                              {hasApp && <td className="text-[11px] t3">{app || '—'}</td>}
+                              <td>
+                                <span className="flex items-center gap-2.5 justify-end">
+                                  <span className="flex-1 min-w-[40px] hidden sm:block">
+                                    <Bar
+                                      pct={((r.duration ?? 0) / longest) * 100}
+                                      height={4}
+                                      color={C.accent}
+                                    />
+                                  </span>
+                                  <span className="text-[11.5px] t2 tnum text-right w-[42px]">
+                                    {formatDurationShort(r.duration ?? 0)}
+                                  </span>
+                                </span>
+                              </td>
+                              <td className="text-right text-[11px] t3 whitespace-nowrap tnum">{formatTime(r.created_at)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  );
+                })()}
               </div>
             </div>
           );
@@ -384,9 +442,15 @@ export default function AgentDetailPage() {
         {activeTab === 'screenshots' && (() => {
           const recent = screenshotRows.slice(-40).reverse();
           return (
-            <div className="bg-dark-800 border border-dark-700 rounded-xl p-4">
+            <div className="panel p-4">
               {recent.length === 0 ? (
-                <div className="p-8 text-center text-sm text-gray-300">No screenshots captured yet.</div>
+                <div className="p-8 text-center">
+                  <i className="ri-camera-line text-[22px] t3 block mb-2" />
+                  <p className="text-[12.5px] t2">No screenshots captured yet.</p>
+                  <p className="text-[11px] t3 mt-1">
+                    Captures appear here when screenshots are enabled in Capture controls.
+                  </p>
+                </div>
               ) : (
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
                   {recent.map((r, i) => {
@@ -397,9 +461,9 @@ export default function AgentDetailPage() {
                         key={i}
                         type="button"
                         onClick={() => url && setLightboxIdx(i)}
-                        className="group bg-dark-900 border border-dark-700 hover:border-cyan-500/50 rounded-lg overflow-hidden text-left transition-all"
+                        className="group sunken rounded-lg overflow-hidden text-left tile-media"
                       >
-                        <div className="relative aspect-video bg-dark-900">
+                        <div className="relative aspect-video">
                           {url ? (
                             <>
                               <img src={url} alt="" className="w-full h-full object-cover" />
@@ -410,14 +474,14 @@ export default function AgentDetailPage() {
                               </div>
                             </>
                           ) : (
-                            <div className="w-full h-full flex items-center justify-center text-gray-500">
+                            <div className="w-full h-full flex items-center justify-center t3">
                               <i className="ri-image-line text-2xl" />
                             </div>
                           )}
                         </div>
                         <div className="px-2.5 py-2 flex items-center justify-between">
-                          <p className="text-[11px] text-gray-300">{formatTime(r.created_at)}</p>
-                          <span className="text-[10px] text-gray-500">#{recent.length - i}</span>
+                          <p className="text-[11px] t2 tnum">{formatTime(r.created_at)}</p>
+                          <span className="text-[10px] t3">#{recent.length - i}</span>
                         </div>
                       </button>
                     );
@@ -445,7 +509,7 @@ export default function AgentDetailPage() {
                   >
                     <div className="flex items-center justify-between px-5 py-3 bg-dark-900/80 backdrop-blur" onClick={(e) => e.stopPropagation()}>
                       <div>
-                        <p className="text-sm text-white font-medium">
+                        <p className="text-[12.5px] t1 font-medium">
                           {new Date(cur.created_at).toLocaleString([], { weekday: 'short', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
                         </p>
                         <p className="text-[11px] text-gray-300">Screenshot {lightboxIdx + 1} of {recent.length}</p>
@@ -499,20 +563,44 @@ export default function AgentDetailPage() {
         })()}
 
         {activeTab === 'alerts' && (
-          <div className="bg-dark-800 border border-dark-700 rounded-xl overflow-hidden">
+          <div className="panel overflow-hidden">
             {alerts.length === 0 ? (
-              <div className="p-8 text-center text-sm text-gray-500">No alerts for this agent.</div>
+              <div className="p-8 text-center">
+                <i className="ri-notification-off-line text-[22px] t3 block mb-2" />
+                <p className="text-[12.5px] t2">No alerts in this window</p>
+                <p className="text-[11px] t3 mt-1">
+                  Alerts are filtered by the selected date range — widen it to see older ones.
+                </p>
+              </div>
             ) : (
-              <div className="divide-y divide-dark-700/50">
+              <div className="divide-y divide-[var(--d-line-soft)]">
                 {alerts.map((a) => (
-                  <div key={a.id} className="p-4 flex items-start gap-3">
-                    <span className={`w-2 h-2 mt-1.5 rounded-full flex-shrink-0 ${
-                      a.alert_type === 'error' ? 'bg-red-500' : a.alert_type === 'warning' ? 'bg-amber-500' : 'bg-blue-500'
-                    }`} />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm text-white">{a.message}</p>
-                      <p className="text-[11px] text-gray-500 mt-0.5">{formatRelative(a.created_at)}{a.ai_resolved ? ' · resolved' : ''}</p>
-                    </div>
+                  <div key={a.id} className="px-3.5 py-2 flex items-center gap-2.5">
+                    <span
+                      className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                      style={{ background: kindColor(a.alert_type) }}
+                    />
+                    <span
+                      className="text-[9.5px] uppercase tracking-wide flex-shrink-0 truncate"
+                      style={{ color: kindColor(a.alert_type), width: `${alertKindCh}ch` }}
+                    >
+                      {prettyKind(a.alert_type)}
+                    </span>
+                    <span className="text-[12px] t1 truncate min-w-0 flex-1" title={a.message}>
+                      {a.message}
+                    </span>
+                    {a.ai_resolved && (
+                      <span
+                        className="chip chip-success text-[9.5px] flex-shrink-0"
+                        title={a.resolution ?? 'Resolved'}
+                      >
+                        <i className="ri-check-line" />
+                        resolved
+                      </span>
+                    )}
+                    <span className="text-[10.5px] t3 flex-shrink-0 tnum text-right">
+                      {formatRelative(a.created_at)}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -521,14 +609,9 @@ export default function AgentDetailPage() {
         )}
 
         {activeTab === 'timeline' && (() => {
-          const TYPE_META: Record<string, { label: string; icon: string; color: string; bg: string }> = {
-            app:            { label: 'App',         icon: 'ri-window-line',     color: 'text-blue-300',    bg: 'bg-blue-500/20 border-blue-500/30' },
-            browser:        { label: 'Browser',     icon: 'ri-global-line',     color: 'text-emerald-300', bg: 'bg-emerald-500/20 border-emerald-500/30' },
-            idle:           { label: 'Idle',        icon: 'ri-pause-circle-line', color: 'text-amber-300', bg: 'bg-amber-500/20 border-amber-500/30' },
-            screenshot:     { label: 'Screenshot',  icon: 'ri-camera-line',     color: 'text-cyan-300',    bg: 'bg-cyan-500/20 border-cyan-500/30' },
-            session_start:  { label: 'Session',     icon: 'ri-login-circle-line', color: 'text-violet-300', bg: 'bg-violet-500/20 border-violet-500/30' },
-            alert:          { label: 'Alert',       icon: 'ri-alarm-warning-line', color: 'text-red-300', bg: 'bg-red-500/20 border-red-500/30' },
-          };
+          // Caption and colour are derived from activity_type itself (see
+          // lib/labels) — the old table mapped six known strings to Tailwind
+          // greys/blues and rendered anything else as an unlabelled grey dot.
           const groups: Record<string, typeof activity> = {};
           for (const r of activity.slice(-300).reverse()) {
             const day = new Date(r.created_at).toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short' });
@@ -537,59 +620,72 @@ export default function AgentDetailPage() {
           }
           if (activity.length === 0) {
             return (
-              <div className="bg-dark-800 border border-dark-700 rounded-xl p-12 text-center">
-                <i className="ri-time-line text-3xl text-gray-500 block mb-2" />
-                <p className="text-sm text-gray-300">No activity recorded yet.</p>
-                <p className="text-xs text-gray-500 mt-1">Activity will appear here as the agent reports back.</p>
+              <div className="panel p-8 text-center">
+                <i className="ri-time-line text-[22px] t3 block mb-2" />
+                <p className="text-[12.5px] t2">No activity recorded yet.</p>
+                <p className="text-[11px] t3 mt-1">Activity will appear here as the agent reports back.</p>
               </div>
             );
           }
           return (
-            <div className="bg-dark-800 border border-dark-700 rounded-xl overflow-hidden">
+            <div className="panel overflow-hidden">
               <div className="max-h-[600px] overflow-y-auto">
                 {Object.entries(groups).map(([day, rows]) => (
                   <div key={day}>
-                    <div className="sticky top-0 z-10 bg-dark-900/95 backdrop-blur px-4 py-2 border-b border-dark-700 flex items-center justify-between">
-                      <span className="text-xs font-semibold text-white uppercase tracking-wider">{day}</span>
-                      <span className="text-[11px] text-gray-400">{rows.length} events</span>
+                    <div
+                      className="sticky top-0 z-10 backdrop-blur px-3.5 py-1.5 hair-b flex items-center justify-between"
+                      style={{ background: 'var(--d-panel)' }}
+                    >
+                      <span className="label">{day}</span>
+                      <span className="text-[10px] t3">{rows.length} events</span>
                     </div>
-                    <ul className="divide-y divide-dark-700/40">
+                    <ul className="divide-y divide-[var(--d-line-soft)]">
                       {rows.map((r, i) => {
-                        const meta = TYPE_META[r.activity_type] ?? { label: r.activity_type, icon: 'ri-circle-line', color: 'text-gray-300', bg: 'bg-dark-700 border-dark-600' };
+
                         const url = (r.url ?? '').trim();
                         const title = (r.page_title ?? '').trim();
                         const app = (r.application_name ?? '').trim();
                         let host = '';
                         try { if (url.startsWith('http')) host = new URL(url).hostname.replace(/^www\./, ''); } catch { /* ignore */ }
+                        // The kind now has its own column, so this holds only
+                        // what the kind doesn't already say — no "Screenshot ·
+                        // Screenshot captured".
                         const primary =
-                          r.activity_type === 'browser' ? (host || app || 'Browser') :
-                          r.activity_type === 'idle' ? `Idle (${r.duration ?? 0}s)` :
-                          r.activity_type === 'screenshot' ? 'Screenshot captured' :
-                          r.activity_type === 'session_start' ? 'Session started' :
-                          (app || '—');
+                          r.activity_type === 'browser' ? (host || app || '—') :
+                          r.activity_type === 'idle' ? formatDurationShort(r.duration ?? 0) :
+                          (app || '');
                         const secondary =
                           r.activity_type === 'browser' ? (title || (url && !url.startsWith('http') ? url : '')) :
                           (app && primary !== app ? app : '');
                         return (
-                          <li key={i} className="flex items-start gap-3 px-4 py-3 hover:bg-dark-700/30">
-                            <span className={`w-9 h-9 flex-shrink-0 rounded-lg border flex items-center justify-center ${meta.bg}`}>
-                              <i className={`${meta.icon} text-base ${meta.color}`} />
+                          <li key={i} className="flex items-center gap-2.5 px-3.5 py-1.5 cell">
+                            <span
+                              className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                              style={{ background: kindColor(r.activity_type) }}
+                            />
+                            <span
+                              className="text-[9.5px] uppercase tracking-wide flex-shrink-0 truncate"
+                              style={{ color: kindColor(r.activity_type), width: `${eventKindCh}ch` }}
+                            >
+                              {prettyKind(r.activity_type)}
                             </span>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-baseline justify-between gap-3">
-                                <span className="text-sm font-medium text-white truncate">{primary}</span>
-                                <span className="text-[11px] text-gray-400 whitespace-nowrap">{formatTime(r.created_at)}</span>
-                              </div>
-                              {secondary && (
-                                <p className="text-xs text-gray-300 mt-0.5 truncate" title={secondary}>{secondary}</p>
+                            <span
+                              className="text-[12px] t1 font-medium truncate flex-shrink-0 max-w-[34%]"
+                              title={primary}
+                            >
+                              {primary}
+                            </span>
+                            {secondary && (
+                              <span className="text-[11px] t3 truncate min-w-0" title={secondary}>
+                                {secondary}
+                              </span>
+                            )}
+                            <span className="ml-auto flex items-center gap-3 flex-shrink-0 text-[10.5px] t3 tnum">
+                              {(r.duration ?? 0) > 0 && r.activity_type !== 'idle' && (
+                                <span>{formatDurationShort(r.duration ?? 0)}</span>
                               )}
-                              <div className="flex items-center gap-3 mt-1.5 text-[11px] text-gray-400">
-                                <span className={`px-1.5 py-0.5 rounded ${meta.bg} ${meta.color}`}>{meta.label}</span>
-                                {(r.duration ?? 0) > 0 && r.activity_type !== 'idle' && (
-                                  <span><i className="ri-time-line mr-0.5" />{r.duration}s</span>
-                                )}
-                              </div>
-                            </div>
+                              <span>{formatTime(r.created_at)}</span>
+                            </span>
                           </li>
                         );
                       })}
@@ -604,12 +700,12 @@ export default function AgentDetailPage() {
         {activeTab === 'videos' && (() => {
           const recent = videoRows.slice(-40).reverse();
           return (
-            <div className="bg-dark-800 border border-dark-700 rounded-xl p-4">
+            <div className="panel p-4">
               {recent.length === 0 ? (
                 <div className="p-8 text-center">
-                  <i className="ri-video-line text-3xl text-gray-500 block mb-2" />
-                  <p className="text-sm text-gray-300">No video clips yet.</p>
-                  <p className="text-xs text-gray-400 mt-1">
+                  <i className="ri-video-line text-[22px] t3 block mb-2" />
+                  <p className="text-[12.5px] t2">No video clips yet.</p>
+                  <p className="text-[11px] t2 mt-1">
                     Enable Video Recording in Capture Controls and ensure ffmpeg is installed.
                   </p>
                 </div>
@@ -622,13 +718,13 @@ export default function AgentDetailPage() {
                         key={i}
                         type="button"
                         onClick={() => url && setVideoIdx(i)}
-                        className="group bg-dark-900 border border-dark-700 hover:border-cyan-500/50 rounded-lg overflow-hidden text-left transition-all"
+                        className="group sunken rounded-lg overflow-hidden text-left tile-media"
                       >
                         <div className="relative aspect-video bg-black">
                           {url ? (
                             <video src={url} className="w-full h-full object-cover" muted preload="metadata" />
                           ) : (
-                            <div className="w-full h-full flex items-center justify-center text-gray-500">
+                            <div className="w-full h-full flex items-center justify-center t3">
                               <i className="ri-video-line text-2xl" />
                             </div>
                           )}
@@ -642,8 +738,8 @@ export default function AgentDetailPage() {
                           </div>
                         </div>
                         <div className="px-2.5 py-2 flex items-center justify-between">
-                          <p className="text-[11px] text-gray-300">{formatTime(r.created_at)}</p>
-                          <span className="text-[10px] text-gray-500">#{recent.length - i}</span>
+                          <p className="text-[11px] t2 tnum">{formatTime(r.created_at)}</p>
+                          <span className="text-[10px] t3">#{recent.length - i}</span>
                         </div>
                       </button>
                     );
@@ -661,7 +757,7 @@ export default function AgentDetailPage() {
                   <div className="fixed inset-0 z-[100] bg-black/90 flex flex-col" onClick={close}>
                     <div className="flex items-center justify-between px-5 py-3 bg-dark-900/80 backdrop-blur" onClick={(e) => e.stopPropagation()}>
                       <div>
-                        <p className="text-sm text-white font-medium">
+                        <p className="text-[12.5px] t1 font-medium">
                           {new Date(cur.created_at).toLocaleString([], { weekday: 'short', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
                         </p>
                         <p className="text-[11px] text-gray-300">Clip {videoIdx + 1} of {recent.length} · {cur.duration ?? 10}s</p>
@@ -722,14 +818,6 @@ export default function AgentDetailPage() {
           />
         )}
 
-        {activeTab === 'ai' && (
-          <div className="bg-dark-800 border border-dark-700 rounded-xl p-8 text-center">
-            <span className="w-12 h-12 flex items-center justify-center mx-auto mb-3 text-gray-600">
-              <i className="ri-bard-line text-3xl" />
-            </span>
-            <p className="text-sm text-gray-500">AI chat will appear here.</p>
-          </div>
-        )}
       </div>
     </DashboardLayout>
   );
@@ -745,6 +833,7 @@ function AgentSystemHealthPanel({ agentId }: { agentId: string }) {
     cpu_usage: number | null;
     ram_usage: number | null;
     disk_usage: number | null;
+    disk_activity: number | null;
     battery_level: number | null;
     network_speed: string | null;
     recorded_at: string;
@@ -759,7 +848,7 @@ function AgentSystemHealthPanel({ agentId }: { agentId: string }) {
     const fetchLatest = async () => {
       const { data } = await supabase
         .from('system_metrics')
-        .select('cpu_usage, ram_usage, disk_usage, battery_level, network_speed, recorded_at')
+        .select('cpu_usage, ram_usage, disk_usage, disk_activity, battery_level, network_speed, recorded_at')
         .eq('agent_id', agentId)
         .order('recorded_at', { ascending: false })
         .limit(1)
@@ -774,24 +863,30 @@ function AgentSystemHealthPanel({ agentId }: { agentId: string }) {
     return () => { cancelled = true; clearInterval(id); };
   }, [agentId]);
 
-  const barColor = (val: number | null | undefined) => {
-    if (val == null) return 'bg-dark-700';
-    if (val > 80) return 'bg-red-500';
-    if (val > 60) return 'bg-amber-500';
-    return 'bg-emerald-500';
+  // Utilisation tone. Battery reads the other way round — 15% left is the
+  // problem, not 85% — so it gets inverted rather than being painted green at
+  // the point it is about to die.
+  const toneFor = (label: string, val: number | null | undefined) => {
+    if (val == null) return C.neutral;
+    // Battery reads the other way round (15% left is the problem), and a full-ish
+    // drive only matters much later than a busy CPU.
+    const pressure = label === 'Battery' ? 100 - val : val;
+    const watch = label === 'Disk space' ? 80 : 60;
+    const high = label === 'Disk space' ? 90 : 80;
+    return pressure > high ? C.danger : pressure > watch ? C.warning : C.success;
   };
 
   if (loading) {
     return (
-      <div className="bg-dark-800 border border-dark-700 rounded-xl p-8 text-center">
-        <p className="text-sm text-gray-500">Loading system health…</p>
+      <div className="panel p-8 text-center">
+        <p className="text-[12px] t3">Loading system health…</p>
       </div>
     );
   }
   if (!row) {
     return (
-      <div className="bg-dark-800 border border-dark-700 rounded-xl p-8 text-center">
-        <p className="text-sm text-gray-500">No metrics yet — agent hasn't reported in the last 30 minutes.</p>
+      <div className="panel p-8 text-center">
+        <p className="text-[12px] t3">No metrics yet — agent hasn't reported in the last 30 minutes.</p>
       </div>
     );
   }
@@ -799,67 +894,63 @@ function AgentSystemHealthPanel({ agentId }: { agentId: string }) {
   const cards: Array<{ label: string; value: number | null; suffix?: string; icon: string }> = [
     { label: 'CPU', value: row.cpu_usage, suffix: '%', icon: 'ri-cpu-line' },
     { label: 'Memory', value: row.ram_usage, suffix: '%', icon: 'ri-database-2-line' },
-    { label: 'Disk', value: row.disk_usage, suffix: '%', icon: 'ri-hard-drive-line' },
+    // Two separate disk facts. "Disk" is I/O activity (what Task Manager shows);
+    // "Disk space" is how full the drive is. Showing only the latter under the
+    // bare label "Disk" made a 63%-full idle drive read as 63% disk load.
+    { label: 'Disk', value: row.disk_activity, suffix: '%', icon: 'ri-hard-drive-2-line' },
+    { label: 'Disk space', value: row.disk_usage, suffix: '%', icon: 'ri-hard-drive-line' },
     { label: 'Battery', value: row.battery_level, suffix: '%', icon: 'ri-battery-charge-line' },
   ];
 
   return (
-    <div className="space-y-4">
-      <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <i className="ri-heart-pulse-line text-emerald-400" />
-            <h3 className="text-sm font-semibold text-white">System Health</h3>
-            {stale && (
-              <span className="px-1.5 py-0.5 text-[9px] uppercase rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                Stale
-              </span>
-            )}
-          </div>
-          <span className="text-[11px] text-gray-500">
-            Updated {new Date(row.recorded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-          </span>
-        </div>
+    <div className="panel">
+      <header className="panel-head">
+        <h3 className="panel-title flex items-center gap-2">
+          System health
+          {stale && <span className="chip chip-warning text-[9px] uppercase">Stale</span>}
+        </h3>
+        <span className="text-[10px] t3">
+          {new Date(row.recorded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+        </span>
+      </header>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {cards.map((c) => (
-            <div key={c.label} className="bg-dark-900 border border-dark-700 rounded-lg p-3">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-1.5 text-xs text-gray-400">
-                  <i className={`${c.icon} text-emerald-400`} />
-                  {c.label}
-                </div>
-                <span className="text-sm font-semibold text-white tabular-nums">
-                  {c.value == null ? '—' : `${c.value}${c.suffix ?? ''}`}
-                </span>
-              </div>
-              <div className="h-1.5 bg-dark-700 rounded-full overflow-hidden">
-                <div
-                  className={`h-full ${barColor(c.value)} transition-all`}
-                  style={{ width: `${Math.min(100, Math.max(0, c.value ?? 0))}%` }}
+      <div className="pent-grid">
+        {cards.map((c) => (
+          <div key={c.label} className="px-3.5 py-3 min-w-0">
+            <span className="flex items-center gap-1.5">
+              <i className={`${c.icon} text-[12px] t3`} />
+              <span className="label">{c.label}</span>
+            </span>
+            <p className="num num-lg mt-1.5" style={{ color: toneFor(c.label, c.value) }}>
+              {c.value == null ? '—' : `${c.value}${c.suffix ?? ''}`}
+            </p>
+            <span className="block mt-2">
+              {c.value != null && (
+                <Bar
+                  pct={Math.min(100, Math.max(0, c.value))}
+                  height={3}
+                  color={toneFor(c.label, c.value)}
                 />
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <div className="mt-4 pt-3 border-t border-dark-700 flex items-center justify-between text-xs">
-          <div className="flex items-center gap-2 text-gray-400">
-            <i className="ri-pulse-line" />
-            <span>Network: <span className="text-gray-200">{row.network_speed ?? '—'}</span></span>
+              )}
+            </span>
           </div>
-          <a
-            href="/system-health"
-            className="text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
-          >
-            Open full System Health page <i className="ri-arrow-right-up-line" />
-          </a>
-        </div>
+        ))}
       </div>
 
-      <p className="text-[11px] text-gray-500 px-1">
-        Auto-refresh every 30 seconds. Historical charts (CPU/RAM/disk trends) are on the dedicated System Health page.
-      </p>
+      <div className="panel-body hair-t flex items-center justify-between gap-3 flex-wrap">
+        <span className="flex items-center gap-1.5 text-[11px] t3">
+          <i className="ri-pulse-line text-[12px]" />
+          Network
+          <span className="t2">{row.network_speed ?? 'not reported'}</span>
+        </span>
+        <span className="flex items-center gap-3 flex-wrap">
+          <span className="text-[10px] t3">Refreshes every 30s · trends on the full page</span>
+          <Link to="/system-health" className="chip chip-quiet text-[10.5px]">
+            System health
+            <i className="ri-arrow-right-up-line" />
+          </Link>
+        </span>
+      </div>
     </div>
   );
 }
