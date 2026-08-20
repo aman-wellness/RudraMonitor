@@ -17,9 +17,12 @@ const TONE: Record<Category, string> = {
   productive: 'var(--d-success)',
   unproductive: 'var(--d-danger)',
   neutral: 'var(--d-neutral)',
+  // Distinct from unproductive on purpose: the two score identically, so colour
+  // is the only thing telling an admin that this one also raises alerts.
+  prohibited: 'var(--d-sev-high)',
 };
 
-const opts: Category[] = ['productive', 'neutral', 'unproductive'];
+const opts: Category[] = ['productive', 'neutral', 'unproductive', 'prohibited'];
 
 type Props = {
   value: Category;
