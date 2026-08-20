@@ -403,7 +403,7 @@ export default function ReportsPage() {
     // the current tab.
     const dataForExport = selectedFiltered.length > 0 ? selectedFiltered : filteredAgents;
     const selectedTag = selectedFiltered.length > 0 ? `_selected_${dataForExport.length}` : '';
-    const filename = `Rudrans_${activeTab}${selectedTag}_report_${dateStr}`;
+    const filename = `WellnessExtract_${activeTab}${selectedTag}_report_${dateStr}`;
 
     try {
       if (format === 'pdf') {

@@ -10,7 +10,7 @@
 // Keeping this a plain HTML editor also matches how CodeTwo and Exclaimer
 // present the same feature.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
@@ -104,8 +104,8 @@ export default function EmailSignaturesPage() {
   const [draftName, setDraftName] = useState('Company signature');
   const [autoNew, setAutoNew] = useState(true);
   const [autoReply, setAutoReply] = useState(true);
-  const [autoMobile, setAutoMobile] = useState(true);
   const [dirty, setDirty] = useState(false);
+  const htmlRef = useRef<HTMLTextAreaElement | null>(null);
 
   const [users, setUsers] = useState<DirectoryUser[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());  // upns
@@ -134,7 +134,6 @@ export default function EmailSignaturesPage() {
       setDraftName(t.name);
       setAutoNew(t.auto_add_new_message);
       setAutoReply(t.auto_add_reply_forward);
-      setAutoMobile(t.auto_add_mobile);
     } else {
       setTemplate(null);
       setDraftHtml(DEFAULT_TEMPLATE);
@@ -216,7 +215,26 @@ export default function EmailSignaturesPage() {
   // Actions
   // ────────────────────────────────────────────────────────────────────────
   const insertToken = (key: string) => {
-    setDraftHtml((prev) => prev + `{{${key}}}`);
+    const marker = `{{${key}}}`;
+    const el = htmlRef.current;
+    if (el) {
+      // Insert at the current caret position so the token lands where the
+      // admin is editing (e.g. right under "Best," in a signature template),
+      // not at the very end of the HTML.
+      const start = el.selectionStart ?? el.value.length;
+      const end = el.selectionEnd ?? el.value.length;
+      const next = el.value.slice(0, start) + marker + el.value.slice(end);
+      setDraftHtml(next);
+      // Restore caret to just after the inserted token on the next tick,
+      // after React re-renders the textarea.
+      requestAnimationFrame(() => {
+        const pos = start + marker.length;
+        el.focus();
+        el.setSelectionRange(pos, pos);
+      });
+    } else {
+      setDraftHtml((prev) => prev + marker);
+    }
     setDirty(true);
   };
 
@@ -233,7 +251,6 @@ export default function EmailSignaturesPage() {
             html_body: draftHtml,
             auto_add_new_message: autoNew,
             auto_add_reply_forward: autoReply,
-            auto_add_mobile: autoMobile,
           })
           .eq('id', template.id);
         if (error) throw error;
@@ -246,7 +263,6 @@ export default function EmailSignaturesPage() {
             html_body: draftHtml,
             auto_add_new_message: autoNew,
             auto_add_reply_forward: autoReply,
-            auto_add_mobile: autoMobile,
             is_active: true,
           });
         if (error) throw error;
@@ -266,11 +282,11 @@ export default function EmailSignaturesPage() {
       setMsg({ kind: 'err', text: 'Save your changes first — push uses the saved template, not the draft.' });
       return;
     }
-    const upns = selected.size > 0 ? Array.from(selected) : users.map((u) => u.upn);
-    if (upns.length === 0) {
-      setMsg({ kind: 'err', text: 'No M365 users to push to.' });
+    if (selected.size === 0) {
+      setMsg({ kind: 'err', text: 'Select at least one user before pushing. The signature only applies to users you tick — nothing happens org-wide.' });
       return;
     }
+    const upns = Array.from(selected);
     setBusy('push');
     setMsg({ kind: 'info', text: `Pushing to ${upns.length} user${upns.length === 1 ? '' : 's'}…` });
 
@@ -295,9 +311,7 @@ export default function EmailSignaturesPage() {
           body: JSON.stringify({
             template_id: template.id,
             org_id: orgId,
-            // If we couldn't map any employees, fall back to 'all' which the
-            // edge function scopes to org_id via directory_users.
-            employee_ids: employee_ids.length > 0 ? employee_ids : 'all',
+            employee_ids,   // explicit array — the backend rejects "all" now
           }),
         },
       );
@@ -338,10 +352,16 @@ export default function EmailSignaturesPage() {
   // ────────────────────────────────────────────────────────────────────────
   // Render
   // ────────────────────────────────────────────────────────────────────────
+  // Shared input/textarea classes — bg-dark-700 with text-white so they read
+  // in both light-mode (rerouted by index.css) and dark-mode (raw Tailwind).
+  const inputCls =
+    'w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-white text-sm ' +
+    'placeholder:text-gray-500 focus:outline-none focus:border-accent';
+
   if (templateLoading) {
     return (
       <DashboardLayout>
-        <div className="p-6 text-gray-500">Loading…</div>
+        <div className="p-6 text-gray-400">Loading…</div>
       </DashboardLayout>
     );
   }
@@ -349,18 +369,16 @@ export default function EmailSignaturesPage() {
   return (
     <DashboardLayout>
       <div className="max-w-7xl mx-auto p-6 space-y-6">
-        <header className="flex items-start justify-between gap-6">
-          <div>
-            <h1 className="text-2xl font-semibold text-gray-900">Email Signatures</h1>
-            <p className="text-sm text-gray-500 mt-1">
-              Design one company signature and push it to every Microsoft 365 user's Outlook — new email, reply, and forward.
-            </p>
-          </div>
+        <header>
+          <h1 className="text-2xl md:text-3xl font-poppins font-semibold text-white mb-1">Email Signatures</h1>
+          <p className="text-sm text-gray-400">
+            Design one company signature and push it to every Microsoft 365 user's Outlook — new email, reply, and forward.
+          </p>
         </header>
 
         {!m365Connected && (
-          <div className="border border-amber-300 bg-amber-50 rounded-lg p-4 text-sm text-amber-900">
-            <p className="font-medium">Microsoft 365 not connected</p>
+          <div className="border border-amber-500/40 bg-amber-500/10 rounded-xl p-4 text-sm text-amber-300">
+            <p className="font-medium text-amber-200">Microsoft 365 not connected</p>
             <p className="mt-1">
               Connect M365 from <a href="/employees/integrations" className="underline">Integrations</a> first — signature push runs against your tenant's mailboxes.
             </p>
@@ -368,10 +386,10 @@ export default function EmailSignaturesPage() {
         )}
 
         {msg && (
-          <div className={`border rounded-lg p-3 text-sm ${
-            msg.kind === 'ok' ? 'border-green-300 bg-green-50 text-green-900'
-              : msg.kind === 'err' ? 'border-red-300 bg-red-50 text-red-900'
-              : 'border-blue-300 bg-blue-50 text-blue-900'
+          <div className={`border rounded-xl p-3 text-sm ${
+            msg.kind === 'ok' ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+              : msg.kind === 'err' ? 'border-red-500/40 bg-red-500/10 text-red-300'
+              : 'border-blue-500/40 bg-blue-500/10 text-blue-300'
           }`}>
             {msg.text}
           </div>
@@ -379,27 +397,27 @@ export default function EmailSignaturesPage() {
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* ─── Editor ────────────────────────────────────────────────── */}
-          <div className="bg-white rounded-lg border border-gray-200 p-5 space-y-4">
+          <div className="bg-dark-800 rounded-xl border border-dark-700 p-5 space-y-4">
             <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">Template name</label>
+              <label className="block text-xs font-medium text-gray-300 mb-1.5">Template name</label>
               <input
                 type="text"
                 value={draftName}
                 onChange={(e) => { setDraftName(e.target.value); setDirty(true); }}
-                className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+                className={inputCls}
                 placeholder="Company signature"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">Insert token</label>
+              <label className="block text-xs font-medium text-gray-300 mb-1.5">Insert token</label>
               <div className="flex flex-wrap gap-1.5">
                 {TOKENS.map((t) => (
                   <button
                     key={t.key}
                     type="button"
                     onClick={() => insertToken(t.key)}
-                    className="text-xs bg-blue-50 text-blue-700 border border-blue-200 rounded px-2 py-1 hover:bg-blue-100"
+                    className="text-xs bg-blue-500/15 text-blue-300 border border-blue-500/30 rounded-md px-2 py-1 hover:bg-blue-500/25"
                     title={`Inserts {{${t.key}}} — will be replaced with each user's ${t.label.toLowerCase()}`}
                   >
                     {t.label}
@@ -409,57 +427,54 @@ export default function EmailSignaturesPage() {
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">
+              <label className="block text-xs font-medium text-gray-300 mb-1.5">
                 Signature HTML
-                <span className="ml-2 text-gray-400 font-normal">Paste HTML from your designer, or edit the default below.</span>
+                <span className="ml-2 text-gray-500 font-normal">Paste HTML from your designer, or edit the default below.</span>
               </label>
               <textarea
+                ref={htmlRef}
                 value={draftHtml}
                 onChange={(e) => { setDraftHtml(e.target.value); setDirty(true); }}
-                className="w-full h-72 border border-gray-300 rounded px-3 py-2 text-xs font-mono"
+                className="w-full h-72 px-3 py-2 bg-dark-900 border border-dark-600 rounded-lg text-white text-xs font-mono focus:outline-none focus:border-accent"
                 spellCheck={false}
               />
             </div>
 
-            <fieldset className="border border-gray-200 rounded p-3 space-y-2">
-              <legend className="text-xs font-medium text-gray-700 px-1">Auto-apply on</legend>
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={autoNew} onChange={(e) => { setAutoNew(e.target.checked); setDirty(true); }} />
+            <fieldset className="border border-dark-700 rounded-lg p-3 space-y-2">
+              <legend className="text-xs font-medium text-gray-300 px-1">Auto-apply on</legend>
+              <label className="flex items-center gap-2 text-sm text-gray-300">
+                <input type="checkbox" checked={autoNew} onChange={(e) => { setAutoNew(e.target.checked); setDirty(true); }} className="accent-blue-500" />
                 <span>New emails</span>
               </label>
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={autoReply} onChange={(e) => { setAutoReply(e.target.checked); setDirty(true); }} />
+              <label className="flex items-center gap-2 text-sm text-gray-300">
+                <input type="checkbox" checked={autoReply} onChange={(e) => { setAutoReply(e.target.checked); setDirty(true); }} className="accent-blue-500" />
                 <span>Replies and forwards</span>
-              </label>
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={autoMobile} onChange={(e) => { setAutoMobile(e.target.checked); setDirty(true); }} />
-                <span>Outlook mobile app</span>
               </label>
             </fieldset>
 
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               <button
                 type="button"
                 onClick={saveTemplate}
                 disabled={!dirty || busy === 'save'}
-                className="bg-blue-600 text-white text-sm rounded px-4 py-2 disabled:bg-gray-300"
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-dark-600 disabled:text-gray-500 rounded-lg text-white text-sm font-medium"
               >
                 {busy === 'save' ? 'Saving…' : template ? 'Save changes' : 'Create template'}
               </button>
-              {template && dirty && <span className="text-xs text-amber-600">Unsaved changes</span>}
-              {template && !dirty && <span className="text-xs text-gray-400">Saved · {new Date(template.updated_at).toLocaleString()}</span>}
+              {template && dirty && <span className="text-xs text-amber-400">Unsaved changes</span>}
+              {template && !dirty && <span className="text-xs text-gray-500">Saved · {new Date(template.updated_at).toLocaleString()}</span>}
             </div>
           </div>
 
           {/* ─── Preview ───────────────────────────────────────────────── */}
-          <div className="bg-white rounded-lg border border-gray-200 p-5 space-y-3">
-            <div className="flex items-center justify-between">
-              <label className="block text-xs font-medium text-gray-700">Live preview</label>
+          <div className="bg-dark-800 rounded-xl border border-dark-700 p-5 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <label className="text-xs font-medium text-gray-300">Live preview</label>
               {users.length > 0 && (
                 <select
                   value={previewUpn}
                   onChange={(e) => setPreviewUpn(e.target.value)}
-                  className="text-xs border border-gray-300 rounded px-2 py-1"
+                  className="text-xs px-2 py-1 bg-dark-700 border border-dark-600 rounded text-white focus:outline-none focus:border-accent"
                 >
                   {users.map((u) => (
                     <option key={u.upn} value={u.upn}>
@@ -469,28 +484,32 @@ export default function EmailSignaturesPage() {
                 </select>
               )}
             </div>
-            <div className="border border-gray-200 rounded bg-gray-50 p-4 min-h-[240px] overflow-auto">
+            {/* Preview canvas: white background so the customer's real HTML
+                signature reads like it would in an actual email compose window,
+                regardless of theme. Text color inside is controlled by the
+                user's own signature HTML. */}
+            <div className="border border-dark-700 rounded-lg bg-white text-black p-4 min-h-[240px] overflow-auto">
               <div dangerouslySetInnerHTML={{ __html: previewHtml }} />
             </div>
             <p className="text-xs text-gray-500">
-              Preview uses <strong>real</strong> data from the selected user's Microsoft 365 directory row. Blank fields (no phone, no title) render as empty.
+              Preview uses <strong className="text-gray-300">real</strong> data from the selected user's Microsoft 365 directory row. Blank fields (no phone, no title) render as empty.
             </p>
           </div>
         </div>
 
         {/* ─── User selection + push ─────────────────────────────────── */}
-        <div className="bg-white rounded-lg border border-gray-200 p-5 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-gray-900">Apply to users</h2>
+        <div className="bg-dark-800 rounded-xl border border-dark-700 p-5 space-y-4">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <h2 className="text-lg font-semibold text-white">Apply to users</h2>
             <div className="flex items-center gap-3">
               <span className="text-xs text-gray-500">
-                {selected.size === 0 ? `Will push to all ${users.length} users` : `${selected.size} selected`}
+                {selected.size === 0 ? 'Select users to push to' : `${selected.size} selected`}
               </span>
               <button
                 type="button"
                 onClick={pushToSelected}
                 disabled={!template || busy === 'push' || users.length === 0}
-                className="bg-green-600 text-white text-sm rounded px-4 py-2 disabled:bg-gray-300"
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-dark-600 disabled:text-gray-500 rounded-lg text-white text-sm font-medium"
               >
                 {busy === 'push' ? 'Pushing…' : 'Push signature now'}
               </button>
@@ -502,39 +521,41 @@ export default function EmailSignaturesPage() {
               No M365 users found. {m365Connected ? 'Try a full sync from Integrations.' : 'Connect M365 first.'}
             </p>
           ) : (
-            <div className="border border-gray-200 rounded overflow-hidden">
+            <div className="border border-dark-700 rounded-lg overflow-hidden">
               <table className="w-full text-sm">
-                <thead className="bg-gray-50 text-xs uppercase text-gray-600">
+                <thead className="bg-dark-900/50 text-xs uppercase text-gray-400">
                   <tr>
-                    <th className="p-2 w-8">
+                    <th className="p-2.5 w-8">
                       <input
                         type="checkbox"
                         checked={selected.size === users.length && users.length > 0}
                         onChange={toggleAll}
+                        className="accent-blue-500"
                       />
                     </th>
-                    <th className="p-2 text-left">Name</th>
-                    <th className="p-2 text-left">Email</th>
-                    <th className="p-2 text-left">Title</th>
-                    <th className="p-2 text-left">Status</th>
+                    <th className="p-2.5 text-left">Name</th>
+                    <th className="p-2.5 text-left">Email</th>
+                    <th className="p-2.5 text-left">Title</th>
+                    <th className="p-2.5 text-left">Status</th>
                   </tr>
                 </thead>
                 <tbody>
                   {users.map((u) => {
                     const s = pushStatuses[u.upn];
                     return (
-                      <tr key={u.upn} className="border-t border-gray-100">
-                        <td className="p-2">
+                      <tr key={u.upn} className="border-t border-dark-700 hover:bg-dark-700/30">
+                        <td className="p-2.5">
                           <input
                             type="checkbox"
                             checked={selected.has(u.upn)}
                             onChange={() => toggleUser(u.upn)}
+                            className="accent-blue-500"
                           />
                         </td>
-                        <td className="p-2 text-gray-900">{u.display_name ?? '—'}</td>
-                        <td className="p-2 text-gray-600">{u.upn}</td>
-                        <td className="p-2 text-gray-600">{u.job_title ?? '—'}</td>
-                        <td className="p-2">
+                        <td className="p-2.5 text-white">{u.display_name ?? '—'}</td>
+                        <td className="p-2.5 text-gray-400">{u.upn}</td>
+                        <td className="p-2.5 text-gray-400">{u.job_title ?? '—'}</td>
+                        <td className="p-2.5">
                           <StatusPill status={s} />
                         </td>
                       </tr>
@@ -547,28 +568,28 @@ export default function EmailSignaturesPage() {
         </div>
 
         {/* ─── Coverage matrix ─────────────────────────────────────── */}
-        <div className="bg-white border border-gray-200 rounded-lg p-5">
-          <h2 className="text-sm font-semibold text-gray-900 mb-3">Where this signature shows up</h2>
-          <ul className="space-y-1.5 text-sm text-gray-700">
-            <li><span className="text-green-600 font-bold">✓</span> <strong>Outlook Web + New Outlook</strong> — applied on New / Reply / Forward, immediately after push.</li>
-            <li><span className="text-green-600 font-bold">✓</span> <strong>Classic Outlook Desktop (Windows)</strong> — the moment you click <em>Push signature now</em>, the Security Assistant agent v0.6.22+ receives a realtime notification and writes the signature under the user's own name to <code className="text-xs">%APPDATA%\Microsoft\Signatures\</code> plus sets it as Outlook's default via registry. No polling, no timer — pushes only when you push.</li>
-            <li><span className="text-amber-600 font-bold">△</span> <strong>Outlook Mobile app</strong> — Microsoft doesn't expose a push API for mobile. Users must set the mobile signature manually once (Outlook mobile → Settings → Signature).</li>
+        <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
+          <h2 className="text-sm font-semibold text-white mb-3">Where this signature shows up</h2>
+          <ul className="space-y-2 text-sm text-gray-300">
+            <li className="flex gap-2"><span className="text-emerald-400 font-bold shrink-0">✓</span><span><strong className="text-white">Outlook Web + New Outlook</strong> — applied on New / Reply / Forward, immediately after push.</span></li>
+            <li className="flex gap-2"><span className="text-emerald-400 font-bold shrink-0">✓</span><span><strong className="text-white">Classic Outlook Desktop (Windows)</strong> — the moment you click <em>Push signature now</em>, the Security Assistant agent v0.6.22+ receives a realtime notification and writes the signature under the user's own name to <code className="text-xs px-1 py-0.5 bg-dark-700 rounded text-gray-300">%APPDATA%\Microsoft\Signatures\</code> plus sets it as Outlook's default via registry. No polling, no timer — pushes only when you push.</span></li>
+            <li className="flex gap-2"><span className="text-amber-400 font-bold shrink-0">△</span><span><strong className="text-white">Outlook Mobile app</strong> — Microsoft doesn't expose a push API for mobile. Users must set the mobile signature manually once (Outlook mobile → Settings → Signature).</span></li>
           </ul>
         </div>
 
         {/* ─── One-time Azure setup callout ──────────────────────────── */}
-        <details className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-          <summary className="cursor-pointer text-sm font-medium text-gray-900">
+        <details className="bg-dark-800 border border-dark-700 rounded-xl p-4">
+          <summary className="cursor-pointer text-sm font-medium text-white">
             Not working? One-time Azure setup for signature push
           </summary>
-          <div className="mt-3 space-y-3 text-sm text-gray-700">
+          <div className="mt-3 space-y-3 text-sm text-gray-300">
             <p>Signature push uses the Exchange Online PowerShell REST API. Two one-time steps are required in Azure (done once per tenant):</p>
             <ol className="list-decimal ml-5 space-y-2">
               <li>
-                <strong>Grant API permission:</strong> Azure Portal → App registrations → <em>track force</em> → API permissions → <em>+ Add a permission</em> → <em>Office 365 Exchange Online</em> → Application permissions → <code>Exchange.ManageAsApp</code>. Then click <em>Grant admin consent</em>.
+                <strong className="text-white">Grant API permission:</strong> Azure Portal → App registrations → <em>track force</em> → API permissions → <em>+ Add a permission</em> → <em>Office 365 Exchange Online</em> → Application permissions → <code className="text-xs px-1 py-0.5 bg-dark-700 rounded">Exchange.ManageAsApp</code>. Then click <em>Grant admin consent</em>.
               </li>
               <li>
-                <strong>Assign directory role:</strong> Entra Portal → Identity → Roles &amp; admins → <em>Exchange Administrator</em> → <em>+ Add assignments</em> → change Type to <em>Service Principal</em> → search <em>track force</em> → Active + permanent → Assign.
+                <strong className="text-white">Assign directory role:</strong> Entra Portal → Identity → Roles &amp; admins → <em>Exchange Administrator</em> → <em>+ Add assignments</em> → change Type to <em>Service Principal</em> → search <em>track force</em> → Active + permanent → Assign.
               </li>
             </ol>
             <p className="text-xs text-gray-500">Once both are done, come back here and click <em>Push signature now</em> — it should succeed on the first try.</p>
@@ -583,22 +604,22 @@ export default function EmailSignaturesPage() {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 function StatusPill({ status }: { status: PushStatus | undefined }) {
-  if (!status) return <span className="text-xs text-gray-400">Not pushed</span>;
+  if (!status) return <span className="text-xs text-gray-500">Not pushed</span>;
   if (status.state === 'applied') {
     return (
-      <span className="text-xs text-green-700" title={status.applied_at ?? ''}>
+      <span className="text-xs text-emerald-400" title={status.applied_at ?? ''}>
         ✓ Applied
       </span>
     );
   }
   if (status.state === 'failed') {
     return (
-      <span className="text-xs text-red-700" title={status.last_error ?? ''}>
+      <span className="text-xs text-red-400" title={status.last_error ?? ''}>
         ✗ Failed <span className="text-red-500 underline">(hover)</span>
       </span>
     );
   }
-  if (status.state === 'pending') return <span className="text-xs text-blue-700">…Pending</span>;
+  if (status.state === 'pending') return <span className="text-xs text-blue-400">…Pending</span>;
   return <span className="text-xs text-gray-500">{status.state}</span>;
 }
 

@@ -30,6 +30,7 @@ import {
 
 const TABS = ['Overview', 'Agents', 'Network'] as const;
 type Tab = (typeof TABS)[number];
+type ExportFormat = 'csv' | 'excel' | 'pdf';
 
 const toneFor = (key: MetricKey, v: number | null): string => {
   if (v === null) return C.neutral;
@@ -183,6 +184,163 @@ export default function SystemHealthPage() {
   // some agent actually reported both.
   const hasUpDown = agents.some((a) => byAgent[a.id]?.up !== null);
 
+  // ─── Export ────────────────────────────────────────────────────────────
+  //
+  // One dropdown, three formats (CSV / Excel / PDF), scoped to whichever
+  // tab the admin is currently looking at. Excel is a BOM-prefixed CSV so
+  // it opens directly in Excel without garbling accented characters — same
+  // pattern as /reports so we don't ship a full xlsx encoder for what fits
+  // in a handful of columns.
+  const [exporting, setExporting] = useState<ExportFormat | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  const fmt = (n: number | null): string => (n === null ? '—' : String(n));
+  const fmtPct = (n: number | null): string => (n === null ? '—' : `${n}%`);
+  const readingCell = (m: AgentMetrics | undefined): string => {
+    if (!m || m.recordedAt === null) return 'no data';
+    return m.fresh ? 'live' : formatAge(m.ageMs);
+  };
+
+  // Headers + rows for the tab being exported. In one place so PDF, Excel
+  // and CSV share the exact same shape and stay in sync when a column is
+  // added or renamed.
+  const buildTabRows = (t: Tab): { headers: string[]; rows: string[][] } => {
+    switch (t) {
+      case 'Overview':
+        return {
+          headers: ['Metric', 'Value', 'Notes'],
+          rows: [
+            ['Reporting now',   `${live.length}/${agents.length}`,           live.length === 0 ? 'no live hardware data' : 'pushed within 3 min'],
+            ['Needs attention', String(needsAttention.length),               needsAttention.length === 0 ? 'all within limits' : RULE],
+            ['Avg CPU',         fmtPct(avgCpu),                              basis],
+            ['Avg disk (I/O)',  fmtPct(avgDisk),                             avgDisk === null ? 'not reported by this agent build' : 'I/O activity, like Task Manager'],
+            ['Avg memory',      fmtPct(avgMem),                              avgSpace === null ? 'space —' : `space ${avgSpace}% full`],
+            ['Reporting live',  String(live.length),                         windowLabel],
+            ['Stale reading',   String(withAny.length - live.length),        windowLabel],
+            ['No reading',      String(noData.length),                       `no data in ${windowLabel}`],
+            ['Enrolled agents', String(agents.length),                       ''],
+          ],
+        };
+      case 'Agents':
+        return {
+          headers: ['Agent', 'Machine', 'OS', 'CPU %', 'Memory %', 'Disk %', 'Disk Space %', 'Battery %', 'Reading'],
+          rows: filtered.map((a) => {
+            const m = byAgent[a.id];
+            return [
+              a.name,
+              a.machine,
+              a.os,
+              fmtPct(m?.cpu ?? null),
+              fmtPct(m?.memory ?? null),
+              fmtPct(m?.disk ?? null),
+              fmtPct(m?.space ?? null),
+              fmtPct(m?.battery ?? null),
+              readingCell(m),
+            ];
+          }),
+        };
+      case 'Network': {
+        const cols = ['Agent', 'Machine', 'IP Address', 'Link Speed'];
+        if (hasUpDown) cols.push('Down Mbps', 'Up Mbps');
+        cols.push('Reading');
+        return {
+          headers: cols,
+          rows: filtered.map((a) => {
+            const m = byAgent[a.id];
+            const row = [a.name, a.machine, a.ipAddress, m?.network ?? '—'];
+            if (hasUpDown) {
+              row.push(m?.down === null || m?.down === undefined ? '—' : m.down.toFixed(1));
+              row.push(m?.up === null || m?.up === undefined ? '—' : m.up.toFixed(1));
+            }
+            row.push(readingCell(m));
+            return row;
+          }),
+        };
+      }
+    }
+  };
+
+  const buildCSV = (t: Tab): string => {
+    const { headers, rows } = buildTabRows(t);
+    const escape = (v: string) => `"${(v ?? '').replace(/"/g, '""')}"`;
+    return [headers.map(escape).join(','), ...rows.map((r) => r.map(escape).join(','))].join('\n');
+  };
+
+  const downloadFile = (content: BlobPart, filename: string, mime: string) => {
+    const blob = content instanceof Blob ? content : new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // Real PDF via jspdf + autotable — dynamic-imported so the ~150 KB
+  // bundle doesn't inflate the page load. Only paid when the admin
+  // actually clicks "PDF".
+  const buildPDF = async (t: Tab): Promise<Blob> => {
+    const [{ default: jsPDF }, autoTableModule] = await Promise.all([
+      import('jspdf'),
+      import('jspdf-autotable'),
+    ]);
+    const autoTable = (autoTableModule as { default: (doc: unknown, opts: unknown) => void }).default;
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+
+    doc.setFontSize(16);
+    doc.setTextColor(20, 20, 20);
+    doc.text(`System Health — ${t}`, 40, 40);
+
+    doc.setFontSize(9);
+    doc.setTextColor(90, 90, 90);
+    doc.text(
+      [
+        `${agents.length} agent${agents.length === 1 ? '' : 's'}`,
+        `${live.length} live`,
+        `${needsAttention.length} needing attention`,
+        `Window: ${windowLabel}`,
+        `Generated: ${new Date().toLocaleString()}`,
+      ].join('   ·   '),
+      40, 60,
+    );
+
+    const { headers, rows } = buildTabRows(t);
+    autoTable(doc, {
+      head: [headers],
+      body: rows,
+      startY: 80,
+      theme: 'striped',
+      headStyles: { fillColor: [16, 185, 129], textColor: 255, fontSize: 9 },
+      bodyStyles: { fontSize: 8, textColor: 30 },
+      margin: { left: 40, right: 40 },
+      styles: { cellPadding: 4, overflow: 'linebreak' },
+    });
+    return doc.output('blob');
+  };
+
+  const handleExport = async (format: ExportFormat) => {
+    setExporting(format);
+    setMenuOpen(false);
+    const dateStr = new Date().toISOString().split('T')[0];
+    const base = `WellnessExtract_SystemHealth_${tab}_${dateStr}`;
+    try {
+      if (format === 'pdf') {
+        const blob = await buildPDF(tab);
+        downloadFile(blob, `${base}.pdf`, 'application/pdf');
+      } else if (format === 'excel') {
+        // BOM prefix so Excel opens UTF-8 without garbling headers.
+        const csv = '﻿' + buildCSV(tab);
+        downloadFile(csv, `${base}.csv`, 'text/csv;charset=utf-8');
+      } else {
+        downloadFile(buildCSV(tab), `${base}.csv`, 'text/csv;charset=utf-8');
+      }
+    } finally {
+      setExporting(null);
+    }
+  };
+
   return (
     <DashboardLayout>
       <div className="dash min-w-0 max-w-full">
@@ -219,6 +377,45 @@ export default function SystemHealthPage() {
               <i className={`ri-refresh-line ${loading ? 'animate-spin' : ''}`} />
               Refresh
             </button>
+            {/* Export dropdown — one button, three formats (CSV / Excel /
+                PDF). Downloads whichever tab is active so the report matches
+                what the admin is looking at. */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setMenuOpen((v) => !v)}
+                disabled={exporting !== null}
+                className="chip chip-quiet text-[10.5px] disabled:opacity-50"
+              >
+                <i className="ri-download-2-line" />
+                <span>{exporting ? `Exporting ${exporting.toUpperCase()}…` : `Export ${tab}`}</span>
+                <i className={`ri-arrow-down-s-line transition-transform ${menuOpen ? 'rotate-180' : ''}`} />
+              </button>
+              {menuOpen && (
+                <>
+                  {/* Click-outside overlay to close the menu. */}
+                  <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
+                  <div className="absolute right-0 top-full mt-1 z-20 min-w-[180px] panel p-1">
+                    {(['csv', 'excel', 'pdf'] as ExportFormat[]).map((f) => (
+                      <button
+                        key={f}
+                        type="button"
+                        onClick={() => handleExport(f)}
+                        className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-[11px] t2 hover:opacity-80"
+                        style={{ borderRadius: 6 }}
+                      >
+                        <i className={`text-[13px] ${
+                          f === 'pdf' ? 'ri-file-pdf-2-line t-danger'
+                            : f === 'excel' ? 'ri-file-excel-2-line t-success'
+                            : 'ri-file-text-line t-info'
+                        }`} />
+                        <span>Download as {f === 'pdf' ? 'PDF' : f === 'excel' ? 'Excel' : 'CSV'}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
 

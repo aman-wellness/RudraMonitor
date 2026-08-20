@@ -426,7 +426,7 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
           <Link
             to="/"
             className="flex items-center gap-2.5 min-w-0"
-            title={collapsed ? 'Rudrans' : undefined}
+            title={collapsed ? 'Wellness Extract' : undefined}
           >
             <img
               src="https://public.readdy.ai/ai/img_res/30434500-ce14-4d0b-944f-490cb4702e27.png"
