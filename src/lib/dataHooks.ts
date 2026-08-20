@@ -568,7 +568,14 @@ export function useBrowserUsage(filter: { agentId?: string; sinceHours?: number 
 
 // =============== Productivity rules ===============
 
-export type Category = 'productive' | 'unproductive' | 'neutral';
+/**
+ * 'prohibited' is 'unproductive' PLUS an acceptable-use breach: it scores the
+ * same but also raises an alert when the app or site is touched (see migrations
+ * 0135/0136). Since 0134 made everything uncatalogued unproductive,
+ * 'unproductive' alone could no longer tell "a tool nobody has classified"
+ * apart from "a site that breaches policy".
+ */
+export type Category = 'productive' | 'unproductive' | 'neutral' | 'prohibited';
 export type MatchType = 'app' | 'host';
 
 export type ProductivityRule = {

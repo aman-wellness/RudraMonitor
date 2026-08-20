@@ -15,7 +15,7 @@ import Pager from '@/components/Pager';
    for IT off one default plus one override. */
 
 type MatchType = 'app' | 'host';
-type Category = 'productive' | 'unproductive' | 'neutral';
+type Category = 'productive' | 'unproductive' | 'neutral' | 'prohibited';
 
 type Rule = {
   id: string;
@@ -39,6 +39,7 @@ const CATEGORY_STYLE: Record<Category, string> = {
   productive: 'text-emerald-400',
   unproductive: 'text-rose-400',
   neutral: 'text-gray-400',
+  prohibited: 'text-orange-400',
 };
 
 const ALL_DEPARTMENTS = 'All departments';
@@ -336,7 +337,7 @@ export default function ApplicationsRulesTab({ orgId }: Props) {
             <div className="space-y-1.5">
               <label className="text-[11px] text-gray-400">Category</label>
               <div className="flex gap-2">
-                {(['productive', 'neutral', 'unproductive'] as Category[]).map((c) => (
+                {(['productive', 'neutral', 'unproductive', 'prohibited'] as Category[]).map((c) => (
                   <button
                     key={c}
                     onClick={() => setEditing({ ...editing, category: c })}
