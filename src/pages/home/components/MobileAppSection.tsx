@@ -65,7 +65,7 @@ export default function MobileAppSection() {
             <ol className="text-sm text-gray-300 space-y-2 mb-5 pl-4 list-decimal">
               <li>Tap the download button below — APK lands in your Downloads folder.</li>
               <li>Open the file → Android will ask "Allow install from this source?" → <span className="text-emerald-300">Allow</span>.</li>
-              <li>Install → open <strong>Rudrans Invoice</strong> → sign in with your dashboard email.</li>
+              <li>Install → open <strong>Wellness Extract Invoice</strong> → sign in with your dashboard email.</li>
             </ol>
 
             <a
@@ -106,7 +106,7 @@ export default function MobileAppSection() {
                 Tap <i className="ri-share-forward-line mx-1" /> Share → <strong>Add to Home Screen</strong>.
               </li>
               <li>
-                Home screen pe Rudrans Invoice icon aa jayega — full-screen, app jaisa.
+                Home screen pe Wellness Extract Invoice icon aa jayega — full-screen, app jaisa.
               </li>
             </ol>
 
@@ -125,7 +125,7 @@ export default function MobileAppSection() {
 
         <div className="text-center mt-10">
           <p className="text-xs text-gray-500 max-w-xl mx-auto">
-            Sign in with your existing Rudrans dashboard email + password.
+            Sign in with your existing Wellness Extract dashboard email + password.
             The mobile app uploads invoices to <strong className="text-gray-300">your organisation</strong>;
             you can switch orgs at any time from Account → Switch organisation.
           </p>

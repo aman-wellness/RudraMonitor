@@ -252,7 +252,7 @@ function template(
           Need help? Reply to this email or write to <a href="mailto:itsupport@wellnessextract.com" style="color:#6366f1;text-decoration:none;">itsupport@wellnessextract.com</a>.
         </td></tr>
       </table>
-      <p style="font-size:11px;color:#94a3b8;margin-top:16px;">© Rudrans by Rudrans — wellnessextract.com</p>
+      <p style="font-size:11px;color:#94a3b8;margin-top:16px;">© Rudrans by Wellness Extract — wellnessextract.com</p>
     </td></tr>
   </table>
 </body></html>`;

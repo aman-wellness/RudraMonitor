@@ -55,7 +55,7 @@ export async function startSubscriptionCheckout(opts: {
   const rzp = new window.Razorpay({
     key: opts.keyId,
     subscription_id: opts.subscriptionId,
-    name: 'Rudrans',
+    name: 'TrackForce',
     description: opts.amountLabel
       ? `Card verification charge: ${opts.amountLabel} (held now, refunded after trial)`
       : 'Card verification — refundable',
@@ -96,7 +96,7 @@ export async function startOrderCheckout(opts: {
     order_id: opts.orderId,
     amount: opts.amount,
     currency: opts.currency,
-    name: 'Rudrans',
+    name: 'TrackForce',
     description: opts.description ?? 'One-time charge',
     prefill: {
       name: opts.customerName ?? '',
@@ -142,7 +142,7 @@ export async function payInvoice(opts: {
     amount,
     currency,
     order_id,
-    name: 'Rudrans',
+    name: 'Wellness Extract',
     description: `Invoice ${invoice_number}`,
     prefill: {
       email: opts.customerEmail ?? '',

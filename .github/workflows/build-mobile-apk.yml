@@ -1,6 +1,6 @@
 name: Build Mobile APK
 
-# Builds an Android APK for the Rudrans Invoice mobile camera app.
+# Builds an Android APK for the Wellness Extract Invoice mobile camera app.
 # Produces both a debug APK (auto-signed, installable for testing) and an
 # unsigned release APK (sign locally with your release keystore).
 #

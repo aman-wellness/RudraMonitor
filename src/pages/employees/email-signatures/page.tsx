@@ -70,7 +70,7 @@ const TOKENS: Array<{ key: string; label: string; example: string }> = [
   { key: 'office',      label: 'Office',       example: 'Delhi HQ' },
   { key: 'city',        label: 'City',         example: 'New Delhi' },
   { key: 'country',     label: 'Country',      example: 'India' },
-  { key: 'companyName', label: 'Company',      example: 'Rudrans' },
+  { key: 'companyName', label: 'Company',      example: 'Wellness Extract' },
   { key: 'website',     label: 'Website',      example: 'https://wellnessextract.com' },
 ];
 

@@ -68,9 +68,9 @@ export default function SuperLogin() {
       brandIcon="ri-shield-keyhole-line"
       illustrationUrl="https://illustrations.popsy.co/violet/security.svg"
       illustrationCaption="Internal access only"
-      illustrationSubtitle="This portal is restricted to Rudrans engineers and support staff. All actions are logged to the audit trail."
+      illustrationSubtitle="This portal is restricted to Wellness Extract engineers and support staff. All actions are logged to the audit trail."
       title="Super Admin"
-      subtitle="Internal access — sign in with your Rudrans admin credentials."
+      subtitle="Internal access — sign in with your Wellness Extract admin credentials."
     >
       {error && (
         <div className="mb-5 px-3 py-2 rounded-lg border border-red-200 bg-red-50 text-red-600 text-xs">{error}</div>

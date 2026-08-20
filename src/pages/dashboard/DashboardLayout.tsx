@@ -430,10 +430,10 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
           >
             <img
               src="https://public.readdy.ai/ai/img_res/30434500-ce14-4d0b-944f-490cb4702e27.png"
-              alt="Rudrans"
+              alt="Wellness Extract"
               className="h-7 w-7 object-contain flex-shrink-0"
             />
-            <span className="s-brand-name truncate">Rudrans</span>
+            <span className="s-brand-name truncate">Wellness Extract</span>
           </Link>
           {!collapsed && (
             <button
@@ -544,10 +544,10 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
           <Link to="/" className="flex items-center gap-2.5" onClick={() => setSidebarOpen(false)}>
             <img
               src="https://public.readdy.ai/ai/img_res/30434500-ce14-4d0b-944f-490cb4702e27.png"
-              alt="Rudrans"
+              alt="Wellness Extract"
               className="h-7 w-7 object-contain"
             />
-            <span className="s-brand-name">Rudrans</span>
+            <span className="s-brand-name">Wellness Extract</span>
           </Link>
           <button
             onClick={() => setSidebarOpen(false)}

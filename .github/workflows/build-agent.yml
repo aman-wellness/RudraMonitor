@@ -555,7 +555,7 @@ jobs:
         run: |
           BASE="agent/src-tauri/target/${{ matrix.target }}/release/bundle"
           shopt -s nullglob
-          # Tauri writes the updater archive with the productName ("Rudrans
+          # Tauri writes the updater archive with the productName ("TrackForce
           # Agent" — space in the filename) which breaks Supabase Storage URLs,
           # so we rename to a URL-safe hyphenated form before upload. We use a
           # case statement (NOT associative arrays — macOS ships bash 3.2 which
@@ -793,7 +793,7 @@ jobs:
             else PLATFORMS_JSON+=",\"$PKEY\":$ENTRY"; fi
           done
           cat > /tmp/latest.json <<EOF
-          { "version": "$VERSION", "notes": "Rudrans Agent v$VERSION", "pub_date": "$PUB_DATE", "platforms": { $PLATFORMS_JSON } }
+          { "version": "$VERSION", "notes": "TrackForce Agent v$VERSION", "pub_date": "$PUB_DATE", "platforms": { $PLATFORMS_JSON } }
           EOF
           jq . /tmp/latest.json
           echo "version=$VERSION" >> $GITHUB_OUTPUT

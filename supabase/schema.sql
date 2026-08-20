@@ -1,4 +1,4 @@
--- Rudrans Supabase schema
+-- TrackForce Supabase schema
 -- Run this in Supabase SQL editor (Project → SQL → New query)
 
 -- Extensions

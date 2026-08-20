@@ -28,7 +28,7 @@ This is the long part. Trusted Signing requires identity validation to issue cer
 
 1. In your new Trusted Signing account → **Identity Validation** → **New identity validation**.
 2. Submit:
-   - **Legal company name**: `Rudrans Pvt. Ltd.` (must match GST / incorporation docs)
+   - **Legal company name**: `Wellness Extract Pvt. Ltd.` (must match GST / incorporation docs)
    - **Country**: India
    - **Address**: registered office address
    - **Authorized signer**: your name + work email + phone
@@ -81,7 +81,7 @@ Edit `agent/src-tauri/tauri.conf.json` → `bundle.windows`:
 ```jsonc
 "windows": {
   "allowDowngrades": true,
-  "signCommand": "trusted-signing-cli sign -e %AZURE_TRUSTED_SIGNING_ENDPOINT% -a %AZURE_TRUSTED_SIGNING_ACCOUNT% -c %AZURE_TRUSTED_SIGNING_PROFILE% -d \"Rudrans Agent\" -ru https://wellnessextract.com \"%1\"",
+  "signCommand": "trusted-signing-cli sign -e %AZURE_TRUSTED_SIGNING_ENDPOINT% -a %AZURE_TRUSTED_SIGNING_ACCOUNT% -c %AZURE_TRUSTED_SIGNING_PROFILE% -d \"Wellness Extract Agent\" -ru https://wellnessextract.com \"%1\"",
   "nsis": { ... },
   "wix": { ... }
 }
@@ -109,7 +109,7 @@ In `.github/workflows/build-agent.yml`, before the Windows build step add:
 ### 8. Verify
 
 After the next `v*` tag pushes, download the signed EXE and right-click → **Properties** → **Digital Signatures** tab. You should see:
-- Name: `Rudrans Pvt. Ltd.`
+- Name: `Wellness Extract Pvt. Ltd.`
 - Signing time + cert chain rooted at `Microsoft ID Verified CS EOC CA 01`
 
 SmartScreen will stop warning. Most antivirus engines will whitelist the binary on submission of the new hash.

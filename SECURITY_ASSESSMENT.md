@@ -1,8 +1,8 @@
-# Rudrans — Enterprise Security Assessment
+# TrackForce — Enterprise Security Assessment
 
 **Classification:** Confidential — Internal / Executive
 **Engagement type:** Authorized white-box security assessment (source + configuration review)
-**Target:** Rudrans employee-monitoring platform (web dashboard, edge backend, desktop agent, mobile app, cloud infra, payments)
+**Target:** TrackForce employee-monitoring platform (web dashboard, edge backend, desktop agent, mobile app, cloud infra, payments)
 **Method:** Static source-code & configuration review (read-only). No active exploitation against production was performed.
 **Standards referenced:** OWASP Top 10 (2021), OWASP API Top 10 (2023), OWASP MASVS, OWASP ASVS, PCI-DSS v4.0, SOC 2, ISO 27001, NIST CSF, CIS Benchmarks.
 **Date:** 2026-06-02
@@ -13,7 +13,7 @@
 
 ## 1. Executive Summary
 
-Rudrans is a broad, genuinely production-grade platform: a React 19 SPA, ~90 Supabase edge functions, 108 SQL migrations with row-level security (RLS), a Tauri/Rust desktop agent with remote-desktop (RustDesk) and screen capture, a Capacitor mobile app, Razorpay billing, and self-hosted infra on EC2 (RustDesk + LiveKit/coturn).
+TrackForce is a broad, genuinely production-grade platform: a React 19 SPA, ~90 Supabase edge functions, 108 SQL migrations with row-level security (RLS), a Tauri/Rust desktop agent with remote-desktop (RustDesk) and screen capture, a Capacitor mobile app, Razorpay billing, and self-hosted infra on EC2 (RustDesk + LiveKit/coturn).
 
 **The engineering quality is above average for a product at this stage** — privileged edge functions re-verify JWTs internally, storage buckets for screenshots/videos are correctly private and org-scoped, OAuth uses PKCE and `state` CSRF protection, there are no XSS sinks in the frontend, and no live secret is committed to git. These are real strengths and should be credited.
 

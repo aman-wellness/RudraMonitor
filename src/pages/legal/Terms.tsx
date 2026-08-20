@@ -1,5 +1,5 @@
 // Terms of Service. Customer-facing contract that governs every paid + trial
-// use of Rudrans. Plain English, India-law governing.
+// use of Wellness Extract. Plain English, India-law governing.
 
 import { Link } from 'react-router-dom';
 import LegalLayout from './LegalLayout';
@@ -9,10 +9,10 @@ export default function Terms() {
     <LegalLayout title="Terms of Service" lastUpdated="17 May 2026">
       <Section title="1. Acceptance">
         <P>
-          By signing up for or using Rudrans (the "Service"), you ("Customer") agree
+          By signing up for or using Wellness Extract (the "Service"), you ("Customer") agree
           to these Terms of Service ("Terms"). If you do not agree, do not use the
-          Service. The Service is operated by Rudrans India Private Limited
-          ("Rudrans", "we", "us"), with registered support at{' '}
+          Service. The Service is operated by Wellness Extract India Private Limited
+          ("Wellness Extract", "we", "us"), with registered support at{' '}
           <a className="text-emerald-300" href="mailto:support@wellnessextract.com">support@wellnessextract.com</a>.
         </P>
       </Section>
@@ -82,7 +82,7 @@ export default function Terms() {
 
       <Section title="8. Intellectual property">
         <Bullets items={[
-          'Rudrans, the agent, all source code, documentation, and brand assets remain our property.',
+          'Wellness Extract, the agent, all source code, documentation, and brand assets remain our property.',
           'You receive a non-exclusive, non-transferable licence to use the Service for the duration of your paid subscription.',
           'You may not remove copyright notices or attempt to obscure the origin of the Service.',
         ]} />

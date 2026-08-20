@@ -199,7 +199,7 @@ fn ensure_installed_impl(exe_path: &std::path::Path) -> std::io::Result<()> {
     let desired = format!(
         "[Desktop Entry]\n\
          Type=Application\n\
-         Name=Rudrans Security Assistant\n\
+         Name=Wellness Extract Security Assistant\n\
          Exec={}\n\
          Hidden=false\n\
          NoDisplay=false\n\
