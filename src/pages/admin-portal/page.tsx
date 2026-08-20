@@ -7,6 +7,7 @@ import { useAgents, useOrgMembers } from '@/lib/dataHooks';
 import { useOrgRole } from '@/lib/useOrgRole';
 import { supabase } from '@/lib/supabase';
 import DepartmentsTab from './components/DepartmentsTab';
+import ApplicationsRulesTab from './components/ApplicationsRulesTab';
 // Branding & Policies tab reuses the components originally built for the
 // standalone /org-settings page. That page now redirects here so admins
 // have a single home for org-wide configuration.
@@ -30,6 +31,8 @@ const adminTabs = [
   { id: 'subscription', label: 'Subscription', icon: 'ri-vip-crown-line' },
   { id: 'users', label: 'Users', icon: 'ri-team-line' },
   { id: 'departments', label: 'Departments', icon: 'ri-organization-chart' },
+  // Sits next to Departments because its rules are scoped by department.
+  { id: 'applications', label: 'Applications', icon: 'ri-apps-2-line' },
   { id: 'branding', label: 'Branding & Policies', icon: 'ri-palette-line' },
   { id: 'settings', label: 'Defaults', icon: 'ri-settings-3-line' },
 ];
@@ -1218,6 +1221,15 @@ export default function AdminPortalPage() {
         {/* === DEPARTMENTS TAB === */}
         {activeTab === 'departments' && (
           <DepartmentsTab orgId={organization?.id ?? null} />
+        )}
+
+        {/* === APPLICATIONS TAB === */}
+        {/* The productivity ruleset. Feeds the category column in Live
+            monitoring and the weighting inside the org_productivity_* RPCs,
+            so it is the single place a productivity number can be reasoned
+            about. */}
+        {activeTab === 'applications' && (
+          <ApplicationsRulesTab orgId={organization?.id ?? null} />
         )}
 
         {/* === BRANDING & POLICIES TAB === */}

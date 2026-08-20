@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import { supabase } from '@/lib/supabase';
+import Pager from '@/components/Pager';
+import { usePagination } from '@/lib/usePagination';
 
 // Row shape from the v_org_users view. row_id is synthetic: 'dir:<uuid>' for
 // directory-sourced rows and 'emp:<uuid>' for Wellness Extract-only rows.
@@ -68,6 +70,10 @@ export default function EmployeesList() {
         .filter(Boolean).join(' ').toLowerCase().includes(ql);
     });
   }, [rows, q, statusFilter, deptFilter]);
+
+  // Fetched without a limit and grows with headcount, so this is one row per
+  // employee with no ceiling.
+  const { visible, page, pageCount, setPage, from, to, total } = usePagination(filtered, 50);
 
   return (
     <DashboardLayout>
@@ -143,7 +149,7 @@ export default function EmployeesList() {
                   <tr><td colSpan={7} className="px-4 py-10 text-center text-sm text-gray-500">
                     No employees yet. <Link to="/employees/new/m365" className="text-emerald-400 hover:text-emerald-300">Add the first</Link>.
                   </td></tr>
-                ) : filtered.map((e) => (
+                ) : visible.map((e) => (
                   <tr key={e.row_id} className="border-b border-dark-700/50 hover:bg-dark-700/30">
                     <td className="px-4 py-3 text-white">
                       {e.display_name}
@@ -188,8 +194,11 @@ export default function EmployeesList() {
             </table>
           </div>
 
-          <div className="px-4 py-3 border-t border-dark-700 flex items-center justify-between">
-            <p className="text-xs text-gray-500">{filtered.length} of {rows.length} employees</p>
+          <div className="px-4 py-3 border-t border-dark-700">
+            <Pager
+              page={page} pageCount={pageCount} from={from} to={to} total={total}
+              onPage={setPage} unit={`of ${rows.length} employees`} alwaysShowTotal
+            />
           </div>
         </div>
       </div>

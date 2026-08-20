@@ -1,11 +1,14 @@
 import { useCallback, useMemo, useState } from 'react';
-import { useActivityLogs, useAgents, useProductivityRules, classify } from '@/lib/dataHooks';
+import {
+  useAppUsage, useAgents, useProductivityRules, classify, isDepartmentOverridden,
+} from '@/lib/dataHooks';
 import CategoryBadge from '@/components/feature/CategoryBadge';
 import MonitorFilters, { type CategoryFilter } from './MonitorFilters';
 import { useRegisterRefresh } from './refreshBus';
 import { formatDurationShort } from '@/lib/labels';
 import { Bar } from '@/pages/dashboard/components/ui';
 import { C } from '@/pages/dashboard/components/chartKit';
+import Pagination, { usePagination } from './Pagination';
 
 /* Foreground application time per employee, last 24h.
 
@@ -22,51 +25,35 @@ export default function ApplicationsTab() {
   const [catFilter, setCatFilter] = useState<CategoryFilter>('all');
   const [search, setSearch] = useState('');
 
-  const [limit, setLimit] = useState(200);
-  const { rows, loading, refresh } = useActivityLogs({ type: 'app', agentId: agentFilter, sinceHours: 24, limit });
-  const hasMore = rows.length >= limit;
+  // Aggregated in SQL (org_app_usage). The previous version pulled raw rows
+  // with a limit and grouped them here, which meant the limit bounded SAMPLES
+  // rather than applications: one busy app could fill the page and hide every
+  // other app the employee used, while the header still claimed the list was
+  // complete. See migration 0130.
+  const { rows, loading, refresh } = useAppUsage({ agentId: agentFilter, sinceHours: 24 });
   const { ruleMap, upsertRule } = useProductivityRules();
   useRegisterRefresh(useCallback(() => { void refresh(); }, [refresh]));
 
-  const aggregated = useMemo(() => {
-    const map = new Map<string, {
-      key: string;
-      appName: string;
-      windowTitle: string;
-      agentId: string;
-      agentName: string;
-      duration: number;
-      lastActive: string;
-      category: 'productive' | 'unproductive' | 'neutral';
-    }>();
-    for (const r of rows) {
-      if (!r.application_name) continue;
-      const key = `${r.agent_id}::${r.application_name}`;
-      const existing = map.get(key);
-      const dur = r.duration ?? 0;
-      if (existing) {
-        existing.duration += dur;
-        if (r.created_at > existing.lastActive) {
-          existing.lastActive = r.created_at;
-          existing.windowTitle = r.url ?? existing.windowTitle;
-        }
-      } else {
-        map.set(key, {
-          key,
-          appName: r.application_name,
-          windowTitle: r.url ?? '',
-          agentId: r.agent_id,
-          agentName: r.agent_name,
-          duration: dur,
-          lastActive: r.created_at,
-          category: classify(ruleMap, 'app', r.application_name),
-        });
-      }
-    }
-    return Array.from(map.values()).sort((a, b) => b.duration - a.duration);
-  }, [rows, ruleMap]);
+  const aggregated = useMemo(
+    () => rows.map((r) => ({
+      key: `${r.agent_id}::${r.application_name}`,
+      appName: r.application_name,
+      windowTitle: r.window_title ?? '',
+      agentId: r.agent_id,
+      agentName: r.agent_name,
+      department: r.department,
+      duration: r.total_seconds,
+      lastActive: r.last_seen,
+      // Classified from the agent's own department, so an app that is
+      // productive for one team and unproductive for another reads correctly
+      // per row — and matches what the productivity RPC computes.
+      category: classify(ruleMap, 'app', r.application_name, r.department),
+      overridden: isDepartmentOverridden(ruleMap, 'app', r.application_name, r.department),
+    })),
+    [rows, ruleMap],
+  );
 
-  const filtered = aggregated.filter((log) => {
+  const filtered = useMemo(() => aggregated.filter((log) => {
     const matchCat = catFilter === 'all' || log.category === catFilter;
     const matchSearch =
       search === '' ||
@@ -74,13 +61,16 @@ export default function ApplicationsTab() {
       log.windowTitle.toLowerCase().includes(search.toLowerCase()) ||
       log.agentName.toLowerCase().includes(search.toLowerCase());
     return matchCat && matchSearch;
-  });
+  }), [aggregated, catFilter, search]);
 
-  // Longest row in view — the bar is relative to it, so the duration column
-  // reads as a ranking instead of a list of numbers to compare by eye.
-  const longest = Math.max(1, ...filtered.map((f) => f.duration));
+  const { visible, page, pageCount, setPage, from, to, total } = usePagination(filtered);
+
+  // Longest row ON THIS PAGE — the bar is relative to it, so the duration
+  // column reads as a ranking instead of a list of numbers to compare by eye.
+  // Scoped to the page so bars stay comparable after paging.
+  const longest = Math.max(1, ...visible.map((f) => f.duration));
   // A window title is only worth a column if the agents actually captured one.
-  const hasTitles = filtered.some((f) => f.windowTitle.trim());
+  const hasTitles = visible.some((f) => f.windowTitle.trim());
 
   const showBar = !hasTitles;
 
@@ -139,7 +129,7 @@ export default function ApplicationsTab() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((log) => (
+                {visible.map((log) => (
                   <tr key={log.key}>
                     <td className="text-[12px] t1 font-medium truncate max-w-[240px]" title={log.appName}>
                       {log.appName}
@@ -153,10 +143,22 @@ export default function ApplicationsTab() {
                     )}
                     <td className="text-[11.5px] t2 truncate">{log.agentName || 'Unknown'}</td>
                     <td>
-                      <CategoryBadge
-                        value={log.category}
-                        onChange={(c) => upsertRule('app', log.appName, c)}
-                      />
+                      <span className="flex items-center gap-1">
+                        <CategoryBadge
+                          value={log.category}
+                          onChange={(c) => upsertRule('app', log.appName, c)}
+                        />
+                        {/* This control edits the organisation-wide default. If
+                            a department override is what's actually deciding
+                            this row, changing it here would appear to do
+                            nothing, so say where the value comes from. */}
+                        {log.overridden && (
+                          <i
+                            className="ri-information-line text-[11px] t3"
+                            title={`Set by a ${log.department} department rule. Edit it in Admin Portal → Applications; this control changes the all-departments default.`}
+                          />
+                        )}
+                      </span>
                     </td>
                     <td>
                       <span className="flex items-center gap-2.5 justify-end">
@@ -181,14 +183,14 @@ export default function ApplicationsTab() {
         )}
       </div>
 
-      {hasMore && (
-        <div className="flex justify-center">
-          <button onClick={() => setLimit((l) => l + 200)} className="chip chip-quiet text-[10.5px]">
-            <i className="ri-arrow-down-line" />
-            Load more
-          </button>
-        </div>
-      )}
+      {/* org_app_usage returns every application in the window, so paging is a
+          pure view concern and the total below is the real total — unlike the
+          old "Load more", whose counter described only what had been fetched. */}
+      <Pagination
+        page={page} pageCount={pageCount} from={from} to={to} total={total}
+        onPage={setPage} unit="applications"
+      />
+
       {loading && filtered.length === 0 && (
         <p className="text-center text-[11px] t3 py-3">Loading…</p>
       )}

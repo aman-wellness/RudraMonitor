@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { formatBytes, sevTone, type DlpRow } from '../useDlp';
 import EventDetail from './EventDetail';
+import Pagination, { usePagination } from '@/pages/monitoring/components/Pagination';
 
 /* One event list, shaped to the type it's showing.
 
@@ -77,7 +78,14 @@ export default function EventsTable({
   enabled: boolean;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
+  // Look the detail row up across ALL rows, not just the visible page — a
+  // drawer opened from page 3 must not disappear when the page state resets.
   const open = rows.find((r) => r.id === openId) ?? null;
+
+  // useDlp fetches up to 500 events. A day with an active USB or webmail
+  // channel fills that easily, and every row is something a reviewer has to
+  // read individually rather than skim.
+  const { visible, page, pageCount, setPage, from, to, total } = usePagination(rows);
 
   if (loading && rows.length === 0) {
     return <p className="text-center text-[11px] t3 py-6">Loading…</p>;
@@ -121,7 +129,7 @@ export default function EventsTable({
               </tr>
             </thead>
             <tbody>
-              {rows.map((e) => (
+              {visible.map((e) => (
                 <tr key={e.id} onClick={() => setOpenId(e.id)} title="Open evidence">
                   <td className="text-[11px] t3 whitespace-nowrap tnum">{stamp(e.occurred_at)}</td>
                   <td className="text-[11.5px] t2 truncate">{e.agents?.agent_name ?? '—'}</td>
@@ -174,6 +182,11 @@ export default function EventsTable({
           </table>
         </div>
       </div>
+
+      <Pagination
+        page={page} pageCount={pageCount} from={from} to={to} total={total}
+        onPage={setPage} unit="events"
+      />
 
       {open && <EventDetail row={open} onClose={() => setOpenId(null)} />}
     </>

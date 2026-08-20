@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase';
 import { Bar, EmptyNote, Panel, Segmented } from '@/pages/dashboard/components/ui';
 import { C, formatHm } from '@/pages/dashboard/components/chartKit';
 import { confirmDialog, notify } from '@/lib/notify';
+import Pagination, { usePagination } from '@/pages/monitoring/components/Pagination';
 
 /* All Agents.
 
@@ -195,6 +196,14 @@ export default function AgentsPage() {
       );
     });
   }, [agents, search, deptFilter, statusFilter]);
+
+  // Paginates the RENDER only. Selection deliberately still spans the whole
+  // filtered set: the header checkbox means "every agent this filter matches",
+  // which is what makes a bulk action on a filter useful. Narrowing it to the
+  // current page would quietly change what a bulk action does.
+  const {
+    visible: pageRows, page, pageCount, setPage, from, to, total,
+  } = usePagination(filtered, 24);
 
   // Selection is cleared of anything the current filter hides, so a bulk action
   // can never touch a row the user can't see.
@@ -629,7 +638,7 @@ export default function AgentsPage() {
         {/* --------------------------------------------------- card view ---- */}
         {viewMode === 'grid' && filtered.length > 0 && (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3.5">
-            {filtered.map((agent, i) => (
+            {pageRows.map((agent, i) => (
               <section
                 key={agent.id}
                 className={`panel rise card-link p-4 ${selected.has(agent.id) ? 'is-sel' : ''}`}
@@ -760,7 +769,7 @@ export default function AgentsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map((agent) => (
+                  {pageRows.map((agent) => (
                     <tr key={agent.id} onClick={() => navigate(`/agents/${agent.id}`)}>
                       <td onClick={(e) => { e.stopPropagation(); toggleSelect(agent.id); }}>
                         <span
@@ -856,18 +865,24 @@ export default function AgentsPage() {
             </div>
 
             <div className="px-3 py-2 hair-t">
-              <span className="text-[10px] t3">
-                {filtered.length} of {counts.all} agents
-              </span>
+              <Pagination
+                page={page} pageCount={pageCount} from={from} to={to} total={total}
+                onPage={setPage} unit={`of ${counts.all} agents`}
+              />
             </div>
           </Panel>
         )}
 
         {viewMode === 'grid' && filtered.length > 0 && (
-          <p className="text-[10px] t3 mt-3.5">
-            {filtered.length} of {counts.all} agents · productivity, active and idle over{' '}
-            {winLabel}
-          </p>
+          <div className="mt-3.5 space-y-1.5">
+            <Pagination
+              page={page} pageCount={pageCount} from={from} to={to} total={total}
+              onPage={setPage} unit={`of ${counts.all} agents`}
+            />
+            <p className="text-[10px] t3">
+              productivity, active and idle over {winLabel}
+            </p>
+          </div>
         )}
       </div>
     </DashboardLayout>
