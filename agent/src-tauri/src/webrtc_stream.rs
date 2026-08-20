@@ -147,7 +147,7 @@ pub fn spawn_streaming_loop(state: AppState) {
                 Ok(Some(new_since)) => since = new_since,
                 Ok(None) => {}
                 Err(e) => {
-                    log::warn!("webrtc poll failed: {e}; backing off 10s");
+                    log::warn!("webrtc poll failed: {e:#}; backing off 10s");
                     sleep(Duration::from_secs(10)).await;
                 }
             }
@@ -176,6 +176,8 @@ async fn poll_once(state: &AppState, since: &str) -> Result<Option<String>> {
     let client = api::build_client()?;
     let resp = client
         .get(&url)
+        // Must outlast the endpoint's 25s hold — see api::LONG_POLL_TIMEOUT.
+        .timeout(api::LONG_POLL_TIMEOUT)
         .header("apikey", &anon_key)
         .header("X-Agent-Token", &enrollment.enroll_token)
         .send()
@@ -578,6 +580,10 @@ async fn poll_remote_ice(
     let client = api::build_client()?;
     let resp = client
         .get(&url)
+        // Must outlast the endpoint's 25s hold — see api::LONG_POLL_TIMEOUT.
+        // Remote ICE candidates arrive through this poll, so a premature abort
+        // here delays or drops trickled candidates mid-negotiation.
+        .timeout(api::LONG_POLL_TIMEOUT)
         .header("apikey", &anon_key)
         .header("X-Agent-Token", &enrollment.enroll_token)
         .send()
@@ -856,8 +862,17 @@ pub(crate) async fn pump_ffmpeg_into_track(
     params: Arc<tokio::sync::Mutex<StreamParams>>,
     reload_flag: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<()> {
-    let ffmpeg_bin = crate::ffmpeg::locate_ffmpeg()
-        .ok_or_else(|| anyhow!("ffmpeg not bundled"))?;
+    // `locate_ffmpeg` checks the bundle, the cache dir AND PATH, so the old
+    // "ffmpeg not bundled" wording mislabelled all three misses as a packaging
+    // fault and sent support looking in the installer. Name the locations and
+    // the consequence instead — a Live View session that can never produce a
+    // frame surfaces downstream as LiveKit's opaque "source encoder not ready".
+    let ffmpeg_bin = crate::ffmpeg::locate_ffmpeg().ok_or_else(|| {
+        anyhow!(
+            "no working ffmpeg found (checked app bundle, cache dir and PATH) — \
+             screen encoding is impossible, so this stream cannot start"
+        )
+    })?;
     let frame_duration = Duration::from_millis(1000 / TARGET_FPS as u64);
     // Real-time pacing strategy (revised after v0.2.56 permanently
     // lagged by 2 s):

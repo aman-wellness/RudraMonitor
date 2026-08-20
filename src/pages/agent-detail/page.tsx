@@ -833,6 +833,7 @@ function AgentSystemHealthPanel({ agentId }: { agentId: string }) {
     cpu_usage: number | null;
     ram_usage: number | null;
     disk_usage: number | null;
+    disk_activity: number | null;
     battery_level: number | null;
     network_speed: string | null;
     recorded_at: string;
@@ -847,7 +848,7 @@ function AgentSystemHealthPanel({ agentId }: { agentId: string }) {
     const fetchLatest = async () => {
       const { data } = await supabase
         .from('system_metrics')
-        .select('cpu_usage, ram_usage, disk_usage, battery_level, network_speed, recorded_at')
+        .select('cpu_usage, ram_usage, disk_usage, disk_activity, battery_level, network_speed, recorded_at')
         .eq('agent_id', agentId)
         .order('recorded_at', { ascending: false })
         .limit(1)
@@ -867,8 +868,12 @@ function AgentSystemHealthPanel({ agentId }: { agentId: string }) {
   // the point it is about to die.
   const toneFor = (label: string, val: number | null | undefined) => {
     if (val == null) return C.neutral;
+    // Battery reads the other way round (15% left is the problem), and a full-ish
+    // drive only matters much later than a busy CPU.
     const pressure = label === 'Battery' ? 100 - val : val;
-    return pressure > 80 ? C.danger : pressure > 60 ? C.warning : C.success;
+    const watch = label === 'Disk space' ? 80 : 60;
+    const high = label === 'Disk space' ? 90 : 80;
+    return pressure > high ? C.danger : pressure > watch ? C.warning : C.success;
   };
 
   if (loading) {
@@ -889,7 +894,11 @@ function AgentSystemHealthPanel({ agentId }: { agentId: string }) {
   const cards: Array<{ label: string; value: number | null; suffix?: string; icon: string }> = [
     { label: 'CPU', value: row.cpu_usage, suffix: '%', icon: 'ri-cpu-line' },
     { label: 'Memory', value: row.ram_usage, suffix: '%', icon: 'ri-database-2-line' },
-    { label: 'Disk', value: row.disk_usage, suffix: '%', icon: 'ri-hard-drive-line' },
+    // Two separate disk facts. "Disk" is I/O activity (what Task Manager shows);
+    // "Disk space" is how full the drive is. Showing only the latter under the
+    // bare label "Disk" made a 63%-full idle drive read as 63% disk load.
+    { label: 'Disk', value: row.disk_activity, suffix: '%', icon: 'ri-hard-drive-2-line' },
+    { label: 'Disk space', value: row.disk_usage, suffix: '%', icon: 'ri-hard-drive-line' },
     { label: 'Battery', value: row.battery_level, suffix: '%', icon: 'ri-battery-charge-line' },
   ];
 
@@ -905,7 +914,7 @@ function AgentSystemHealthPanel({ agentId }: { agentId: string }) {
         </span>
       </header>
 
-      <div className="quad-grid">
+      <div className="pent-grid">
         {cards.map((c) => (
           <div key={c.label} className="px-3.5 py-3 min-w-0">
             <span className="flex items-center gap-1.5">
@@ -916,11 +925,13 @@ function AgentSystemHealthPanel({ agentId }: { agentId: string }) {
               {c.value == null ? '—' : `${c.value}${c.suffix ?? ''}`}
             </p>
             <span className="block mt-2">
-              <Bar
-                pct={Math.min(100, Math.max(0, c.value ?? 0))}
-                height={3}
-                color={toneFor(c.label, c.value)}
-              />
+              {c.value != null && (
+                <Bar
+                  pct={Math.min(100, Math.max(0, c.value))}
+                  height={3}
+                  color={toneFor(c.label, c.value)}
+                />
+              )}
             </span>
           </div>
         ))}

@@ -20,7 +20,7 @@ type Series = { key: 'cpu' | 'memory' | 'disk'; label: string; color: string };
 const SERIES: Series[] = [
   { key: 'cpu', label: 'CPU', color: C.accent },
   { key: 'memory', label: 'Memory', color: C.accent2 },
-  { key: 'disk', label: 'Disk', color: C.warning },
+  { key: 'disk', label: 'Disk I/O', color: C.warning },
 ];
 
 export default function PressureChart({

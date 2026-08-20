@@ -21,6 +21,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAgents } from '@/lib/dataHooks';
 import { supabase } from '@/lib/supabase';
+import { edgeError } from '@/lib/livekit-client';
 
 const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL as string) ?? '';
 const ANON_KEY     = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) ?? '';
@@ -83,7 +84,17 @@ export default function RemoteTab() {
         state: 'ready',
       } : s));
     });
-    ch.on('broadcast', { event: 'remote.ended' }, () => {
+    ch.on('broadcast', { event: 'remote.ended' }, ({ payload }) => {
+      // An agent-side abort ends the session just like an admin hang-up, so
+      // without showing the reason the two are indistinguishable: the panel
+      // just dropped back to Idle and the admin had no idea the agent had
+      // failed, let alone that it was a missing rustdesk binary. Only surface
+      // it when the agent ended it — an admin who clicked "End session" does
+      // not need to be told they clicked it.
+      const p = payload as { ended_by?: string; reason?: string | null };
+      if (p.ended_by === 'agent' && p.reason) {
+        setError(`Agent ended the session: ${p.reason}`);
+      }
       setSession((s) => (s ? { ...s, state: 'ended' } : s));
       setTimeout(() => setSession(null), 1500);
     });
@@ -118,8 +129,7 @@ export default function RemoteTab() {
         }),
       });
       if (!resp.ok) {
-        const body = await resp.text().catch(() => '');
-        throw new Error(`remote-session-start ${resp.status}: ${body}`);
+        throw new Error(await edgeError(resp, 'remote-session-start'));
       }
       const r = await resp.json() as {
         session_id: string;

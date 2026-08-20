@@ -1110,6 +1110,28 @@ html.dark .dash .chip-danger  { background: rgba(251, 113, 133, 0.14); }
   .dash .quad-grid > *:not(:first-child) { border-left: 1px solid var(--d-line-soft); }
 }
 
+/* Five-cell strip. Same divider treatment; separate from .quad-grid/.kpi-grid
+   because the hairline positions depend on the column count. */
+.dash .pent-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.dash .pent-grid > *:nth-child(2n) { border-left: 1px solid var(--d-line-soft); }
+.dash .pent-grid > *:nth-child(n + 3) { border-top: 1px solid var(--d-line-soft); }
+
+@media (min-width: 700px) {
+  .dash .pent-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .dash .pent-grid > * { border-left: 0; border-top: 0; }
+  .dash .pent-grid > *:not(:nth-child(3n + 1)) { border-left: 1px solid var(--d-line-soft); }
+  .dash .pent-grid > *:nth-child(n + 4) { border-top: 1px solid var(--d-line-soft); }
+}
+
+@media (min-width: 1150px) {
+  .dash .pent-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .dash .pent-grid > * { border-top: 0; border-left: 0; }
+  .dash .pent-grid > *:not(:first-child) { border-left: 1px solid var(--d-line-soft); }
+}
+
 /* Heatmap: rounded cells on a continuous accent ramp, with the out-of-hours
    columns sitting on a faint warm band instead of each cell carrying its own
    outline. The band reads as a shape; the outlines read as noise. */

@@ -24,6 +24,19 @@ const LIVEKIT_API_SECRET = Deno.env.get("LIVEKIT_API_SECRET")!;
 // Public LiveKit endpoint the client connects to. nginx fronts our self-
 // hosted server at https://api-ems.wellnessextract.com/livekit/.
 const LIVEKIT_URL = Deno.env.get("LIVEKIT_URL") ?? "wss://api-ems.wellnessextract.com/livekit";
+// Server-side address for the Twirp control API. Defaults to LIVEKIT_URL, which
+// is right for the single-host nginx deployment, but they are NOT always the
+// same: this function calls LiveKit from inside the container network while the
+// value it returns is dialled by the BROWSER. Locally those are
+// host.docker.internal vs 127.0.0.1; in k8s it's a cluster service vs a public
+// ingress. Without the split, one of the two always fails.
+const LIVEKIT_API_URL = Deno.env.get("LIVEKIT_API_URL") ?? LIVEKIT_URL;
+// Base the AGENT posts its WHIP offer to. Optional; when unset we fall back to
+// deriving it from LIVEKIT_URL, which assumes the shipped nginx layout (same
+// host, /whip path, TLS). That assumption breaks anywhere WHIP is not
+// co-hosted behind the same TLS terminator — including locally, where ingress
+// is a separate service on :8080 over plain HTTP.
+const LIVEKIT_WHIP_BASE = Deno.env.get("LIVEKIT_WHIP_BASE") ?? "";
 
 type Body = { agent_id?: string };
 
@@ -92,6 +105,22 @@ Deno.serve(async (req) => {
   // Sign LiveKit's standard JWT: claims are HS256-signed with the API
   // secret, the `video` claim carries the room grant. djwt is the
   // minimal pure-Deno JWT library — no Node deps.
+  // Fail with something diagnosable. Without this, an unset LIVEKIT_API_SECRET
+  // reaches importKey as a zero-length key and throws
+  // "DataError: Key length is zero" — a 500 with no hint that the cause is
+  // configuration. Live View then shows a bare "Failed" pill.
+  if (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
+    const missing = [
+      !LIVEKIT_API_KEY ? "LIVEKIT_API_KEY" : null,
+      !LIVEKIT_API_SECRET ? "LIVEKIT_API_SECRET" : null,
+    ].filter(Boolean).join(", ");
+    console.error("livekit-token: not configured, missing", missing);
+    return json({
+      error: "live_view_not_configured",
+      detail: `Live View is not configured on this server (missing ${missing}).`,
+    }, 503);
+  }
+
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
     "raw",
@@ -146,7 +175,7 @@ Deno.serve(async (req) => {
     // Talk to the LiveKit server via the same nginx reverse-proxy the
     // dashboard uses, but on HTTP /livekit (not WS). The twirp endpoint
     // is at /livekit/twirp/livekit.Ingress/CreateIngress.
-    const livekitHttp = LIVEKIT_URL
+    const livekitHttp = LIVEKIT_API_URL
       .replace(/^wss:/, "https:")
       .replace(/^ws:/, "http:")
       .replace(/\/$/, "");
@@ -188,9 +217,14 @@ Deno.serve(async (req) => {
         const lkBase = LIVEKIT_URL
           .replace(/^wss?:/, "https:")
           .replace(/\/livekit\/?$/, "");
-        const publicUrl = body.url && body.url.trim() !== ""
-          ? body.url
-          : `${lkBase}/whip/${body.stream_key}`;
+        // Order matters: an explicit override beats what the ingress service
+        // reported, which in turn beats the nginx-shaped guess.
+        const whipBase = LIVEKIT_WHIP_BASE.replace(/\/$/, "");
+        const publicUrl = whipBase
+          ? `${whipBase}/${body.stream_key}`
+          : body.url && body.url.trim() !== ""
+            ? body.url
+            : `${lkBase}/whip/${body.stream_key}`;
         ingressInfo = {
           ingress_id: body.ingress_id ?? "",
           url: publicUrl,

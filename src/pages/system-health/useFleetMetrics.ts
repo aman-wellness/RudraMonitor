@@ -23,6 +23,7 @@ export type Sample = {
   cpu_usage: number | null;
   ram_usage: number | null;
   disk_usage: number | null;
+  disk_activity: number | null;
   battery_level: number | null;
   network_speed: string | null;
   recorded_at: string;
@@ -31,7 +32,10 @@ export type Sample = {
 export type AgentMetrics = {
   cpu: number | null;
   memory: number | null;
+  /** Disk I/O activity — the Task Manager "Disk" number. Null when unmeasured. */
   disk: number | null;
+  /** Share of the drive that is full. */
+  space: number | null;
   battery: number | null;
   network: string | null;
   down: number | null;
@@ -45,18 +49,29 @@ export type AgentMetrics = {
 /** Agents push metrics every 60s, so anything older than 3 min isn't live. */
 export const STALE_AFTER_MS = 3 * 60 * 1000;
 
-/* Utilisation levels a reading is judged against.
+/* Levels a reading is judged against.
  *
- * PER METRIC on purpose: a disk sitting at 60% is completely normal, while a CPU
- * pinned at 60% is worth a look — one shared number (this page used 60 for all
- * three) flagged three idle laptops for having a half-full disk. Nothing in the
- * product stores these, so they are stated in the UI rather than applied
+ * PER METRIC on purpose, because the three metrics don't measure the same KIND
+ * of thing. The agent computes:
+ *   cpu    — sysinfo global_cpu_usage(): activity, % of time busy
+ *   memory — used_memory / total_memory: occupancy
+ *   disk   — (total_space - available_space) / total_space: CAPACITY, i.e. how
+ *            full the drive is. NOT disk I/O activity, which is what Task
+ *            Manager's "Disk" column shows.
+ *
+ * So a disk at 63% is a two-thirds-full drive and completely normal, while a CPU
+ * pinned at 63% is worth a look. One shared number (this page used 60 for all
+ * three) flagged idle laptops for having a half-full disk. Nothing in the
+ * product stores these levels, so they are stated in the UI rather than applied
  * silently, and `high` matches the dashboard's own 90% "under load" line so the
  * two screens can't disagree about the same machine. */
 export const LIMITS = {
   cpu:    { watch: 70, high: 90 },
   memory: { watch: 75, high: 90 },
-  disk:   { watch: 80, high: 90 },
+  // Activity: a disk pinned busy is a bottleneck, same shape as CPU.
+  disk:   { watch: 70, high: 90 },
+  // Capacity: only interesting when the drive is genuinely filling up.
+  space:  { watch: 80, high: 90 },
 } as const;
 
 export type MetricKey = keyof typeof LIMITS;
@@ -98,8 +113,11 @@ export type Bucket = {
   t: number;
   cpu: number | null;
   memory: number | null;
+  /** Disk I/O activity. */
   disk: number | null;
   samples: number;
+  /** How many samples in this bucket actually carried an activity reading. */
+  diskSamples: number;
 };
 
 const BUCKETS = 28;
@@ -122,7 +140,7 @@ export function useFleetMetrics(windowId: WindowId, agentIds: string[]) {
     const since = new Date(Date.now() - hours * 3600 * 1000).toISOString();
     const { data, error } = await supabase
       .from('system_metrics')
-      .select('agent_id, cpu_usage, ram_usage, disk_usage, battery_level, network_speed, recorded_at, agents!inner(org_id)')
+      .select('agent_id, cpu_usage, ram_usage, disk_usage, disk_activity, battery_level, network_speed, recorded_at, agents!inner(org_id)')
       .gte('recorded_at', since)
       .eq('agents.org_id', orgId)
       .order('recorded_at', { ascending: false })
@@ -154,7 +172,8 @@ export function useFleetMetrics(windowId: WindowId, agentIds: string[]) {
       out[s.agent_id] = {
         cpu: s.cpu_usage,
         memory: s.ram_usage,
-        disk: s.disk_usage,
+        disk: s.disk_activity,
+        space: s.disk_usage,
         battery: s.battery_level,
         network: s.network_speed,
         down,
@@ -169,7 +188,7 @@ export function useFleetMetrics(windowId: WindowId, agentIds: string[]) {
     for (const id of agentIds) {
       if (!out[id]) {
         out[id] = {
-          cpu: null, memory: null, disk: null, battery: null, network: null,
+          cpu: null, memory: null, disk: null, space: null, battery: null, network: null,
           down: null, up: null, recordedAt: null, ageMs: null, fresh: false,
         };
       }
@@ -184,22 +203,25 @@ export function useFleetMetrics(windowId: WindowId, agentIds: string[]) {
     const span = hours * 3600 * 1000;
     const start = now - span;
     const size = span / BUCKETS;
-    const acc = Array.from({ length: BUCKETS }, () => ({ cpu: 0, mem: 0, disk: 0, n: 0 }));
+    const acc = Array.from({ length: BUCKETS }, () => ({ cpu: 0, mem: 0, disk: 0, n: 0, dn: 0 }));
     for (const s of samples) {
       const t = new Date(s.recorded_at).getTime();
       const i = Math.min(BUCKETS - 1, Math.max(0, Math.floor((t - start) / size)));
       const b = acc[i];
       b.cpu += s.cpu_usage ?? 0;
       b.mem += s.ram_usage ?? 0;
-      b.disk += s.disk_usage ?? 0;
       b.n += 1;
+      // Averaged over samples that HAVE a reading, so agents/builds that don't
+      // report activity don't drag the fleet average toward zero.
+      if (typeof s.disk_activity === 'number') { b.disk += s.disk_activity; b.dn += 1; }
     }
     return acc.map((b, i) => ({
       t: start + i * size,
       cpu: b.n ? Math.round(b.cpu / b.n) : null,
       memory: b.n ? Math.round(b.mem / b.n) : null,
-      disk: b.n ? Math.round(b.disk / b.n) : null,
+      disk: b.dn ? Math.round(b.disk / b.dn) : null,
       samples: b.n,
+      diskSamples: b.dn,
     }));
   }, [samples, hours]);
 

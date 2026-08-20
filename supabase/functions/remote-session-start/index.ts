@@ -23,7 +23,7 @@
 // admin RPC against hbbs from the edge function which adds complexity
 // for no real benefit — the agent's ID is naturally globally-unique.
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.4";
+import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.57.4";
 import { create as createJwt, getNumericDate } from "https://deno.land/x/djwt@v3.0.2/mod.ts";
 import { corsHeaders } from "../_shared/cors.ts";
 
@@ -134,19 +134,105 @@ Deno.serve(async (req) => {
   const initialState = autoApprove ? "approved" : "requested";
 
   // ---- Idempotency: reuse an active session if there is one ----
+  //
+  // "Active" deliberately excludes sessions that never got off the ground.
+  // A row sits in requested/consent_pending/approved until the AGENT picks up
+  // the `remote.request` broadcast and calls remote-session-ready (which moves
+  // it to `publishing`). If the agent missed that broadcast — it was offline,
+  // restarting, or its realtime socket was mid-reconnect — nothing ever
+  // advanced the row and nothing reaped it either.
+  //
+  // Reusing such a row wedged Remote permanently: every retry took the reuse
+  // branch below, which skipped the broadcast entirely, so the agent was never
+  // asked again and the dashboard spun on "connecting" forever. Recovery
+  // required manually deleting the row. Observed with a session stuck in
+  // `approved` with started_at NULL for over two hours across many retries.
+  //
+  // So: only pre-launch rows younger than the pickup grace period are worth
+  // reusing. Anything older is treated as dead, marked failed, and replaced —
+  // which is what makes clicking again actually retry.
+  const PICKUP_GRACE_MS = 90_000;
+  const staleBefore = new Date(Date.now() - PICKUP_GRACE_MS).toISOString();
+
+  // A re-announcement is a retry, not an echo of the original request. Without
+  // a floor, two admins clicking within a second of each other (or a reload
+  // then click) would each broadcast `remote.request` for the same row, and an
+  // agent still showing its consent prompt would put up a second one. Anything
+  // this recent has almost certainly already been delivered, so leave it alone.
+  const RE_ANNOUNCE_MIN_AGE_MS = 5_000;
+  const announceIfOlderThan = new Date(Date.now() - RE_ANNOUNCE_MIN_AGE_MS).toISOString();
+
   const { data: existing } = await admin
     .from("remote_sessions")
-    .select("id, state, session_token_jti")
+    .select("id, state, session_token_jti, requested_at")
     .eq("agent_id", agentId)
     .in("state", ["requested", "consent_pending", "approved", "publishing", "active"])
     .order("requested_at", { ascending: false })
     .limit(1)
     .maybeSingle();
-  if (existing) {
+
+  // Retire a pre-launch row the agent clearly never acted on, then fall
+  // through to minting a fresh session below.
+  const preLaunch = ["requested", "consent_pending", "approved"];
+  let reusable = existing;
+  if (
+    existing &&
+    preLaunch.includes((existing as { state: string }).state) &&
+    (existing as { requested_at: string }).requested_at < staleBefore
+  ) {
+    await admin
+      .from("remote_sessions")
+      .update({
+        state: "failed",
+        ended_at: new Date().toISOString(),
+        failure_reason: "agent did not pick up the session request",
+      })
+      .eq("id", (existing as { id: string }).id);
+    reusable = null;
+  }
+
+  if (reusable) {
+    const existing = reusable;
     // Mint a FRESH JWT pointing at the existing session id so the
     // dashboard can still subscribe without leaking the old token.
     const sid = (existing as { id: string }).id;
-    const tok = await mintSessionJwt(sid, agentId, orgId, callerId);
+    let tok: Awaited<ReturnType<typeof mintSessionJwt>>;
+    try {
+      tok = await mintSessionJwt(sid, agentId, orgId, callerId);
+    } catch (e) {
+      if (e instanceof Error && e.message === "remote_not_configured") {
+        return json({
+          error: "remote_not_configured",
+          detail: "Remote control is not configured on this server (missing RD_SESSION_SECRET).",
+        }, 503);
+      }
+      throw e;
+    }
+    // Re-announce ONLY for a session the agent has not confirmed yet.
+    //
+    // Staying silent on every retry is what turned a missed broadcast into a
+    // permanently stuck session, so pre-launch rows get another announcement.
+    // But a `publishing`/`active` row is proof the agent is already serving
+    // this session, and re-announcing one is destructive: the agent's handler
+    // tears down active_session and kills any running rustdesk before starting,
+    // so a second click while a session is live would drop the admin's working
+    // connection. That click was previously a harmless no-op and must stay one.
+    if (
+      preLaunch.includes((existing as { state: string }).state) &&
+      (existing as { requested_at: string }).requested_at < announceIfOlderThan
+    ) {
+      await notifyAgent(admin, agentId, {
+        session_id: sid,
+        viewer_user_id: callerId,
+        viewer_name: u.user.user_metadata?.full_name ?? u.user.email ?? "Admin",
+        reason: reason || null,
+        rustdesk_server: RUSTDESK_SERVER,
+        session_token: tok.token,
+        auto_approved: autoApprove,
+        expires_at: new Date(tok.exp * 1000).toISOString(),
+      });
+    }
+
     return json({
       session_id: sid,
       rustdesk_server: RUSTDESK_SERVER,
@@ -182,7 +268,18 @@ Deno.serve(async (req) => {
   const sessionId = (inserted as { id: string }).id;
 
   // ---- Mint per-session JWT ----
-  const tok = await mintSessionJwt(sessionId, agentId, orgId, callerId);
+  let tok: Awaited<ReturnType<typeof mintSessionJwt>>;
+  try {
+    tok = await mintSessionJwt(sessionId, agentId, orgId, callerId);
+  } catch (e) {
+    if (e instanceof Error && e.message === "remote_not_configured") {
+      return json({
+        error: "remote_not_configured",
+        detail: "Remote control is not configured on this server (missing RD_SESSION_SECRET).",
+      }, 503);
+    }
+    throw e;
+  }
   await admin
     .from("remote_sessions")
     .update({ session_token_jti: tok.jti })
@@ -200,25 +297,16 @@ Deno.serve(async (req) => {
     user_agent: userAgent,
   });
 
-  // ---- Realtime broadcast to the agent ----
-  // The agent's realtime_listener task subscribes to `agent:<id>` and
-  // dispatches `remote.request` payloads into the consent + rustdesk
-  // bring-up pipeline.
-  await admin.channel(`agent:${agentId}`)
-    .send({
-      type: "broadcast",
-      event: "remote.request",
-      payload: {
-        session_id: sessionId,
-        viewer_user_id: callerId,
-        viewer_name: u.user.user_metadata?.full_name ?? u.user.email ?? "Admin",
-        reason: reason || null,
-        rustdesk_server: RUSTDESK_SERVER,
-        session_token: tok.token,
-        auto_approved: autoApprove,
-        expires_at: new Date(tok.exp * 1000).toISOString(),
-      },
-    });
+  await notifyAgent(admin, agentId, {
+    session_id: sessionId,
+    viewer_user_id: callerId,
+    viewer_name: u.user.user_metadata?.full_name ?? u.user.email ?? "Admin",
+    reason: reason || null,
+    rustdesk_server: RUSTDESK_SERVER,
+    session_token: tok.token,
+    auto_approved: autoApprove,
+    expires_at: new Date(tok.exp * 1000).toISOString(),
+  });
 
   return json({
     session_id: sessionId,
@@ -232,6 +320,46 @@ Deno.serve(async (req) => {
 });
 
 // ============================================================
+// Realtime broadcast to the agent.
+//
+// The agent's realtime_listener subscribes to `agent:<id>` and dispatches
+// `remote.request` into the consent + rustdesk bring-up pipeline. Called on
+// BOTH the new-session and reuse paths — see the note at the reuse branch for
+// why skipping it on retry wedged sessions permanently.
+//
+// `send()` resolves to "ok" | "timed out" | "error" rather than throwing. That
+// result used to be discarded, so a broadcast that never reached the agent was
+// indistinguishable from one that did, and the dashboard sat on "connecting"
+// with nothing anywhere saying why. We can't fail the request over it — the row
+// is already committed and the agent may still pick the session up by other
+// means — but it must not vanish silently.
+// ============================================================
+async function notifyAgent(
+  admin: SupabaseClient,
+  agentId: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const status = await admin.channel(`agent:${agentId}`).send({
+      type: "broadcast",
+      event: "remote.request",
+      payload,
+    });
+    if (status !== "ok") {
+      console.error(
+        `remote.request broadcast to agent:${agentId} returned "${status}" ` +
+        `(session ${payload.session_id}) — agent will not have been notified`,
+      );
+    }
+  } catch (e) {
+    console.error(
+      `remote.request broadcast to agent:${agentId} threw ` +
+      `(session ${payload.session_id}): ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
+// ============================================================
 // JWT helper — HS256 over a small claim set. Validated by:
 //   • the agent (verifies signature before launching rustdesk subprocess)
 //   • the dashboard (passed to the rustdesk-web iframe; iframe ignores it
@@ -241,6 +369,13 @@ Deno.serve(async (req) => {
 async function mintSessionJwt(
   sessionId: string, agentId: string, orgId: string, viewerUserId: string,
 ): Promise<{ token: string; jti: string; exp: number }> {
+  // Same trap as livekit-token: an unset secret reaches importKey as a
+  // zero-length key and throws "DataError: Key length is zero", so the caller
+  // sees an opaque 500 instead of "not configured". The error is already logged
+  // upstream; make it a typed failure the handler can turn into a 503.
+  if (!RD_SESSION_SECRET) {
+    throw new Error("remote_not_configured");
+  }
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
     "raw", encoder.encode(RD_SESSION_SECRET),

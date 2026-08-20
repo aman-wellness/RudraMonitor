@@ -38,7 +38,7 @@ const toneFor = (key: MetricKey, v: number | null): string => {
 };
 
 /** The rule, written out — so a coloured number is explainable. */
-const RULE = `CPU ${LIMITS.cpu.watch}% · memory ${LIMITS.memory.watch}% · disk ${LIMITS.disk.watch}%`;
+const RULE = `CPU ${LIMITS.cpu.watch}% · memory ${LIMITS.memory.watch}% · disk ${LIMITS.disk.watch}% · space ${LIMITS.space.watch}%`;
 
 const OS_ICON = (os: string) => {
   if (os.includes('Windows')) return 'ri-windows-fill';
@@ -49,7 +49,12 @@ const OS_ICON = (os: string) => {
 
 /** How far any one metric is past its own watch level. 0 = nothing to see. */
 const worstOverage = (m: AgentMetrics): number =>
-  Math.max(overage('cpu', m.cpu), overage('memory', m.memory), overage('disk', m.disk));
+  Math.max(
+    overage('cpu', m.cpu),
+    overage('memory', m.memory),
+    overage('disk', m.disk),
+    overage('space', m.space),
+  );
 
 function Reading({ metric, value, width = 52 }: { metric: MetricKey; value: number | null; width?: number }) {
   if (value === null) return <span className="text-[11px] t3">—</span>;
@@ -57,7 +62,13 @@ function Reading({ metric, value, width = 52 }: { metric: MetricKey; value: numb
   return (
     <span
       className="flex items-center gap-2 justify-end"
-      title={`${metric} · watch at ${LIMITS[metric].watch}%, high at ${LIMITS[metric].high}%`}
+      title={
+        (metric === 'disk'
+          ? 'disk I/O activity — the same measure as Task Manager\'s "Disk" column'
+          : metric === 'space' ? 'share of the drive that is full'
+          : metric === 'memory' ? 'memory in use' : 'CPU activity')
+        + ` · watch at ${LIMITS[metric].watch}%, high at ${LIMITS[metric].high}%`
+      }
     >
       <span className="flex-1 min-w-[36px] hidden lg:block" style={{ maxWidth: width }}>
         <Bar pct={value} height={4} color={tone} animate={false} />
@@ -100,6 +111,7 @@ export default function SystemHealthPage() {
   const avgCpu = avg((m) => m.cpu);
   const avgMem = avg((m) => m.memory);
   const avgDisk = avg((m) => m.disk);
+  const avgSpace = avg((m) => m.space);
 
   // Ranked by how far past its own watch level the worst metric is, so the list
   // is a queue rather than an unordered set.
@@ -141,9 +153,15 @@ export default function SystemHealthPage() {
       icon: 'ri-cpu-line',
     },
     {
+      label: 'Avg disk',
+      value: avgDisk === null ? '—' : `${avgDisk}%`,
+      sub: avgDisk === null ? 'not reported by this agent build' : 'I/O activity, like Task Manager',
+      icon: 'ri-hard-drive-2-line',
+    },
+    {
       label: 'Avg memory',
       value: avgMem === null ? '—' : `${avgMem}%`,
-      sub: avgDisk === null ? 'disk —' : `disk ${avgDisk}%`,
+      sub: avgSpace === null ? 'space —' : `space ${avgSpace}% full`,
       icon: 'ri-database-2-line',
     },
   ];
@@ -217,7 +235,7 @@ export default function SystemHealthPage() {
         )}
 
         <div className="panel overflow-hidden mb-3">
-          <div className="quad-grid">
+          <div className="pent-grid">
             {cells.map((c) => (
               <div key={c.label} className="px-3.5 py-3 min-w-0">
                 <span className="flex items-center gap-1.5">
@@ -306,13 +324,14 @@ export default function SystemHealthPage() {
                 </div>
               ) : (
                 <div className="overflow-x-auto">
-                  <table className="d-table" style={{ minWidth: 620 }}>
+                  <table className="d-table" style={{ minWidth: 720 }}>
                     <thead>
                       <tr className="hair-b">
                         <th>Agent</th>
                         <th className="text-right" style={{ width: 120 }}>CPU</th>
                         <th className="text-right" style={{ width: 120 }}>Memory</th>
-                        <th className="text-right" style={{ width: 120 }}>Disk</th>
+                        <th className="text-right" style={{ width: 110 }} title="Disk I/O activity, as in Task Manager">Disk</th>
+                        <th className="text-right" style={{ width: 110 }} title="Share of the drive that is full">Disk space</th>
                         <th className="text-right" style={{ width: 86 }}>Reading</th>
                       </tr>
                     </thead>
@@ -331,6 +350,7 @@ export default function SystemHealthPage() {
                           <td><Reading metric="cpu" value={m.cpu} /></td>
                           <td><Reading metric="memory" value={m.memory} /></td>
                           <td><Reading metric="disk" value={m.disk} /></td>
+                          <td><Reading metric="space" value={m.space} /></td>
                           <td className="text-right">
                             <span className={`text-[10.5px] ${m.fresh ? 't-success' : 't-warning'}`}>
                               {m.fresh ? 'live' : formatAge(m.ageMs)}
@@ -381,7 +401,7 @@ export default function SystemHealthPage() {
                 </div>
               ) : (
                 <div className="overflow-x-auto">
-                  <table className="d-table" style={{ minWidth: tab === 'Agents' ? 820 : 660 }}>
+                  <table className="d-table" style={{ minWidth: tab === 'Agents' ? 940 : 660 }}>
                     <thead>
                       <tr className="hair-b">
                         <th>Agent</th>
@@ -390,7 +410,8 @@ export default function SystemHealthPage() {
                             <th style={{ width: 118 }}>OS</th>
                             <th className="text-right" style={{ width: 118 }}>CPU</th>
                             <th className="text-right" style={{ width: 118 }}>Memory</th>
-                            <th className="text-right" style={{ width: 118 }}>Disk</th>
+                            <th className="text-right" style={{ width: 112 }} title="Disk I/O activity, as in Task Manager">Disk</th>
+                            <th className="text-right" style={{ width: 112 }} title="Share of the drive that is full">Disk space</th>
                             <th className="text-right" style={{ width: 70 }}>Battery</th>
                           </>
                         ) : (
@@ -428,6 +449,7 @@ export default function SystemHealthPage() {
                               <td><Reading metric="cpu" value={m.cpu} /></td>
                               <td><Reading metric="memory" value={m.memory} /></td>
                               <td><Reading metric="disk" value={m.disk} /></td>
+                              <td><Reading metric="space" value={m.space} /></td>
                               <td className="text-right text-[11px] t3 tnum">
                                 {m.battery === null ? '—' : `${m.battery}%`}
                               </td>

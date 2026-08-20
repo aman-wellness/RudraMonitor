@@ -73,3 +73,10 @@ rudrans.pem
 builds/
 agent/Dockerfile.linux-build
 shared image.jpeg
+
+# Vendored RustDesk host (~75 MB) and ffmpeg binaries. These must be present for
+# a build that supports Remote Desktop / video, but they are third-party
+# binaries with their own release cadence — fetch them at build time or track
+# them via LFS rather than committing them into git history.
+agent/src-tauri/resources/rustdesk/rustdesk/
+agent/src-tauri/resources/ffmpeg.exe

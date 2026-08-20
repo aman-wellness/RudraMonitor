@@ -269,7 +269,7 @@ export default function ReportsPage() {
           // The last three come from the newest hardware sample, not from the
           // selected range — say so, or a monthly export reads as if the CPU
           // figure were a monthly average.
-          headers: ['Agent Name', 'Department', 'Machine', 'OS', 'Status', 'Productivity %', 'Active Hours', 'Idle Time', 'Total Session', 'Total Events', 'Alerts', 'CPU % (latest)', 'RAM % (latest)', 'Disk % (latest)'],
+          headers: ['Agent Name', 'Department', 'Machine', 'OS', 'Status', 'Productivity %', 'Active Hours', 'Idle Time', 'Total Session', 'Total Events', 'Alerts', 'CPU % (latest)', 'RAM % (latest)', 'Disk % used (latest)'],
           rows: data.map((a) => {
             const c = activityCounts[a.id] || { appSwitches: 0, browserEvents: 0, screenshots: 0, videos: 0, alerts: 0 };
             const t = timeData[a.id] || { session: '-', breaks: '-' };

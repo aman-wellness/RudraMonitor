@@ -189,6 +189,21 @@ pub fn build_client() -> Result<Client> {
         .build()?)
 }
 
+/// Per-request timeout for the `webrtc-signal` long-poll, which MUST exceed
+/// that endpoint's own hold time (`LONG_POLL_TIMEOUT_MS`, 25s).
+///
+/// `build_client`'s 20s default is shorter than the server's 25s hold, so every
+/// idle long-poll aborted client-side ~5s before the server would have replied.
+/// The callers treat that as a failure and back off 10s, which left the agent
+/// deaf to Live View start triggers for roughly a third of every cycle and made
+/// "click Live View" take up to ~10s extra for no reason. Measured before the
+/// fix: a continuous stream of `whip poll failed: whip long-poll; backing off
+/// 10s` on a completely healthy connection.
+///
+/// Set per-request rather than by widening the client default, so ordinary
+/// calls keep failing fast when the backend is genuinely unreachable.
+pub const LONG_POLL_TIMEOUT: Duration = Duration::from_secs(35);
+
 pub async fn enroll(
     client: &Client,
     supabase_url: &str,

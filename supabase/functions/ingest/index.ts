@@ -28,7 +28,7 @@ const ALLOWED_TABLES: Record<string, string> = {
 // Fields we accept per kind. Everything else is dropped — defensive against malformed agents.
 const ALLOWED_FIELDS: Record<string, Set<string>> = {
   system_metrics: new Set([
-    "cpu_usage", "ram_usage", "disk_usage", "battery_level", "network_speed", "recorded_at",
+    "cpu_usage", "ram_usage", "disk_usage", "disk_activity", "battery_level", "network_speed", "recorded_at",
   ]),
   activity_logs: new Set([
     "activity_type", "application_name", "url", "page_title", "duration", "screenshot_url", "video_url", "created_at",

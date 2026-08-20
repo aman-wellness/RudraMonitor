@@ -10,7 +10,13 @@
 //     Long-poll for new messages. Returns immediately if any rows are
 //     available newer than `since`; otherwise blocks up to ~25 seconds
 //     (HTTP keepalive friendly, sub-Cloudflare 30s edge timeout) and
-//     polls every 500 ms before returning whatever it sees.
+//     re-checks every POLL_INTERVAL_MS before returning whatever it sees.
+//
+//     CALLERS MUST USE AN HTTP TIMEOUT GREATER THAN LONG_POLL_TIMEOUT_MS.
+//     The agent shipped a 20s client timeout against this 25s hold, so every
+//     idle poll aborted client-side and was treated as a connection failure —
+//     the agent then backed off 10s, going deaf to Live View start triggers
+//     for about a third of every cycle. See api::LONG_POLL_TIMEOUT agent-side.
 //
 // Auth model mirrors webrtc-turn-credentials:
 //   - Dashboard: user JWT in Authorization header, must be an org member
@@ -271,8 +277,10 @@ async function handleGet(
     return json({ error: "users can only poll direction=to_dashboard" }, 403);
   }
 
-  // Long-poll: spin in 500ms ticks until we see a row newer than `since`,
-  // capped at ~25s so the HTTP timeout never trips on the client side.
+  // Long-poll: spin in POLL_INTERVAL_MS ticks until we see a row newer than
+  // `since`, capped at LONG_POLL_TIMEOUT_MS. That cap only avoids tripping the
+  // caller's HTTP timeout if the caller allows MORE than it — see the header
+  // note; the agent did not, until this was found.
   // Using cancellation via AbortSignal would be cleaner but Deno's Deno.serve
   // doesn't expose request lifecycle hooks reliably across versions.
   const deadline = Date.now() + LONG_POLL_TIMEOUT_MS;

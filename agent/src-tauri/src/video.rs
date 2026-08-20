@@ -176,6 +176,10 @@ fn record_clip_macos_native(ffmpeg_bin: &PathBuf) -> Result<CapturedClip> {
         .arg("-loglevel").arg("error")
         .arg("-i").arg(&mov_str)
         .arg("-vf").arg(SCALE_FILTER)
+        // Same CFR reasoning as the gdigrab/x11grab path below: screencapture
+        // writes a variable-rate .mov, so without this the re-encode can shorten
+        // the clip relative to the wall-clock window it actually covers.
+        .arg("-fps_mode").arg("cfr")
         .arg("-r").arg(FRAMERATE.to_string())
         .arg("-c:v").arg("libx264")
         .arg("-preset").arg("ultrafast")
@@ -219,8 +223,28 @@ fn record_clip_blocking(ffmpeg_bin: &PathBuf) -> Result<CapturedClip> {
         cmd.arg(a);
     }
 
+    // `-fps_mode cfr` plus an explicit output `-r` is what makes the clip's
+    // duration match the wall-clock window it covers.
+    //
+    // `-framerate` above only REQUESTS 5 fps from the grabber. When the desktop
+    // capture can't keep up — routinely the case for the agent, which runs at
+    // background priority — ffmpeg still stops at `-t 30` but has far fewer
+    // frames, and with no output rate specified the muxer writes them at the
+    // declared 5 fps. Measured: 46 frames became a 9.2 s file for a 30 s
+    // capture, so half a minute of activity played back in nine seconds at ~3x
+    // speed while the row we insert claimed duration_secs = 30. Reviewers were
+    // being shown sped-up footage labelled with the wrong length.
+    //
+    // CFR makes ffmpeg duplicate frames to fill the gaps instead, so real time
+    // is preserved and CLIP_DURATION_SECS stays truthful. Duplicate frames cost
+    // almost nothing at crf 28 — they encode as near-empty P-frames.
+    //
+    // NB: `-vsync cfr` is the older spelling of this and has been REMOVED from
+    // current ffmpeg ("Unrecognized option 'vsync'"), so it must not be used.
     cmd.arg("-t").arg(&duration)
         .arg("-vf").arg(SCALE_FILTER)
+        .arg("-fps_mode").arg("cfr")
+        .arg("-r").arg(&framerate)
         .arg("-c:v").arg("libx264")
         .arg("-preset").arg("ultrafast")
         .arg("-crf").arg("28")

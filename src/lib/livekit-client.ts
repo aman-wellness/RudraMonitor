@@ -54,8 +54,7 @@ export async function mintToken(agentId: string): Promise<LiveKitTokenResponse> 
     body: JSON.stringify({ agent_id: agentId }),
   });
   if (!resp.ok) {
-    const body = await resp.text().catch(() => '');
-    throw new Error(`livekit-token ${resp.status}: ${body}`);
+    throw new Error(await edgeError(resp, 'livekit-token'));
   }
   return (await resp.json()) as LiveKitTokenResponse;
 }
@@ -88,8 +87,7 @@ async function postSignal(
     }),
   });
   if (!resp.ok) {
-    const body = await resp.text().catch(() => '');
-    throw new Error(`signal ${kind} ${resp.status}: ${body}`);
+    throw new Error(await edgeError(resp, `signal ${kind}`));
   }
 }
 
@@ -203,4 +201,21 @@ export async function sendControl(room: Room, payload: unknown): Promise<void> {
     enc.encode(JSON.stringify(payload)),
     { reliable: true, topic: 'control' },
   );
+}
+
+/**
+ * Human-readable failure from an edge-function response.
+ *
+ * These functions answer misconfiguration with a JSON body carrying a `detail`
+ * sentence. Interpolating the raw body put `{"error":"live_view_not_configured",
+ * "detail":"..."}` on screen, so the useful sentence was there but unreadable.
+ */
+export async function edgeError(resp: Response, fallbackLabel: string): Promise<string> {
+  const body = await resp.text().catch(() => '');
+  try {
+    const j = JSON.parse(body) as { detail?: string; error?: string };
+    if (j.detail) return j.detail;
+    if (j.error) return j.error;
+  } catch { /* not json — fall through */ }
+  return body ? `${fallbackLabel} ${resp.status}: ${body}` : `${fallbackLabel} ${resp.status}`;
 }

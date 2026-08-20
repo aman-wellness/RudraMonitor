@@ -96,7 +96,7 @@ pub fn spawn_whip_loop(state: AppState) {
                 Ok(Some(new_since)) => since = new_since,
                 Ok(None) => {}
                 Err(e) => {
-                    log::warn!("whip poll failed: {e}; backing off 10s");
+                    log::warn!("whip poll failed: {e:#}; backing off 10s");
                     sleep(Duration::from_secs(10)).await;
                 }
             }
@@ -133,6 +133,8 @@ async fn poll_once(
     let client = api::build_client()?;
     let resp = client
         .get(&url)
+        // Must outlast the endpoint's 25s hold — see api::LONG_POLL_TIMEOUT.
+        .timeout(api::LONG_POLL_TIMEOUT)
         .header("apikey", &anon_key)
         .header("X-Agent-Token", &enrollment.enroll_token)
         .send()
