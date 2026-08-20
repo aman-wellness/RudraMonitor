@@ -3,6 +3,7 @@ import { useActivityLogs, useAgents, useSignedScreenshotUrls, type UiAgent } fro
 import MonitorFilters from './MonitorFilters';
 import { useRegisterRefresh } from './refreshBus';
 import { formatDurationShort, prettyKind } from '@/lib/labels';
+import Pagination, { usePagination } from './Pagination';
 
 /* Screenshot wall, last 72h.
 
@@ -29,19 +30,27 @@ export default function ScreenshotsTab() {
   const { rows, loading, refresh } = useActivityLogs({ type: 'screenshot', agentId: agentFilter, sinceHours: 72, limit: 200 });
   useRegisterRefresh(useCallback(() => { void refresh(); }, [refresh]));
 
-  const paths = useMemo(
-    () => rows.map((r) => r.screenshot_url).filter((p): p is string => !!p),
-    [rows],
-  );
-  const signed = useSignedScreenshotUrls(paths);
-
-  const filtered = rows.filter((ss) => {
+  const filtered = useMemo(() => rows.filter((ss) => {
     const trigger = ss.url ?? 'interval';
     const matchTrigger = triggerFilter === 'all' || trigger === triggerFilter;
     const matchSearch = search === '' || (ss.url ?? '').toLowerCase().includes(search.toLowerCase()) ||
       (ss.agent_name ?? '').toLowerCase().includes(search.toLowerCase());
     return matchTrigger && matchSearch;
-  });
+  }), [rows, triggerFilter, search]);
+
+  // 24 per page — six rows of the four-column grid.
+  const { visible, page, pageCount, setPage, from, to, total } = usePagination(filtered, 24);
+
+  // Sign only the CURRENT PAGE. This used to sign every one of the 200 fetched
+  // rows on mount, so opening the tab issued 200 signing requests and asked the
+  // browser to fetch 200 images at once for a grid that shows a couple of dozen.
+  // Ordering matters here: paths has to be derived from `visible`, which means
+  // filtering and paging must happen before signing rather than after.
+  const paths = useMemo(
+    () => visible.map((r) => r.screenshot_url).filter((p): p is string => !!p),
+    [visible],
+  );
+  const signed = useSignedScreenshotUrls(paths);
 
   // Triggers come from the `url` column on screenshot rows ("interval" or future
   // categories) — derived, so a new trigger the agent starts sending shows up
@@ -94,7 +103,7 @@ export default function ScreenshotsTab() {
         </div>
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2.5">
-          {filtered.map((ss) => {
+          {visible.map((ss) => {
             const url = ss.screenshot_url ? signed[ss.screenshot_url] : null;
             return (
               <button
@@ -125,6 +134,11 @@ export default function ScreenshotsTab() {
           })}
         </div>
       )}
+
+      <Pagination
+        page={page} pageCount={pageCount} from={from} to={to} total={total}
+        onPage={setPage} unit="screenshots"
+      />
 
       {loading && filtered.length === 0 && (
         <p className="text-center text-[11px] t3 py-3">Loading…</p>

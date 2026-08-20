@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import AdminLayout from '../AdminLayout';
 import { supabase, type AuditLogEntry } from '@/lib/supabase';
+import Pager from '@/components/Pager';
+import { usePagination } from '@/lib/usePagination';
 
 export default function AdminAudit() {
   const [rows, setRows] = useState<AuditLogEntry[]>([]);
@@ -21,6 +23,10 @@ export default function AdminAudit() {
   const filtered = rows.filter((r) =>
     !search || r.action.toLowerCase().includes(search.toLowerCase())
   );
+
+  // The audit log is fetched at limit(500) and is append-only, so the newest
+  // page is the one anybody wants; scrolling 500 rows to find it is not it.
+  const { visible, page, pageCount, setPage, from, to, total } = usePagination(filtered, 50);
 
   return (
     <AdminLayout title="Audit Log">
@@ -47,7 +53,7 @@ export default function AdminAudit() {
             {!loading && filtered.length === 0 && (
               <tr><td colSpan={5} className="px-4 py-6 text-center text-gray-500 text-xs">No entries</td></tr>
             )}
-            {filtered.map((r) => (
+            {visible.map((r) => (
               <tr key={r.id} className="hover:bg-dark-700/30">
                 <td className="px-4 py-3 text-gray-500 text-[11px] whitespace-nowrap">
                   {new Date(r.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
@@ -64,6 +70,13 @@ export default function AdminAudit() {
             ))}
           </tbody>
         </table>
+      </div>
+
+      <div className="mt-3">
+        <Pager
+          page={page} pageCount={pageCount} from={from} to={to} total={total}
+          onPage={setPage} unit="entries"
+        />
       </div>
     </AdminLayout>
   );

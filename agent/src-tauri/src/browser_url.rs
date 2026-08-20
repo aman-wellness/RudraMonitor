@@ -123,34 +123,64 @@ pub fn current_for_app(app_name: &str) -> Option<BrowserContext> {
 // Windows
 // ---------------------------------------------------------------------------
 //
-// Native UIA via the `uiautomation` Rust crate — no PowerShell subprocess. Each
-// poll runs in well under 50ms and bypasses PowerShell startup latency, which
-// was the main reason URLs weren't being captured earlier (PowerShell on
-// employee machines occasionally takes 2-5s to start, well past the agent's
-// effective polling budget).
+// Native UIA via the `uiautomation` Rust crate — no PowerShell subprocess.
+//
+// WHY THIS WAS RETURNING NOTHING. Every browser row in the database carried a
+// page_title and an EMPTY url — 153 of 153 on the machine where this was
+// diagnosed, which is a 100% failure rate, not an occasional miss. Three
+// compounding causes:
+//
+//   1. `find_all(TreeScope::Descendants)` enumerates the browser's ENTIRE UIA
+//      tree to collect every Edit control before picking the one that looks
+//      like a URL. On a real Chrome window that is thousands of elements.
+//   2. The walk was abandoned after 400ms — while the comment directly above
+//      it admitted the operation "can take 200-1500ms". The budget sat below
+//      the documented cost of the work, so the walk essentially always lost.
+//   3. On timeout the cache was deliberately left unwritten so the next call
+//      would retry. Combined with (2), every tick paid for a full tree walk
+//      and every tick threw the answer away. The old comment claimed a late
+//      result would be "picked up on the next tick" — it could not be: the
+//      receiver was dropped the instant recv_timeout returned, so the worker
+//      sent its value into a closed channel and it was lost.
+//
+// Consequences went beyond a blank column: with no URL there is no host, so
+// every `match_type = 'host'` row in productivity_rules was dead code that
+// could never match, and no search query or visited domain was ever recorded.
+//
+// Fixes, in order of impact: try a short-circuiting `find_first` before the
+// exhaustive scan; give the walk a budget above its real cost; keep late
+// results in a shared slot instead of discarding them; and remember a walk
+// that genuinely found nothing for NEGATIVE_TTL so an unreadable page does not
+// re-walk the tree on every tick.
+
+/// Budget for one address-bar read. Deliberately above the 200-1500ms range
+/// the operation is known to take — the previous 400ms sat below it.
+#[cfg(target_os = "windows")]
+const UIA_BUDGET: std::time::Duration = std::time::Duration::from_millis(1_500);
+
+/// How long to trust a COMPLETED walk that found no URL before trying again.
+/// Without this, a page whose address bar cannot be read (a PDF viewer, an app
+/// window mis-detected as a browser, a browser with accessibility disabled)
+/// would pay for a full tree walk every tick forever.
+#[cfg(target_os = "windows")]
+const NEGATIVE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
 #[cfg(target_os = "windows")]
 pub fn current_for_app(_app_name: &str) -> Option<BrowserContext> {
-    // UIAutomation tree traversal on a focused browser is expensive — `find_all`
-    // can take 200-1500ms and holds COM apartment locks that briefly stall
-    // input processing in the browser itself (manifests as cursor / scroll
-    // lag for the end-user). Two mitigations:
-    //
-    //   1. Per-HWND title cache. We only re-query UIA when the foreground
-    //      window's title changes (which means a navigation or tab switch).
-    //      A user reading the same page for 30 minutes triggers exactly
-    //      ONE UIA walk, not 360.
-    //   2. Hard 400ms timeout via a worker thread + channel try_recv.
-    //      If UIA hasn't returned by then we abandon the query and fall
-    //      back to the window title. The orphaned thread will finish on
-    //      its own and we'll pick up its result on the next tick if the
-    //      title hasn't changed since.
-    use std::sync::Mutex;
+    // The per-HWND title cache is kept from the original design and is why
+    // this is cheap in the steady state: the address bar is only re-read when
+    // the foreground window's title changes, which means a navigation or a tab
+    // switch. Someone reading one page for 30 minutes triggers exactly one
+    // walk, not 360.
+    use std::sync::{Arc, Mutex};
     use std::sync::OnceLock;
-    use std::time::Duration;
+    use std::time::Instant;
     use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
 
     static CACHE: OnceLock<Mutex<Option<CacheEntry>>> = OnceLock::new();
+    static PENDING: OnceLock<Arc<Mutex<Option<PendingResult>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(None));
+    let pending = PENDING.get_or_init(|| Arc::new(Mutex::new(None)));
 
     // Cheap WinAPI title read — sub-millisecond. Used as the cache key.
     let hwnd = unsafe { GetForegroundWindow() };
@@ -164,49 +194,107 @@ pub fn current_for_app(_app_name: &str) -> Option<BrowserContext> {
         None
     };
 
-    // Cache hit? (same window, same title — same tab + same URL).
+    // Adopt a walk that finished after we stopped waiting for it. This is the
+    // half the old code got wrong — a slow-but-successful read is still a
+    // correct read, and on a machine where the walk reliably exceeds the
+    // budget it is the ONLY way a URL is ever obtained.
+    if let Ok(mut slot) = pending.lock() {
+        if let Some(pr) = slot.as_ref() {
+            if pr.hwnd == hwnd_addr && pr.title == title {
+                if let Ok(mut c) = cache.lock() {
+                    *c = Some(CacheEntry {
+                        hwnd: hwnd_addr,
+                        title: title.clone(),
+                        url: pr.url.clone(),
+                        resolved_at: Instant::now(),
+                    });
+                }
+            }
+            // Either adopted, or it belongs to a tab we have since left.
+            *slot = None;
+        }
+    }
+
     if let Ok(guard) = cache.lock() {
         if let Some(entry) = guard.as_ref() {
             if entry.hwnd == hwnd_addr && entry.title == title {
-                return Some(BrowserContext {
-                    url: entry.url.clone(),
-                    page_title: entry.title.clone(),
-                });
+                // A hit WITH a url is good indefinitely — an unchanged title
+                // means the same page. A hit WITHOUT one is only good for
+                // NEGATIVE_TTL, so a transient failure gets another chance.
+                if entry.url.is_some() || entry.resolved_at.elapsed() < NEGATIVE_TTL {
+                    return Some(BrowserContext {
+                        url: entry.url.clone(),
+                        page_title: entry.title.clone(),
+                    });
+                }
             }
         }
     }
 
-    // Cache miss → do the expensive UIA walk on a worker thread with a
-    // 400ms ceiling. Anything slower than that is unacceptable; the user
-    // gets the title-only fallback this tick and a fresh attempt next
-    // tick (5s later). One stalled UIA worker doesn't stall the next.
+    // Cache miss → walk on a worker thread so a pathological UIA call can
+    // never stall the caller's tick. The worker publishes into the shared slot
+    // whether or not we are still waiting, so no completed work is wasted.
+    let slot = pending.clone();
+    let worker_title = title.clone();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(query_uia(hwnd_addr));
+        let started = Instant::now();
+        let url = query_uia(hwnd_addr);
+        let took_ms = started.elapsed().as_millis();
+        if let Ok(mut g) = slot.lock() {
+            *g = Some(PendingResult { hwnd: hwnd_addr, title: worker_title, url: url.clone() });
+        }
+        match &url {
+            Some(u) => log::debug!("browser_url: read address bar in {took_ms}ms: {u}"),
+            None => log::debug!("browser_url: walk finished in {took_ms}ms, no URL found"),
+        }
+        let _ = tx.send(url);
     });
-    let url = match rx.recv_timeout(Duration::from_millis(400)) {
-        Ok(u) => u,
-        Err(_) => None,
-    };
 
-    // Update cache only when we got an answer — don't poison the cache on
-    // a timeout (next call will retry).
-    if url.is_some() {
-        if let Ok(mut guard) = cache.lock() {
-            *guard = Some(CacheEntry {
-                hwnd: hwnd_addr,
-                title: title.clone(),
-                url: url.clone(),
-            });
+    match rx.recv_timeout(UIA_BUDGET) {
+        Ok(url) => {
+            // Completed in budget. Record it — including a definitive "no URL
+            // here", which NEGATIVE_TTL will expire — and clear the slot so
+            // the same answer is not adopted twice.
+            if let Ok(mut g) = pending.lock() { *g = None; }
+            if let Ok(mut c) = cache.lock() {
+                *c = Some(CacheEntry {
+                    hwnd: hwnd_addr,
+                    title: title.clone(),
+                    url: url.clone(),
+                    resolved_at: Instant::now(),
+                });
+            }
+            if url.is_none() && title.is_none() { return None; }
+            Some(BrowserContext { url, page_title: title })
+        }
+        Err(_) => {
+            // Over budget. Report the title now; the worker will still publish
+            // into the slot and the next tick adopts it.
+            log::debug!(
+                "browser_url: address-bar read exceeded {}ms, using title this tick",
+                UIA_BUDGET.as_millis()
+            );
+            if title.is_none() { return None; }
+            Some(BrowserContext { url: None, page_title: title })
         }
     }
-
-    if url.is_none() && title.is_none() { return None; }
-    Some(BrowserContext { url, page_title: title })
 }
 
 #[cfg(target_os = "windows")]
 struct CacheEntry {
+    hwnd: usize,
+    title: Option<String>,
+    /// None means a walk COMPLETED and found no URL — distinct from "not yet
+    /// attempted", which is the absence of a cache entry altogether.
+    url: Option<String>,
+    resolved_at: std::time::Instant,
+}
+
+/// A walk's result, published by the worker thread so an answer that arrives
+/// after the caller's budget expired is still usable on the next tick.
+#[cfg(target_os = "windows")]
+struct PendingResult {
     hwnd: usize,
     title: Option<String>,
     url: Option<String>,
@@ -221,21 +309,35 @@ fn query_uia(hwnd_addr: usize) -> Option<String> {
     let automation = UIAutomation::new().ok()?;
     let handle = Handle::from(hwnd_addr as isize);
     let root = automation.element_from_handle(handle).ok()?;
+    // ControlType 50004 = Edit, matched by numeric id rather than by name so
+    // the lookup also works on non-English Windows.
     let edit_cond = automation
         .create_property_condition(UIProperty::ControlType, Variant::from(50004i32), None)
         .ok()?;
-    let edits = root.find_all(TreeScope::Descendants, &edit_cond).ok()?;
-    for e in edits.iter() {
-        let value = e
+
+    fn url_of(e: &uiautomation::UIElement) -> Option<String> {
+        let v = e
             .get_property_value(UIProperty::ValueValue)
             .ok()
             .and_then(|v| v.get_string().ok())
-            .filter(|s| !s.is_empty());
-        if let Some(v) = value {
-            if looks_like_url(&v) {
-                return Some(if v.contains("://") { v } else { format!("https://{}", v) });
-            }
-        }
+            .filter(|s| !s.is_empty())?;
+        if !looks_like_url(&v) { return None; }
+        Some(if v.contains("://") { v } else { format!("https://{v}") })
+    }
+
+    // Fast path: stop at the first Edit in the tree. In a browser that is the
+    // omnibox in the overwhelming majority of cases, and it avoids
+    // enumerating the entire element tree.
+    if let Ok(first) = root.find_first(TreeScope::Descendants, &edit_cond) {
+        if let Some(u) = url_of(&first) { return Some(u); }
+    }
+
+    // Slow path, kept for correctness: some layouts (a focused in-page text
+    // field, extra browser chrome) put another Edit first, so scan them all
+    // rather than reporting no URL.
+    let edits = root.find_all(TreeScope::Descendants, &edit_cond).ok()?;
+    for e in edits.iter() {
+        if let Some(u) = url_of(e) { return Some(u); }
     }
     None
 }

@@ -130,15 +130,50 @@ export function useAgents() {
     return () => { void supabase.removeChannel(channel); };
   }, [organization, refresh]);
 
-  const updateDepartment = async (agentId: string, department: string) => {
+  /**
+   * Make sure a department name exists in org_departments.
+   *
+   * The agents page lets an admin type a brand-new department into the
+   * per-agent dropdown. That used to write only agents.department — free text
+   * with no foreign key — so the department worked everywhere that reads the
+   * agent row (listings, filters, reports) but never appeared in Admin Portal →
+   * Departments, which reads org_departments. It also meant
+   * org_departments.agent_count stayed 0 for it, so the "N agents assigned"
+   * warning shown before deleting a department could not fire for exactly the
+   * departments most likely to be in use.
+   *
+   * Best-effort: a failure here must not block the assignment itself, which is
+   * the thing the admin actually asked for. Idempotent — ON CONFLICT DO NOTHING
+   * against the (org_id, name) unique key.
+   */
+  const ensureDepartment = async (name: string) => {
+    if (!organization) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const { error } = await supabase
+      .from('org_departments')
+      .upsert({ org_id: organization.id, name: trimmed }, { onConflict: 'org_id,name', ignoreDuplicates: true });
+    if (error) console.error('ensureDepartment', trimmed, error.message);
+  };
+
+  const updateDepartment = async (agentId: string, agentDepartment: string) => {
     if (!organization) return;
     const prev = agents;
-    setAgents((p) => p.map((a) => (a.id === agentId ? { ...a, department } : a)));
+    setAgents((p) => p.map((a) => (a.id === agentId ? { ...a, department: agentDepartment } : a)));
+
+    // BEFORE the agent update, not after. trg_agents_dept_count fires on the
+    // agents write and calls refresh_dept_agent_count(org, dept), which can
+    // only update an org_departments row that already exists. Creating the
+    // department afterwards would leave it at its default agent_count of 0
+    // until some unrelated change to that agent happened to fire the trigger
+    // again.
+    await ensureDepartment(agentDepartment);
+
     // Defense-in-depth: RLS already scopes by org, but adding org_id to the
     // filter makes a cross-org mutation impossible even if RLS misconfigures.
     const { error } = await supabase
       .from('agents')
-      .update({ department })
+      .update({ department: agentDepartment })
       .eq('id', agentId)
       .eq('org_id', organization.id);
     if (error) {
@@ -149,6 +184,10 @@ export function useAgents() {
 
   const createAgent = async (input: { agentName: string; machineName?: string; osType?: string; department?: string }) => {
     if (!organization) throw new Error('No organization loaded');
+    // Same reason and same ordering as updateDepartment: the department has to
+    // exist before the agents row is written, or the count trigger has nothing
+    // to update.
+    if (input.department) await ensureDepartment(input.department);
     const { data, error } = await supabase
       .from('agents')
       .insert({
@@ -185,6 +224,8 @@ export type ActivityLogRow = {
   id: string;
   agent_id: string;
   agent_name: string;
+  /** Reporting agent's department, needed to resolve department-scoped rules. */
+  agent_department: string | null;
   activity_type: 'app' | 'browser' | 'idle' | 'alert' | 'screenshot' | 'video' | 'session_start';
   application_name: string | null;
   url: string | null;
@@ -226,7 +267,7 @@ export function useActivityLogs(filter: ActivityFilter = {}) {
     const since = new Date(Date.now() - sinceHours * 3600 * 1000).toISOString();
     let q = supabase
       .from('activity_logs')
-      .select('id, agent_id, activity_type, application_name, url, duration, screenshot_url, video_url, created_at, agents!inner(agent_name, org_id)')
+      .select('id, agent_id, activity_type, application_name, url, duration, screenshot_url, video_url, created_at, agents!inner(agent_name, department, org_id)')
       .gte('created_at', since)
       .eq('agents.org_id', organization.id)
       .order('created_at', { ascending: false })
@@ -251,12 +292,13 @@ export function useActivityLogs(filter: ActivityFilter = {}) {
         screenshot_url: string | null;
         video_url: string | null;
         created_at: string;
-        agents: { agent_name: string } | { agent_name: string }[];
+        agents: { agent_name: string; department: string | null } | { agent_name: string; department: string | null }[];
       };
       const mapped: ActivityLogRow[] = (data as Joined[]).map((r) => ({
         id: r.id,
         agent_id: r.agent_id,
         agent_name: Array.isArray(r.agents) ? (r.agents[0]?.agent_name ?? '') : r.agents?.agent_name ?? '',
+        agent_department: Array.isArray(r.agents) ? (r.agents[0]?.department ?? null) : r.agents?.department ?? null,
         activity_type: r.activity_type,
         application_name: r.application_name,
         url: r.url,
@@ -414,6 +456,116 @@ export function useOrgMembers() {
   return { members, loading, refresh, inviteMember, resendInvite, removeMember };
 }
 
+// =============== Aggregated application usage ===============
+
+export type AppUsageRow = {
+  agent_id: string;
+  agent_name: string;
+  department: string | null;
+  application_name: string;
+  window_title: string | null;
+  total_seconds: number;
+  events: number;
+  last_seen: string;
+};
+
+/**
+ * Per (agent, application) foreground time for a window, aggregated in SQL.
+ *
+ * Replaces fetching raw activity_logs and grouping client-side. That approach
+ * applied its row limit BEFORE grouping, so one busy application could consume
+ * the whole page and hide every other app the employee used — and each
+ * surviving app's duration was only the part of it that fitted in the window.
+ * See migration 0130 for the measurements.
+ */
+export function useAppUsage(filter: { agentId?: string; sinceHours?: number } = {}) {
+  const { organization } = useAuth();
+  const [rows, setRows] = useState<AppUsageRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const sinceHours = filter.sinceHours ?? 24;
+  const agentId = filter.agentId;
+
+  const refresh = useCallback(async () => {
+    if (!organization) {
+      setRows([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    const { data, error: err } = await supabase.rpc('org_app_usage', {
+      p_org_id: organization.id,
+      p_since: new Date(Date.now() - sinceHours * 3600 * 1000).toISOString(),
+      p_agent_id: agentId && agentId !== 'all' ? agentId : null,
+    });
+    if (err) setError(err.message);
+    else setError(null);
+    setRows((data as AppUsageRow[]) ?? []);
+    setLoading(false);
+  }, [organization, sinceHours, agentId]);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  return { rows, loading, error, refresh };
+}
+
+// =============== Aggregated browsing ===============
+
+export type BrowserUsageRow = {
+  agent_id: string;
+  agent_name: string;
+  department: string | null;
+  host: string;
+  page_title: string | null;
+  last_url: string | null;
+  total_seconds: number;
+  visits: number;
+  last_visit: string;
+  unresolved_samples: number;
+  unresolved_seconds: number;
+};
+
+/**
+ * Per (agent, host) browsing time, aggregated in SQL — see migration 0131.
+ *
+ * Fixes three things the client-side version got wrong: the row limit truncated
+ * the list before grouping, activity_logs.page_title was never fetched so the
+ * raw URL was displayed instead of the page title, and samples with no readable
+ * address bar collapsed into one unnamed group that outranked every real site.
+ */
+export function useBrowserUsage(filter: { agentId?: string; sinceHours?: number } = {}) {
+  const { organization } = useAuth();
+  const [rows, setRows] = useState<BrowserUsageRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const sinceHours = filter.sinceHours ?? 24;
+  const agentId = filter.agentId;
+
+  const refresh = useCallback(async () => {
+    if (!organization) {
+      setRows([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    const { data, error: err } = await supabase.rpc('org_browser_usage', {
+      p_org_id: organization.id,
+      p_since: new Date(Date.now() - sinceHours * 3600 * 1000).toISOString(),
+      p_agent_id: agentId && agentId !== 'all' ? agentId : null,
+    });
+    if (err) setError(err.message);
+    else setError(null);
+    setRows((data as BrowserUsageRow[]) ?? []);
+    setLoading(false);
+  }, [organization, sinceHours, agentId]);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  return { rows, loading, error, refresh };
+}
+
 // =============== Productivity rules ===============
 
 export type Category = 'productive' | 'unproductive' | 'neutral';
@@ -425,16 +577,85 @@ export type ProductivityRule = {
   match_type: MatchType;
   pattern: string;
   category: Category;
+  /** null = organisation-wide default, applying to every department. */
+  department: string | null;
 };
 
-// Lookup table keyed by `${match_type}:${pattern.toLowerCase()}` for O(1) classification.
+// Lookup table for O(1) classification. The key includes the department scope
+// because a pattern can carry both an organisation-wide default and a
+// department override — keying on (match_type, pattern) alone made the two
+// collide, and whichever row the query happened to return last silently won.
 export type RuleMap = Record<string, Category>;
 
-export const ruleKey = (matchType: MatchType, pattern: string) =>
-  `${matchType}:${pattern.toLowerCase()}`;
+export const ruleKey = (matchType: MatchType, pattern: string, department?: string | null) =>
+  `${(department ?? '').trim().toLowerCase()}|${matchType}:${pattern.toLowerCase()}`;
 
-export const classify = (rules: RuleMap, matchType: MatchType, pattern: string): Category =>
-  rules[ruleKey(matchType, pattern)] ?? 'neutral';
+/**
+ * Candidate patterns for a subject, most specific first.
+ *
+ * Hosts also match by SUFFIX, so one rule per registrable domain covers its
+ * subdomains — `github.com` classifies `gist.github.com`. Without this, a rule
+ * catalogue would classify almost nothing, because real browsing is mostly
+ * subdomains (`console.firebase.google.com`,
+ * `eu-north-1.console.aws.amazon.com`). Applications are matched exactly; a
+ * process name has no hierarchy to walk.
+ *
+ * Longest first, so an explicit `docs.google.com` rule beats a general
+ * `google.com` one — the same ordering the RPC applies with
+ * `ORDER BY length(pattern) DESC`.
+ */
+const candidatePatterns = (matchType: MatchType, subject: string): string[] => {
+  const s = subject.trim().toLowerCase();
+  if (matchType !== 'host') return [s];
+  const labels = s.split('.');
+  const out: string[] = [];
+  // Stop at two labels: a bare TLD is never a meaningful rule.
+  for (let i = 0; i + 2 <= labels.length; i++) out.push(labels.slice(i).join('.'));
+  return out.length ? out : [s];
+};
+
+/**
+ * Effective category for a subject, from the point of view of one department.
+ *
+ * Precedence mirrors the LEFT JOIN LATERAL in the org_productivity_* RPCs
+ * exactly: EVERY department-scoped match outranks EVERY organisation-wide one,
+ * and within a scope the most specific pattern wins. Note the ordering — a
+ * department rule for `google.com` beats an org-wide rule for
+ * `docs.google.com`, because the RPC sorts by `(department IS NULL)` before
+ * `length(pattern)`. If the two implementations disagreed, the dashboard would
+ * show one category and the productivity figure would be computed from another.
+ *
+ * Falls back to 'unproductive', not 'neutral': anything not in the catalogue
+ * does not count as work (see migration 0134). 'neutral' remains reachable only
+ * as an explicit rule, and is excluded from the ratio entirely.
+ */
+export const classify = (
+  rules: RuleMap,
+  matchType: MatchType,
+  pattern: string,
+  department?: string | null,
+): Category => {
+  const candidates = candidatePatterns(matchType, pattern);
+  for (const scope of department ? [department, null] : [null]) {
+    for (const c of candidates) {
+      const hit = rules[ruleKey(matchType, c, scope)];
+      if (hit) return hit;
+    }
+  }
+  return 'unproductive';
+};
+
+/** True when a department override — not the org-wide default — is deciding this row. */
+export const isDepartmentOverridden = (
+  rules: RuleMap,
+  matchType: MatchType,
+  pattern: string,
+  department?: string | null,
+): boolean => {
+  if (!department) return false;
+  return candidatePatterns(matchType, pattern)
+    .some((c) => rules[ruleKey(matchType, c, department)] !== undefined);
+};
 
 export function useProductivityRules() {
   const { organization } = useAuth();
@@ -462,7 +683,7 @@ export function useProductivityRules() {
 
   const ruleMap: RuleMap = useMemo(() => {
     const m: RuleMap = {};
-    for (const r of rules) m[ruleKey(r.match_type, r.pattern)] = r.category;
+    for (const r of rules) m[ruleKey(r.match_type, r.pattern, r.department)] = r.category;
     return m;
   }, [rules]);
 
@@ -470,19 +691,30 @@ export function useProductivityRules() {
     if (!organization) return;
     const trimmed = pattern.trim();
     if (!trimmed) return;
-    // Optimistic update keyed by (match_type, pattern).
+    // The inline classifier in Live monitoring writes the ORGANISATION-WIDE
+    // default (department null), which is what it has always done. Department
+    // overrides are managed in Admin Portal → Applications, so a quick
+    // reclassification here can never narrow a rule to one team by accident.
     setRules((prev) => {
-      const others = prev.filter((r) => !(r.match_type === matchType && r.pattern.toLowerCase() === trimmed.toLowerCase()));
+      const others = prev.filter((r) => !(
+        r.match_type === matchType
+        && r.pattern.toLowerCase() === trimmed.toLowerCase()
+        && r.department === null
+      ));
       return [
         ...others,
-        { id: 'temp', org_id: organization.id, match_type: matchType, pattern: trimmed, category },
+        { id: 'temp', org_id: organization.id, match_type: matchType, pattern: trimmed, category, department: null },
       ];
     });
     const { error } = await supabase
       .from('productivity_rules')
       .upsert(
-        { org_id: organization.id, match_type: matchType, pattern: trimmed, category },
-        { onConflict: 'org_id,match_type,pattern' },
+        { org_id: organization.id, match_type: matchType, pattern: trimmed, category, department: null },
+        // Must name the CURRENT unique key. This was
+        // 'org_id,match_type,pattern' until department was added; that
+        // constraint no longer exists, so leaving it would have made every
+        // inline reclassification fail.
+        { onConflict: 'org_id,match_type,pattern,department' },
       );
     if (error) {
       void refresh();
@@ -491,16 +723,25 @@ export function useProductivityRules() {
     void refresh();
   };
 
+  // Deletes the ORGANISATION-WIDE default only, mirroring upsertRule. Without
+  // the department filter this removed every scope for the pattern, so
+  // clearing a default from Live monitoring would also silently destroy every
+  // department override an admin had configured for it.
   const deleteRule = async (matchType: MatchType, pattern: string) => {
     if (!organization) return;
     const prev = rules;
-    setRules((p) => p.filter((r) => !(r.match_type === matchType && r.pattern.toLowerCase() === pattern.toLowerCase())));
+    setRules((p) => p.filter((r) => !(
+      r.match_type === matchType
+      && r.pattern.toLowerCase() === pattern.toLowerCase()
+      && r.department === null
+    )));
     const { error } = await supabase
       .from('productivity_rules')
       .delete()
       .eq('org_id', organization.id)
       .eq('match_type', matchType)
-      .eq('pattern', pattern);
+      .eq('pattern', pattern)
+      .is('department', null);
     if (error) {
       setRules(prev);
       throw error;
@@ -607,7 +848,31 @@ export function useAlerts(
     }
   };
 
-  return { rows, loading, refresh, resolveAlert };
+  /**
+   * Resolve several alerts in one round trip.
+   *
+   * Not a loop over resolveAlert: triaging a noisy day can mean hundreds of
+   * rows, and that would be hundreds of sequential requests with a partially
+   * applied result if one failed halfway. A single `in` filter either applies to
+   * all of them or to none.
+   */
+  const resolveAlerts = async (alertIds: string[], resolution: string) => {
+    if (alertIds.length === 0) return 0;
+    const ids = new Set(alertIds);
+    const prev = rows;
+    setRows((p) => p.map((a) => (ids.has(a.id) ? { ...a, ai_resolved: true, resolution } : a)));
+    const { error } = await supabase
+      .from('alerts')
+      .update({ ai_resolved: true, resolution })
+      .in('id', alertIds);
+    if (error) {
+      setRows(prev);
+      throw error;
+    }
+    return alertIds.length;
+  };
+
+  return { rows, loading, refresh, resolveAlert, resolveAlerts };
 }
 
 // =============== Latest system metrics per agent ===============

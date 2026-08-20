@@ -4,6 +4,7 @@ import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import { useAlerts } from '@/lib/dataHooks';
 import { formatRelative, kindColor, prettyKind } from '@/lib/labels';
 import { notify, promptDialog } from '@/lib/notify';
+import Pagination, { usePagination } from '@/pages/monitoring/components/Pagination';
 
 /* Alert triage.
 
@@ -29,11 +30,12 @@ type Filter = 'open' | 'resolved' | 'all';
 
 export default function AlertsPage() {
   const navigate = useNavigate();
-  const { rows: allAlerts, loading, resolveAlert, refresh } = useAlerts({ sinceHours: WINDOW_HOURS });
+  const { rows: allAlerts, loading, resolveAlert, resolveAlerts, refresh } = useAlerts({ sinceHours: WINDOW_HOURS });
   const [kind, setKind] = useState<string>('all');
   const [filter, setFilter] = useState<Filter>('open');
   const [search, setSearch] = useState('');
   const [resolving, setResolving] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   // Kinds are derived from the alert_type values actually present, so the filter
   // always reflects real agent alerts instead of a hardcoded Error/Warning/Info
@@ -58,6 +60,10 @@ export default function AlertsPage() {
       );
     });
   }, [allAlerts, kind, filter, search]);
+
+  // Alerts are fetched with NO limit and accumulate indefinitely, so this is the
+  // list most likely to reach thousands of rows on a busy fleet.
+  const { visible, page, pageCount, setPage, from, to, total } = usePagination(filtered);
 
   const open = allAlerts.filter((a) => !a.ai_resolved);
   const cells = [
@@ -87,6 +93,38 @@ export default function AlertsPage() {
       icon: 'ri-price-tag-3-line',
     },
   ];
+
+  // "All" means everything the CURRENT filters match and that is still open —
+  // not every alert in the org. Someone who has filtered to one kind, or
+  // searched for one machine, is asking to clear that, and silently resolving
+  // beyond what they can see would be the wrong kind of surprise. Scoped to
+  // `filtered` rather than the visible page for the same reason: the button says
+  // "all", and paging is a view concern.
+  const openInView = useMemo(() => filtered.filter((a) => !a.ai_resolved), [filtered]);
+
+  const onResolveAll = async () => {
+    const note = await promptDialog({
+      title: `Resolve ${openInView.length} alert${openInView.length === 1 ? '' : 's'}?`,
+      body:
+        openInView.length === filtered.length
+          ? 'Every alert in this view will be marked resolved with the same note.'
+          : `${openInView.length} of the ${filtered.length} alerts in this view are still open. `
+            + 'They will all be marked resolved with the same note.',
+      placeholder: 'What was done?',
+      defaultValue: 'Reviewed in bulk and closed',
+      confirmLabel: `Resolve ${openInView.length}`,
+    });
+    if (note === null) return;
+    setBulkBusy(true);
+    try {
+      const n = await resolveAlerts(openInView.map((a) => a.id), note.trim());
+      notify.success(`${n} alert${n === 1 ? '' : 's'} resolved`);
+    } catch (e) {
+      notify.fail('Could not resolve the alerts', e);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   const onResolve = async (alertId: string, message: string) => {
     // The resolution text is displayed on the row, so ask what was actually
@@ -127,10 +165,24 @@ export default function AlertsPage() {
             <h1 className="num" style={{ fontSize: 17 }}>Alerts</h1>
             <span className="text-[11px] t3">last 7 days</span>
           </div>
-          <button onClick={() => void refresh()} className="chip chip-quiet text-[10.5px]">
-            <i className={`ri-refresh-line ${loading ? 'animate-spin' : ''}`} />
-            Refresh
-          </button>
+          <div className="flex items-center gap-1.5">
+            {/* Only offered when the current view actually contains something to
+                resolve, so it never appears as a button that would do nothing. */}
+            {openInView.length > 0 && (
+              <button
+                onClick={() => void onResolveAll()}
+                disabled={bulkBusy}
+                className="chip chip-quiet text-[10.5px] disabled:opacity-50"
+              >
+                <i className={bulkBusy ? 'ri-loader-4-line animate-spin' : 'ri-check-double-line'} />
+                {bulkBusy ? 'Resolving…' : `Resolve all (${openInView.length})`}
+              </button>
+            )}
+            <button onClick={() => void refresh()} className="chip chip-quiet text-[10.5px]">
+              <i className={`ri-refresh-line ${loading ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
+          </div>
         </div>
 
         <div className="panel overflow-hidden mb-3">
@@ -242,7 +294,7 @@ export default function AlertsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map((a) => {
+                  {visible.map((a) => {
                     const tone = kindColor(a.alert_type);
                     return (
                       <tr key={a.id}>
@@ -313,6 +365,11 @@ export default function AlertsPage() {
               </table>
             </div>
           )}
+
+          <Pagination
+            page={page} pageCount={pageCount} from={from} to={to} total={total}
+            onPage={setPage} unit="alerts"
+          />
         </div>
       </div>
     </DashboardLayout>

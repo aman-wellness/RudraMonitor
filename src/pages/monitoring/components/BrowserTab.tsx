@@ -1,19 +1,20 @@
 import { useCallback, useMemo, useState } from 'react';
-import { useActivityLogs, useAgents, useProductivityRules, classify } from '@/lib/dataHooks';
+import {
+  useBrowserUsage, useAgents, useProductivityRules, classify, isDepartmentOverridden,
+} from '@/lib/dataHooks';
 import CategoryBadge from '@/components/feature/CategoryBadge';
 import MonitorFilters, { type CategoryFilter } from './MonitorFilters';
 import { useRegisterRefresh } from './refreshBus';
 import { formatDurationShort } from '@/lib/labels';
 import { Bar } from '@/pages/dashboard/components/ui';
 import { C } from '@/pages/dashboard/components/chartKit';
+import Pagination, { usePagination } from './Pagination';
 
-// Best-effort: window titles aren't true URLs. Pull a domain-like substring if present, otherwise
-// fall back to the full title so the row is still meaningful.
-const extractHost = (title: string | null): string => {
-  if (!title) return '—';
-  const m = title.match(/(?:https?:\/\/)?([a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\.[a-z]{2,})?)/i);
-  return m?.[1] ?? title.slice(0, 60);
-};
+/* Hosts are grouped and titles resolved by org_browser_usage (migration 0131).
+   The client used to do this over a limited slice of raw rows, which truncated
+   the list, and it displayed `url` in the page column because
+   activity_logs.page_title was never fetched — so a Google search rendered as
+   ~300 characters of tracking parameters instead of its title. */
 
 export default function BrowserTab() {
   const { agents } = useAgents();
@@ -21,54 +22,36 @@ export default function BrowserTab() {
   const [catFilter, setCatFilter] = useState<CategoryFilter>('all');
   const [search, setSearch] = useState('');
 
-  const [limit, setLimit] = useState(200);
-  const { rows, loading, refresh } = useActivityLogs({ type: 'browser', agentId: agentFilter, sinceHours: 24, limit });
-  const hasMore = rows.length >= limit;
+  const { rows, loading, refresh } = useBrowserUsage({ agentId: agentFilter, sinceHours: 24 });
   const { ruleMap, upsertRule } = useProductivityRules();
   useRegisterRefresh(useCallback(() => { void refresh(); }, [refresh]));
 
-  const aggregated = useMemo(() => {
-    const map = new Map<string, {
-      key: string;
-      url: string;
-      pageTitle: string;
-      agentId: string;
-      agentName: string;
-      timeSpentSec: number;
-      visits: number;
-      lastVisit: string;
-      category: 'productive' | 'unproductive' | 'neutral';
-    }>();
-    for (const r of rows) {
-      const host = extractHost(r.url);
-      const key = `${r.agent_id}::${host}`;
-      const existing = map.get(key);
-      const dur = r.duration ?? 0;
-      if (existing) {
-        existing.timeSpentSec += dur;
-        existing.visits += 1;
-        if (r.created_at > existing.lastVisit) {
-          existing.lastVisit = r.created_at;
-          existing.pageTitle = r.url ?? existing.pageTitle;
-        }
-      } else {
-        map.set(key, {
-          key,
-          url: host,
-          pageTitle: r.url ?? '',
-          agentId: r.agent_id,
-          agentName: r.agent_name,
-          timeSpentSec: dur,
-          visits: 1,
-          lastVisit: r.created_at,
-          category: classify(ruleMap, 'host', host),
-        });
-      }
-    }
-    return Array.from(map.values()).sort((a, b) => b.timeSpentSec - a.timeSpentSec);
-  }, [rows, ruleMap]);
+  const aggregated = useMemo(
+    () => rows.map((r) => ({
+      // Rows are per PAGE now, so the host alone is no longer unique — several
+      // searches share one host and React would see duplicate keys.
+      key: `${r.agent_id}::${r.host}::${r.page_title}`,
+      url: r.host,
+      pageTitle: r.page_title ?? '',
+      lastUrl: r.last_url ?? '',
+      agentId: r.agent_id,
+      agentName: r.agent_name,
+      department: r.department,
+      timeSpentSec: r.total_seconds,
+      visits: r.visits,
+      lastVisit: r.last_visit,
+      category: classify(ruleMap, 'host', r.host, r.department),
+      overridden: isDepartmentOverridden(ruleMap, 'host', r.host, r.department),
+    })),
+    [rows, ruleMap],
+  );
 
-  const filtered = aggregated.filter((log) => {
+  // Constant across rows; reported under the table rather than folded in as an
+  // unnamed group, which used to outrank every real site.
+  const unresolvedSamples = rows[0]?.unresolved_samples ?? 0;
+  const unresolvedSeconds = rows[0]?.unresolved_seconds ?? 0;
+
+  const filtered = useMemo(() => aggregated.filter((log) => {
     const matchCat = catFilter === 'all' || log.category === catFilter;
     const matchSearch =
       search === '' ||
@@ -76,16 +59,14 @@ export default function BrowserTab() {
       log.pageTitle.toLowerCase().includes(search.toLowerCase()) ||
       log.agentName.toLowerCase().includes(search.toLowerCase());
     return matchCat && matchSearch;
-  });
+  }), [aggregated, catFilter, search]);
 
-  const longest = Math.max(1, ...filtered.map((f) => f.timeSpentSec));
-  // The "page title" column showed r.url — the same string the Site column is
-  // derived from, so "reddit.com | https://reddit.com/r/x" on every row. Only
-  // worth its width when it carries something the host doesn't already say.
-  const hasPath = filtered.some((f) => {
-    const t = f.pageTitle.trim();
-    return t && t !== f.url && t.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '') !== f.url;
-  });
+  const { visible, page, pageCount, setPage, from, to, total } = usePagination(filtered);
+
+  // Scale the bar against the widest row ON THIS PAGE, so the comparison stays
+  // meaningful after paging rather than every bar on page 4 being a stub.
+  const longest = Math.max(1, ...visible.map((f) => f.timeSpentSec));
+  const hasPath = visible.some((f) => f.pageTitle.trim());
 
   const showBar = !hasPath;
 
@@ -145,9 +126,9 @@ export default function BrowserTab() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((log) => (
+                {visible.map((log) => (
                   <tr key={log.key}>
-                    <td className="text-[12px] t1 font-medium truncate max-w-[220px]" title={log.url}>
+                    <td className="text-[12px] t1 font-medium truncate max-w-[220px]" title={log.lastUrl || log.url}>
                       {log.url}
                     </td>
                     {hasPath && (
@@ -159,10 +140,21 @@ export default function BrowserTab() {
                     )}
                     <td className="text-[11.5px] t2 truncate">{log.agentName || 'Unknown'}</td>
                     <td>
-                      <CategoryBadge
-                        value={log.category}
-                        onChange={(c) => upsertRule('host', log.url, c)}
-                      />
+                      <span className="flex items-center gap-1">
+                        <CategoryBadge
+                          value={log.category}
+                          onChange={(c) => upsertRule('host', log.url, c)}
+                        />
+                        {/* This control edits the all-departments default, so
+                            say when a department rule is what's deciding the
+                            row — otherwise changing it looks like a no-op. */}
+                        {log.overridden && (
+                          <i
+                            className="ri-information-line text-[11px] t3"
+                            title={`Set by a ${log.department} department rule. Edit it in Admin Portal → Applications; this control changes the all-departments default.`}
+                          />
+                        )}
+                      </span>
                     </td>
                     <td>
                       <span className="flex items-center gap-2.5 justify-end">
@@ -188,14 +180,18 @@ export default function BrowserTab() {
         )}
       </div>
 
-      {hasMore && (
-        <div className="flex justify-center">
-          <button onClick={() => setLimit((l) => l + 200)} className="chip chip-quiet text-[10.5px]">
-            <i className="ri-arrow-down-line" />
-            Load more
-          </button>
-        </div>
+      <Pagination
+        page={page} pageCount={pageCount} from={from} to={to} total={total}
+        onPage={setPage} unit="pages"
+      />
+
+      {unresolvedSamples > 0 && (
+        <p className="text-[10.5px] t3 text-center">
+          {unresolvedSamples} sample{unresolvedSamples === 1 ? '' : 's'} ({formatDurationShort(unresolvedSeconds)})
+          had no readable address bar and are not attributed to a page above.
+        </p>
       )}
+
       {loading && filtered.length === 0 && (
         <p className="text-center text-[11px] t3 py-3">Loading…</p>
       )}

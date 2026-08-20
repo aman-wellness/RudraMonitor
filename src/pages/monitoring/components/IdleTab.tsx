@@ -3,6 +3,7 @@ import { useActivityLogs, useAgents, type UiAgent } from '@/lib/dataHooks';
 import MonitorFilters from './MonitorFilters';
 import { useRegisterRefresh } from './refreshBus';
 import { formatDurationShort } from '@/lib/labels';
+import Pagination, { usePagination } from './Pagination';
 
 /* Idle periods the agents flagged in the last 24h.
 
@@ -40,7 +41,11 @@ export default function IdleTab() {
   });
 
   const totalIdle = filtered.reduce((acc, r) => acc + (r.duration ?? 0), 0);
-  const longest = Math.max(1, ...filtered.map((r) => r.duration ?? 0));
+  const { visible, page, pageCount, setPage, from, to, total } = usePagination(filtered);
+
+  // Scaled to the current page so bars stay comparable while paging, matching
+  // the Applications and Browser tabs.
+  const longest = Math.max(1, ...visible.map((r) => r.duration ?? 0));
   const threshold = thresholdLabel(agents, agentFilter);
   // How many distinct people the listed periods belong to — "8 events" reads
   // very differently spread over one machine vs four.
@@ -125,7 +130,7 @@ export default function IdleTab() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((r) => (
+                {visible.map((r) => (
                   <tr key={r.id}>
                     <td>
                       <span className="flex items-center gap-2 min-w-0">
@@ -164,6 +169,11 @@ export default function IdleTab() {
           </div>
         )}
       </div>
+
+      <Pagination
+        page={page} pageCount={pageCount} from={from} to={to} total={total}
+        onPage={setPage} unit="idle periods"
+      />
 
       {loading && filtered.length === 0 && (
         <p className="text-center text-[11px] t3 py-3">Loading…</p>

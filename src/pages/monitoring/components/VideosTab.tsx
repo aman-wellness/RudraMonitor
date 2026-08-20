@@ -3,6 +3,7 @@ import { useActivityLogs, useAgents, useSignedVideoUrls, type UiAgent } from '@/
 import MonitorFilters from './MonitorFilters';
 import { useRegisterRefresh } from './refreshBus';
 import { formatDurationShort } from '@/lib/labels';
+import Pagination, { usePagination } from './Pagination';
 
 /* Recorded clips, last 72h. */
 const cadence = (agents: UiAgent[]) => {
@@ -23,15 +24,25 @@ export default function VideosTab() {
   const { rows, loading, refresh } = useActivityLogs({ type: 'video', agentId: agentFilter, sinceHours: 72, limit: 200 });
   useRegisterRefresh(useCallback(() => { void refresh(); }, [refresh]));
 
+  const filtered = useMemo(
+    () => rows.filter((v) =>
+      search === '' || (v.agent_name ?? '').toLowerCase().includes(search.toLowerCase())
+    ),
+    [rows, search],
+  );
+
+  // 12 per page — four rows of the three-column grid.
+  const { visible, page, pageCount, setPage, from, to, total } = usePagination(filtered, 12);
+
+  // Sign only the CURRENT PAGE. Clips are far heavier than screenshots, so
+  // signing all 200 fetched rows up front meant 200 signing requests and a
+  // browser holding 200 video sources for a grid showing a dozen. Filtering and
+  // paging therefore have to happen before signing, not after.
   const paths = useMemo(
-    () => rows.map((r) => r.video_url).filter((p): p is string => !!p),
-    [rows],
+    () => visible.map((r) => r.video_url).filter((p): p is string => !!p),
+    [visible],
   );
   const signed = useSignedVideoUrls(paths);
-
-  const filtered = rows.filter((v) =>
-    search === '' || (v.agent_name ?? '').toLowerCase().includes(search.toLowerCase())
-  );
 
   const stamp = (iso: string) => {
     try { return new Date(iso).toLocaleString([], { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' }); }
@@ -64,7 +75,7 @@ export default function VideosTab() {
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2.5">
-          {filtered.map((v) => {
+          {visible.map((v) => {
             const url = v.video_url ? signed[v.video_url] : null;
             return (
               <button
@@ -106,6 +117,11 @@ export default function VideosTab() {
           })}
         </div>
       )}
+
+      <Pagination
+        page={page} pageCount={pageCount} from={from} to={to} total={total}
+        onPage={setPage} unit="clips"
+      />
 
       {loading && filtered.length === 0 && (
         <p className="text-center text-[11px] t3 py-3">Loading…</p>
