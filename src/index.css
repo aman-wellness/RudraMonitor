@@ -714,8 +714,9 @@ html:not(.dark) .dashboard-shell textarea.bg-transparent:focus-visible {
 
   /* -- type -- */
   --d-t1: #17171b;
-  --d-t2: #56565f;
-  --d-t3: #8d8d99;
+  --d-t2: #52525b;
+  /* Was #8d8d99 — 3.28:1 on white, the same failure as the dark side. */
+  --d-t3: #6f6f7a;
 
   /* -- accents -- */
   --d-accent: #5b5bd6;
@@ -751,8 +752,12 @@ html.dark {
   --d-line-hi: rgba(255, 255, 255, 0.15);
 
   --d-t1: #f3f3f5;
-  --d-t2: #a5a5b0;
-  --d-t3: #6d6d79;
+  --d-t2: #b0b0ba;
+  /* Was #6d6d79 — 3.50:1 against the panel, under the 4.5:1 minimum for body
+     text, and it carries the 10px captions and every .label on the page. They
+     read as faded. #8a8a96 is 5.24:1 on the panel and still clearly the third
+     tier below t1/t2. */
+  --d-t3: #8a8a96;
 
   --d-accent: #8e8ff7;
   --d-accent-2: #6aa5ff;
@@ -762,7 +767,7 @@ html.dark {
   --d-danger: #fb7185;
   --d-sev-high: #fb923c;
   --d-info: #60a5fa;
-  --d-neutral: #7b7b88;
+  --d-neutral: #8a8a96;
   --d-track: rgba(255, 255, 255, 0.085);
   --d-heat-empty: rgba(255, 255, 255, 0.045);
 }

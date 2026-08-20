@@ -81,13 +81,30 @@ export default function PerformanceReportsPage() {
   }, [agents]);
 
   // 7-day weekly buckets fetched server-side.
-  const { rows: dailyRows } = useOrgProductivityDaily(7);
+  // Follows the selected range, capped at 31 buckets — the bar strips can't
+  // usefully hold a quarter of days. Was a hardcoded 7, so picking Month or
+  // Quarter changed every table on the page while both trend charts kept
+  // showing the same week.
+  const trendDays = Math.min(31, Math.max(1, Math.round(sinceHours / 24)));
+  const { rows: dailyRows } = useOrgProductivityDaily(trendDays);
   const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const weeklyProductivity = dailyRows.map((r) => ({
-    day: DAY_NAMES[new Date(r.day_bucket + 'T00:00:00Z').getUTCDay()] ?? '',
-    productivity: r.productivity_pct,
-    agents: r.active_agents,
-  }));
+  const trendCapped = trendDays < Math.round(sinceHours / 24);
+  const dailyProductivity = dailyRows.map((r) => {
+    const d = new Date(r.day_bucket + 'T00:00:00Z');
+    return {
+      key: r.day_bucket,
+      // Weekday names repeat past a week, so longer spans show the date.
+      day: dailyRows.length <= 7 ? DAY_NAMES[d.getUTCDay()] ?? '' : String(d.getUTCDate()),
+      full: d.toLocaleDateString(undefined, { weekday: 'short', day: '2-digit', month: 'short' }),
+      productivity: r.productivity_pct,
+      agents: r.active_agents,
+    };
+  });
+  const trendLabel = dailyProductivity.length === 0
+    ? 'no data'
+    : dailyProductivity.length === 1
+      ? 'one day'
+      : `${dailyProductivity.length} days${trendCapped ? ' (most recent)' : ''}`;
 
   // Hourly breakdown is no longer computed client-side — placeholder until a dedicated RPC ships.
   // Showing a fixed scaffold keeps the existing UI intact without paying a 5000-row download cost.
@@ -172,17 +189,28 @@ export default function PerformanceReportsPage() {
             {/* Weekly Productivity */}
             <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-sm font-semibold text-white">Weekly Productivity</h3>
-                <span className="text-xs text-gray-500">Last 7 days</span>
+                <h3 className="text-sm font-semibold text-white">Daily productivity</h3>
+                <span className="text-xs text-gray-500">{trendLabel}</span>
               </div>
-              <div className="flex items-end gap-2 md:gap-4 h-36">
-                {weeklyProductivity.map((d) => (
-                  <div key={d.day} className="flex-1 flex flex-col items-center gap-1.5">
-                    <div className="text-xs text-gray-400 font-medium">{d.productivity}%</div>
+              {dailyProductivity.length === 0 && (
+                <p className="text-xs text-gray-500 py-10 text-center">
+                  No productivity recorded in this range.
+                </p>
+              )}
+              <div className="flex items-end gap-1 md:gap-2 h-36">
+                {dailyProductivity.map((d) => (
+                  <div
+                    key={d.key}
+                    className="flex-1 flex flex-col items-center gap-1.5 min-w-0"
+                    title={`${d.full} · ${d.productivity}% · ${d.agents} agent${d.agents === 1 ? '' : 's'}`}
+                  >
+                    {dailyProductivity.length <= 14 && (
+                      <div className="text-xs text-gray-400 font-medium">{d.productivity}%</div>
+                    )}
                     <div className="w-full bg-dark-700 rounded-t-md relative overflow-hidden" style={{ height: `${d.productivity * 0.8}px`, maxHeight: '100px' }}>
                       <div className="absolute inset-0 bg-emerald-500/40 rounded-t-md" />
                     </div>
-                    <span className="text-xs text-gray-500">{d.day}</span>
+                    <span className="text-[10px] text-gray-500 truncate w-full text-center">{d.day}</span>
                   </div>
                 ))}
               </div>
@@ -382,12 +410,15 @@ export default function PerformanceReportsPage() {
         {tab === 'Trends' && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
-              <h3 className="text-sm font-semibold text-white mb-4">Productivity Trend (Weekly)</h3>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-semibold text-white">Productivity by day</h3>
+                <span className="text-xs text-gray-500">{trendLabel}</span>
+              </div>
               <div className="space-y-3">
-                {weeklyProductivity.map((d) => (
-                  <div key={d.day}>
+                {dailyProductivity.map((d) => (
+                  <div key={d.key}>
                     <div className="flex items-center justify-between mb-1">
-                      <span className="text-xs text-gray-400">{d.day}</span>
+                      <span className="text-xs text-gray-400">{d.full}</span>
                       <span className="text-xs text-gray-300">{d.productivity}%</span>
                     </div>
                     <div className="w-full bg-dark-700 rounded-full h-3">
@@ -398,16 +429,27 @@ export default function PerformanceReportsPage() {
               </div>
             </div>
             <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
-              <h3 className="text-sm font-semibold text-white mb-4">Agent Count Trend</h3>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-semibold text-white">Agents active per day</h3>
+                <span className="text-xs text-gray-500">of {dbAgents.length} enrolled</span>
+              </div>
               <div className="space-y-3">
-                {weeklyProductivity.map((d) => (
-                  <div key={d.day}>
+                {dailyProductivity.map((d) => (
+                  <div key={d.key}>
                     <div className="flex items-center justify-between mb-1">
-                      <span className="text-xs text-gray-400">{d.day}</span>
-                      <span className="text-xs text-gray-300">{d.agents} agents</span>
+                      <span className="text-xs text-gray-400">{d.full}</span>
+                      <span className="text-xs text-gray-300">
+                        {d.agents} of {dbAgents.length}
+                      </span>
                     </div>
                     <div className="w-full bg-dark-700 rounded-full h-3">
-                      <div className="bg-teal-500 h-3 rounded-full" style={{ width: `${(d.agents / 30) * 100}%` }} />
+                      {/* Scaled against the real fleet size. The bar used to
+                          divide by a hardcoded 30, so a 5-agent org's "all
+                          agents active" day drew a 17%-wide bar. */}
+                      <div
+                        className="bg-teal-500 h-3 rounded-full"
+                        style={{ width: `${dbAgents.length > 0 ? Math.min(100, (d.agents / dbAgents.length) * 100) : 0}%` }}
+                      />
                     </div>
                   </div>
                 ))}

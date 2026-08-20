@@ -15,6 +15,11 @@ import {
 type ReportTab = 'productivity' | 'activity' | 'time';
 type ExportFormat = 'csv' | 'excel' | 'pdf';
 
+/* Tallest a trend bar can draw. The strip is h-32 (128px) and the labels above
+   and below each bar take the rest — a percentage height can't be used here,
+   see the comment at the bar itself. */
+const BAR_MAX_PX = 88;
+
 const tabs: { id: ReportTab; label: string; icon: string; help: string }[] = [
   { id: 'productivity', label: 'Productivity', icon: 'ri-bar-chart-grouped-line', help: 'Per-agent productivity %, active hours, idle time. Top performers shown above.' },
   { id: 'activity',     label: 'Activity',     icon: 'ri-pulse-line',             help: 'How busy each agent has been — app switches, browser hits, screenshots captured.' },
@@ -102,12 +107,18 @@ export default function ReportsPage() {
   const { agents: dbAgents } = useAgents();
   const { byAgent: perAgent } = useProductivityPerAgent(rangeHours, rangeUntilHours);
   const { byAgent: latestMetrics } = useLatestSystemMetrics();
-  const { rows: dailyRows } = useOrgProductivityDaily(7);
+  // The trend used to be useOrgProductivityDaily(7) — a hardcoded week that
+  // never moved, so picking This Month changed every table on the page while the
+  // chart underneath kept showing the same seven days. It takes the selected
+  // range now (capped at 31 buckets, which is as many bars as the strip can
+  // hold), including the end of a historic custom range.
+  const trendDays = Math.min(31, Math.max(1, Math.ceil(rangeHours / 24)));
+  const { rows: dailyRows } = useOrgProductivityDaily(trendDays, rangeUntilHours);
 
   // All per-agent aggregates come from a single RPC call; each table just maps over them.
   const { agents, systemData, timeData, activityCounts, weeklyProductivity } = useMemo(() => {
     const out: ReportAgent[] = [];
-    const sysOut: Record<string, { cpu: number; memory: number; disk: number; uptime: string }> = {};
+    const sysOut: Record<string, { cpu: number | null; memory: number | null; disk: number | null; uptime: string }> = {};
     const timeOut: Record<string, { login: string; logout: string; session: string; breaks: string }> = {};
     const actOut: Record<string, { appSwitches: number; browserEvents: number; screenshots: number; videos: number; alerts: number }> = {};
 
@@ -131,9 +142,9 @@ export default function ReportsPage() {
 
       const m = latestMetrics[a.id];
       sysOut[a.id] = {
-        cpu: m?.cpu_usage ?? 0,
-        memory: m?.ram_usage ?? 0,
-        disk: m?.disk_usage ?? 0,
+        cpu: m?.cpu_usage ?? null,
+        memory: m?.ram_usage ?? null,
+        disk: m?.disk_usage ?? null,
         uptime: m ? '—' : 'Offline',
       };
 
@@ -155,12 +166,21 @@ export default function ReportsPage() {
       };
     }
 
+    // Weekday names only make sense for a week or less — beyond that "Mon"
+    // appears four times over. Longer spans get the date.
     const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const buckets = dailyRows.map((r) => ({
-      day: DAYS[new Date(r.day_bucket + 'T00:00:00Z').getUTCDay()] ?? '',
-      productivity: r.productivity_pct,
-      agents: r.active_agents,
-    }));
+    const buckets = dailyRows.map((r) => {
+      const d = new Date(r.day_bucket + 'T00:00:00Z');
+      return {
+        key: r.day_bucket,
+        day: dailyRows.length <= 7
+          ? DAYS[d.getUTCDay()] ?? ''
+          : String(d.getUTCDate()),
+        full: d.toLocaleDateString(undefined, { weekday: 'short', day: '2-digit', month: 'short' }),
+        productivity: r.productivity_pct,
+        agents: r.active_agents,
+      };
+    });
 
     return { agents: out, systemData: sysOut, timeData: timeOut, activityCounts: actOut, weeklyProductivity: buckets };
   }, [dbAgents, perAgent, latestMetrics, dailyRows]);
@@ -246,11 +266,14 @@ export default function ReportsPage() {
     switch (tab) {
       case 'productivity':
         return {
-          headers: ['Agent Name', 'Department', 'Machine', 'OS', 'Status', 'Productivity %', 'Active Hours', 'Idle Time', 'Total Session', 'Total Events', 'Alerts', 'CPU %', 'RAM %', 'Disk %'],
+          // The last three come from the newest hardware sample, not from the
+          // selected range — say so, or a monthly export reads as if the CPU
+          // figure were a monthly average.
+          headers: ['Agent Name', 'Department', 'Machine', 'OS', 'Status', 'Productivity %', 'Active Hours', 'Idle Time', 'Total Session', 'Total Events', 'Alerts', 'CPU % (latest)', 'RAM % (latest)', 'Disk % (latest)'],
           rows: data.map((a) => {
             const c = activityCounts[a.id] || { appSwitches: 0, browserEvents: 0, screenshots: 0, videos: 0, alerts: 0 };
             const t = timeData[a.id] || { session: '-', breaks: '-' };
-            const s = systemData[a.id] || { cpu: 0, memory: 0, disk: 0 };
+            const s = systemData[a.id] ?? { cpu: null, memory: null, disk: null };
             const total = c.appSwitches + c.browserEvents + c.screenshots + c.videos + c.alerts;
             return [
               a.name,
@@ -264,9 +287,9 @@ export default function ReportsPage() {
               t.session,
               String(total),
               String(c.alerts),
-              String(s.cpu),
-              String(s.memory),
-              String(s.disk),
+              s.cpu === null ? '' : String(s.cpu),
+              s.memory === null ? '' : String(s.memory),
+              s.disk === null ? '' : String(s.disk),
             ];
           }),
         };
@@ -942,17 +965,34 @@ export default function ReportsPage() {
         {activeTab === 'productivity' && (
           <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-semibold text-white">Weekly Productivity Trend</h3>
-              <span className="text-xs text-gray-500">Last 7 days</span>
+              <h3 className="text-sm font-semibold text-white">Productivity trend</h3>
+              <span className="text-xs text-gray-500">
+                {weeklyProductivity.length === 0
+                  ? rangeLabel
+                  : weeklyProductivity.length === 1
+                    ? `${rangeLabel} · one day`
+                    : `${rangeLabel} · ${weeklyProductivity.length} days`}
+              </span>
             </div>
-            <div className="flex items-end gap-2 md:gap-4 h-32">
+            {weeklyProductivity.length === 0 && (
+              <p className="text-xs text-gray-500 py-8 text-center">
+                No productivity recorded in {rangeLabel.toLowerCase()}.
+              </p>
+            )}
+            <div className="flex items-end gap-1 md:gap-2 h-32">
               {weeklyProductivity.map((d) => (
-                <div key={d.day} className="flex-1 flex flex-col items-center gap-1.5">
-                  <div className="text-xs text-gray-500 mb-1">{d.productivity}%</div>
-                  <div className="w-full bg-dark-700 rounded-t-md relative overflow-hidden" style={{ height: `${d.productivity}%`, maxHeight: '96px' }}>
+                <div key={d.key} className="flex-1 flex flex-col items-center gap-1.5 min-w-0" title={`${d.full} · ${d.productivity}% · ${d.agents} agent${d.agents === 1 ? '' : 's'}`}>
+                  {/* The per-bar percentage only fits while the bars are wide. */}
+                  {weeklyProductivity.length <= 14 && (
+                    <div className="text-xs text-gray-500 mb-1">{d.productivity}%</div>
+                  )}
+                  <div
+                    className="w-full bg-dark-700 rounded-t-md relative overflow-hidden"
+                    style={{ height: `${Math.max(2, (d.productivity / 100) * BAR_MAX_PX)}px` }}
+                  >
                     <div className="absolute inset-0 bg-emerald-500/30 rounded-t-md" />
                   </div>
-                  <span className="text-xs text-gray-400 font-medium">{d.day}</span>
+                  <span className="text-[10px] text-gray-400 font-medium truncate w-full text-center">{d.day}</span>
                 </div>
               ))}
             </div>
