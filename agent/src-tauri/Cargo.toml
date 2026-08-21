@@ -1,6 +1,6 @@
 [package]
 name = "wellness-extract-agent"
-version = "0.6.24"
+version = "0.6.25"
 description = "Wellness Extract employee monitoring agent"
 edition = "2021"
 rust-version = "1.77"

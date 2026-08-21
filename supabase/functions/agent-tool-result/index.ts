@@ -64,8 +64,13 @@ Deno.serve(async (req) => {
   catch { return json({ error: "invalid json" }, 400); }
 
   if (!body.run_id) return json({ error: "run_id required" }, 400);
-  if (body.state !== "succeeded" && body.state !== "failed" && body.state !== "timed_out") {
-    return json({ error: "state must be succeeded/failed/timed_out" }, 400);
+  // v0.6.25+ — allow agent to POST an early 'running' update the moment it
+  // picks up the tool.run event, before the script has finished. Without
+  // this the dashboard row sits at 'pending' for up to 30 min during a
+  // Windows Optimizer run and admins think it never dispatched.
+  const VALID = new Set(["running", "succeeded", "failed", "timed_out"]);
+  if (!VALID.has(body.state)) {
+    return json({ error: "state must be running/succeeded/failed/timed_out" }, 400);
   }
 
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
@@ -118,21 +123,26 @@ Deno.serve(async (req) => {
     }
   }
 
-  // UPDATE the row. We set started_at from now() ONLY if it's still null
-  // (agent didn't send a mid-run "started" ping in v1) — the run was
-  // effectively continuous from the pending insert. completed_at is now.
+  // UPDATE the row. For the early 'running' ping we only stamp state +
+  // started_at — the script is still executing so exit_code / duration /
+  // completed_at aren't known yet.
   const now = new Date().toISOString();
+  const patch: Record<string, unknown> = { state: body.state };
+  if (body.state === "running") {
+    patch.started_at = now;
+  } else {
+    patch.exit_code    = body.exit_code;
+    patch.duration_ms  = body.duration_ms;
+    patch.stdout_tail  = (body.stdout_tail ?? "").slice(0, 8192);
+    if (reportPath) patch.report_path = reportPath;
+    patch.completed_at = now;
+    // Leave started_at as-is if the agent already posted 'running'; back-
+    // fill from `now` for agents that skip the early ping (pre-v0.6.25).
+    patch.started_at = run.state === "running" ? undefined : now;
+  }
   const { error: uErr } = await admin
     .from("tool_runs")
-    .update({
-      state:        body.state,
-      exit_code:    body.exit_code,
-      duration_ms:  body.duration_ms,
-      stdout_tail:  (body.stdout_tail ?? "").slice(0, 8192),
-      report_path:  reportPath,
-      started_at:   now, // agents don't ping "started" in v1
-      completed_at: now,
-    })
+    .update(patch)
     .eq("id", body.run_id);
   if (uErr) return json({ error: `update failed: ${uErr.message}` }, 500);
 

@@ -125,11 +125,19 @@ fn ensure_pswindowsupdate() -> Result<()> {
             return Ok(());
         }
     }
-    // Install the module + its NuGet provider prerequisite. Both are safe
-    // to re-invoke — `-Force` short-circuits when already present.
-    let install = "Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue; \
-                   Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ForceBootstrap -ErrorAction SilentlyContinue | Out-Null; \
-                   Install-Module -Name PSWindowsUpdate -Scope AllUsers -Force -AllowClobber -ErrorAction Stop";
+    // Install the module + its NuGet provider prerequisite. ORDER MATTERS:
+    // Set-PSRepository/Install-Module both depend on the NuGet package
+    // provider being bootstrapped first. Prior release ran Set-PSRepository
+    // first and cascaded to "NuGet provider is required to interact with
+    // NuGet-based repositories" on any machine without NuGet preinstalled
+    // (v0.6.24 field failure on Pooja's PC).
+    //
+    // Also: `-Confirm:$false` on Install-PackageProvider silences the
+    // "would you like to install NuGet from https://oneget.org" prompt
+    // that fires under -NonInteractive.
+    let install = "Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ForceBootstrap -Confirm:$false -Scope AllUsers -ErrorAction Stop | Out-Null; \
+                   Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue; \
+                   Install-Module -Name PSWindowsUpdate -Scope AllUsers -Force -AllowClobber -Confirm:$false -ErrorAction Stop";
     let mut cmd = Command::new("powershell.exe");
     cmd.args([
         "-NoProfile", "-NonInteractive",
@@ -168,6 +176,11 @@ pub async fn run_tool(kind: ToolKind, run_id: String) -> Result<ToolResult> {
             });
         }
     }
+
+    // 1b. Early "running" ping so the dashboard row transitions out of
+    // pending the moment the agent picks up the event. Non-fatal on
+    // failure — the final result POST below is what matters.
+    let _ = post_running(&run_id).await;
 
     // 2. Locate the bundled .ps1.
     let script = match bundled_script_path(kind) {
@@ -266,6 +279,53 @@ pub async fn run_tool(kind: ToolKind, run_id: String) -> Result<ToolResult> {
         report_b64,
         artifact_filename,
     })
+}
+
+/// POST an early `state=running` update so the dashboard row transitions
+/// out of pending the moment the agent picks up the event. The full result
+/// envelope (exit_code, duration, artifact) is posted separately at the
+/// end via `post_result`.
+async fn post_running(run_id: &str) -> Result<()> {
+    // Read config each time — cheap, avoids threading state through.
+    // Failure to build client is non-fatal; the run continues and the
+    // dashboard just sees "pending → succeeded" without a running phase.
+    let cfg = crate::config::load().ok();
+    let cfg = match cfg { Some(c) => c, None => return Ok(()) };
+    let url = crate::config::supabase_url(&cfg);
+    let anon = crate::config::supabase_anon_key(&cfg);
+    let token = cfg.enrollment.as_ref().map(|e| e.enroll_token.clone());
+    let (url, anon, token) = match (url, anon, token) {
+        (Some(u), Some(a), Some(t)) => (u, a, t),
+        _ => return Ok(()),
+    };
+    let client = crate::api::build_client()?;
+    let full = format!(
+        "{}/functions/v1/agent-tool-result",
+        url.trim_end_matches('/')
+    );
+    let body = serde_json::json!({
+        "run_id": run_id,
+        "state": "running",
+        "exit_code": 0,
+        "duration_ms": 0,
+        "stdout_tail": "",
+    });
+    let resp = client
+        .post(&full)
+        .bearer_auth(&anon)
+        .header("apikey", &anon)
+        .header("X-Agent-Token", &token)
+        .json(&body)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        log::debug!(
+            "post_running: {} — {}",
+            resp.status(),
+            resp.text().await.unwrap_or_default().chars().take(200).collect::<String>()
+        );
+    }
+    Ok(())
 }
 
 /// POST the result envelope to `agent-tool-result`. Kept next to run_tool
