@@ -126,6 +126,64 @@ struct TurnIceServer {
     credential: Option<String>,
 }
 
+/// Stop flag of the session currently running, if any.
+///
+/// The polling loop handles each offer in its own task, and nothing stopped two
+/// offers from being served at once — the code only ASSUMED "one active session
+/// at a time" (see the note in poll_once). Observed in testing: two offers
+/// arriving in the same second produced two peer connections and two ffmpeg
+/// encoders competing for the same GPU capture, which is precisely the way to
+/// make a remote session feel slow.
+///
+/// A new offer now supersedes the old session rather than joining it. Superseding
+/// rather than rejecting matters because the common cause of a second offer is an
+/// operator reconnecting after a dropped connection — rejecting would lock them
+/// out behind a session that no longer has a viewer.
+struct ActiveSession {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    /// created_at of the offer that started it. Used to decide takeover by
+    /// RECENCY rather than by arrival order.
+    offer_ts: String,
+}
+
+static ACTIVE_SESSION: std::sync::OnceLock<std::sync::Mutex<Option<ActiveSession>>> =
+    std::sync::OnceLock::new();
+
+/// Registers a new session, stopping the current one — but only if the new
+/// offer is at least as recent as the one already running.
+///
+/// Returns false when the incoming offer is STALE, in which case the caller
+/// must abandon it.
+///
+/// Ordering by timestamp rather than by arrival is what makes this correct.
+/// Two offers routinely land in the same second: React StrictMode double-mounts
+/// effects in development, and in production two operators can open the tab at
+/// once. The polling loop handles each in its own task, so whichever happened to
+/// be processed LAST used to win — and when that was the older offer it killed
+/// the session the live dashboard was using. The symptom was a connection that
+/// worked or failed at random on identical code.
+fn try_claim_session(stop: Arc<std::sync::atomic::AtomicBool>, offer_ts: &str) -> bool {
+    let slot = ACTIVE_SESSION.get_or_init(|| std::sync::Mutex::new(None));
+    let Ok(mut guard) = slot.lock() else { return true };
+    if let Some(cur) = guard.as_ref() {
+        let running = !cur.stop.load(std::sync::atomic::Ordering::SeqCst);
+        // RFC3339 timestamps from the same source sort correctly as strings.
+        if running && offer_ts < cur.offer_ts.as_str() {
+            log::info!(
+                "webrtc: ignoring offer from {offer_ts} — a newer session ({}) is already running",
+                cur.offer_ts,
+            );
+            return false;
+        }
+        if running {
+            log::info!("webrtc: superseding the session from {}", cur.offer_ts);
+            cur.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    *guard = Some(ActiveSession { stop, offer_ts: offer_ts.to_string() });
+    true
+}
+
 /// Spawn the long-running signaling listener. Idempotent across agent
 /// restarts — each invocation starts one task that runs forever, picking
 /// up offers as they arrive.
@@ -253,7 +311,26 @@ async fn handle_session(
     offer_sdp: &str,
     ice_since: &str,
 ) -> Result<()> {
-    let ice_servers = fetch_ice_servers(state).await?;
+    // TURN is an OPTIMISATION, not a prerequisite. A direct or LAN connection —
+    // which is the common case for an office fleet, and the only case on a
+    // single-machine deployment — needs no relay at all.
+    //
+    // This used to be `?`, so any failure from webrtc-turn-credentials aborted
+    // the whole session. On a server without TURN_SHARED_SECRET set the endpoint
+    // answers 500, the agent failed with "parse turn creds", and Remote Desktop
+    // was simply unavailable even between two machines on the same subnet.
+    // Degrade to public STUN instead and let ICE decide whether it can reach.
+    let ice_servers = match fetch_ice_servers(state).await {
+        Ok(v) if !v.is_empty() => v,
+        Ok(_) => {
+            log::warn!("webrtc: TURN returned no ICE servers; continuing with STUN only");
+            default_ice_servers()
+        }
+        Err(e) => {
+            log::warn!("webrtc: TURN unavailable ({e:#}); continuing with STUN only");
+            default_ice_servers()
+        }
+    };
 
     // Build the WebRTC API instance. Default codecs include H.264; we don't
     // need to register anything extra. The dashboard-side SDP munger (see
@@ -343,6 +420,12 @@ async fn handle_session(
     // which then starves the legitimate screenshot + video-clip recorders.
     let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let is_disconnected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Take over from whatever was running, unless this offer is already stale.
+    // The encoder pump watches stop_flag, so the outgoing session tears itself
+    // down on its next tick.
+    if !try_claim_session(stop_flag.clone(), ice_since) {
+        return Ok(());
+    }
     {
         let stop_flag = stop_flag.clone();
         let is_disconnected = is_disconnected.clone();
@@ -469,6 +552,20 @@ async fn handle_session(
     Ok(())
 }
 
+/// Used when the TURN endpoint is unconfigured or unreachable. Public STUN is
+/// enough to discover a server-reflexive candidate, which is all that is needed
+/// for a direct connection; it cannot traverse a symmetric NAT, but failing that
+/// case is strictly better than refusing every case.
+fn default_ice_servers() -> Vec<RTCIceServer> {
+    vec![RTCIceServer {
+        urls: vec![
+            "stun:stun.l.google.com:19302".to_owned(),
+            "stun:stun1.l.google.com:19302".to_owned(),
+        ],
+        ..Default::default()
+    }]
+}
+
 async fn fetch_ice_servers(state: &AppState) -> Result<Vec<RTCIceServer>> {
     let cfg = state.config.lock().await.clone();
     let enrollment = cfg
@@ -490,6 +587,14 @@ async fn fetch_ice_servers(state: &AppState) -> Result<Vec<RTCIceServer>> {
         .send()
         .await
         .context("fetch turn creds")?;
+    // Check the status BEFORE deserializing. The endpoint answers a JSON error
+    // body on failure, and feeding that to serde produced the misleading
+    // "parse turn creds" rather than naming the actual problem.
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("turn creds http {status}: {}", body.trim()));
+    }
     let creds: TurnCredentials = resp.json().await.context("parse turn creds")?;
 
     let mut out = Vec::new();
@@ -655,12 +760,51 @@ pub(crate) async fn spawn_ffmpeg_with_params(
     }
     #[cfg(target_os = "windows")]
     {
-        // gdigrab's draw_mouse defaults to 1 on most builds but it's been
-        // toggled in upstream ffmpeg over the years; pin it explicitly so
-        // we always render the cursor into the stream regardless of
-        // which bundled ffmpeg version is in use.
-        cmd.arg("-draw_mouse").arg("1");
-        cmd.arg("-f").arg("gdigrab").arg("-i").arg("desktop");
+        // ddagrab (Desktop Duplication API), not gdigrab.
+        //
+        // MEASURED on the machine this was built against, capturing at 1920 and
+        // asking for 30 fps:
+        //     gdigrab + libx264 -threads 1   ~19 fps delivered
+        //     gdigrab + libx264 all threads  ~20 fps delivered
+        //     ddagrab + libx264              ~29 fps delivered
+        //
+        // gdigrab goes through GDI BitBlt and simply cannot produce 30 fps at
+        // this resolution; raising encoder threads moved it by two frames,
+        // confirming the encoder was never the constraint. Every frame the
+        // capture fails to produce is latency the operator feels as lag between
+        // moving the mouse and seeing it move, which is the whole complaint.
+        //
+        // ddagrab is a SOURCE FILTER rather than an input format, so there is no
+        // `-i` here and the scale has to live in this graph — `-vf` cannot be
+        // combined with `-filter_complex` on the same output.
+        //
+        // Scaling is done on the CPU after hwdownload. `scale_d3d11` is present
+        // in the build and would keep the resize on the GPU, but it failed at
+        // runtime here with "Invalid argument" — the same class of trap as
+        // h264_qsv reporting itself available and then refusing to start (see
+        // ffmpeg::pick_h264_encoder). A path that works everywhere beats a
+        // faster one that works on some GPUs.
+        //
+        // Guarded by a real capture probe rather than used unconditionally.
+        // ddagrab needs ffmpeg 6+, an attached desktop session and a working
+        // D3D11 path, and when any of those is missing the session still
+        // connects and simply shows black forever — the peer connection is
+        // healthy, there are just no frames. gdigrab is slower but works
+        // essentially everywhere, so it is the right thing to fall back to.
+        if crate::ffmpeg::can_ddagrab(&ffmpeg_bin.to_path_buf()) {
+            cmd.arg("-filter_complex").arg(format!(
+                "ddagrab=output_idx=0:framerate={}:draw_mouse=1,\
+                 hwdownload,format=bgra,scale={}:-2,format=yuv420p",
+                TARGET_FPS, params.width,
+            ));
+        } else {
+            cmd.arg("-draw_mouse").arg("1");
+            cmd.arg("-f").arg("gdigrab").arg("-i").arg("desktop");
+            // The shared -vf below is compiled out on Windows because it
+            // cannot coexist with -filter_complex. This branch has no filter
+            // graph, so it needs its own scale.
+            cmd.arg("-vf").arg(format!("scale={}:-2", params.width));
+        }
     }
     #[cfg(target_os = "linux")]
     {
@@ -690,8 +834,11 @@ pub(crate) async fn spawn_ffmpeg_with_params(
     cmd.arg("-b:v").arg(&b)
         .arg("-maxrate").arg(&b)
         .arg("-bufsize").arg(&bufsize);
-    cmd.arg("-vf").arg(format!("scale={}:-2", params.width))
-        .arg("-an")
+    // Windows scales inside the ddagrab filter graph above; -vf cannot be
+    // combined with -filter_complex on the same output.
+    #[cfg(not(target_os = "windows"))]
+    cmd.arg("-vf").arg(format!("scale={}:-2", params.width));
+    cmd.arg("-an")
         .arg("-f").arg("h264")
         .arg("-")
         .stdout(std::process::Stdio::piped())

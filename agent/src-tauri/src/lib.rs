@@ -225,6 +225,12 @@ struct StatusPayload {
     license_present: bool,
     license_blocked: bool,
     license_reason: Option<String>,
+    /// The backend this agent will actually talk to, after the env →
+    /// agent.json → compiled-default precedence in `config::supabase_url` has
+    /// been applied. Shown on the setup screen because an on-disk agent.json
+    /// silently outranks the URL compiled into the installer, so "which build
+    /// did I install" does not answer "where is it sending my licence key".
+    backend_url: Option<String>,
 }
 
 #[tauri::command]
@@ -265,6 +271,7 @@ async fn get_status(app: tauri::AppHandle, state: State<'_, AppState>) -> Result
         license_present,
         license_blocked,
         license_reason,
+        backend_url: config::supabase_url(&cfg),
     })
 }
 
@@ -1368,7 +1375,25 @@ pub fn run() {
             // for one more release in case we need to flip the flag
             // back during incident response; the module's spawn is
             // simply not called.
-            let _ = webrtc_stream::spawn_streaming_loop; // dead-code anchor
+            // Both signalling paths run. They serve different features and
+            // neither idles expensively: each is a long-poll that spawns ffmpeg
+            // only for the duration of an actual session.
+            //
+            //   webrtc_stream  — Remote Desktop. Direct peer connection to the
+            //                    dashboard with a control DataChannel carrying
+            //                    mouse/keyboard/clipboard. Re-enabled here; it
+            //                    was parked as a dead-code anchor when Live View
+            //                    moved to LiveKit, which left the agent able to
+            //                    be remote-controlled with no dashboard to do
+            //                    it from.
+            //   whip_publisher — Live View. One-way screen share into a LiveKit
+            //                    room, which fans out to multiple viewers.
+            //
+            // The CPU concern that motivated parking this was a SECOND ffmpeg
+            // standing by. That is not what happens: the encoder is spawned
+            // inside a session and killed when the peer connection closes, so an
+            // idle agent runs neither.
+            webrtc_stream::spawn_streaming_loop(state.clone());
             whip_publisher::spawn_whip_loop(state.clone());
 
             // Phase-2 Remote Desktop. Subscribes to Supabase Realtime

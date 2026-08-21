@@ -14,14 +14,25 @@
 //   5. "End Session" → POST /functions/v1/remote-session-end; backend
 //      broadcasts `remote.ended` to both sides.
 //
-// The component never touches WebRTC or DataChannels — all input I/O
-// happens inside the RustDesk client/host pair via its own relay
-// protocol (TCP 21115/21116/21117, optionally tunnelled over WSS).
+// TWO PATHS NOW, chosen with the toggle in the toolbar:
+//
+//   "In dashboard" (default) — a direct WebRTC peer connection to the agent,
+//     rendered by RemoteStage. Screen comes over a video track, mouse/keyboard/
+//     clipboard over a control DataChannel. The agent side of this
+//     (webrtc_stream.rs + input.rs) was always in the tree; only the dashboard
+//     half had been removed, which left agents remote-controllable with nothing
+//     to control them from. No third-party client and nothing to license.
+//
+//   "RustDesk client" — the flow described above: mint a session, wait for
+//     remote.ready, then hand the operator an ID and password for the desktop
+//     RustDesk client. Kept because it carries file transfer and multi-monitor,
+//     which the WebRTC path does not.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAgents } from '@/lib/dataHooks';
 import { supabase } from '@/lib/supabase';
 import { edgeError } from '@/lib/livekit-client';
+import RemoteStage from './RemoteStage';
 
 const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL as string) ?? '';
 const ANON_KEY     = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) ?? '';
@@ -56,6 +67,15 @@ export default function RemoteTab() {
   );
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Two independent remote paths, chosen here rather than by config:
+  //   'webrtc'   — direct peer connection, screen + mouse/keyboard/clipboard in
+  //                this tab. No third-party client, no relay to license.
+  //   'rustdesk' — the Phase-2 flow, which hands the operator credentials for
+  //                the desktop RustDesk client.
+  // WebRTC is the default because it is the one that keeps the operator in the
+  // dashboard, which is what this tab is for.
+  const [mode, setMode] = useState<'webrtc' | 'rustdesk'>('webrtc');
+  const [webrtcAgentId, setWebrtcAgentId] = useState<string | null>(null);
   const [reason, setReason]   = useState('');
   const [session, setSession] = useState<ActiveSession | null>(null);
   const [error, setError]     = useState<string | null>(null);
@@ -225,9 +245,29 @@ export default function RemoteTab() {
             className="filter-date disabled:opacity-50"
             style={{ width: 240 }}
           />
-          {!session && (
+          {!session && !webrtcAgentId && (
+            <div className="seg">
+              {(['webrtc', 'rustdesk'] as const).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setMode(m)}
+                  className={`seg-btn ${mode === m ? 'is-on' : ''}`}
+                  title={m === 'webrtc'
+                    ? 'Screen and input in this tab, over a direct connection'
+                    : 'Hands you credentials for the desktop RustDesk client'}
+                >
+                  {m === 'webrtc' ? 'In dashboard' : 'RustDesk client'}
+                </button>
+              ))}
+            </div>
+          )}
+          {!session && !webrtcAgentId && (
             <button
-              onClick={startSession}
+              onClick={() => {
+                if (!selectedId) return;
+                if (mode === 'webrtc') setWebrtcAgentId(selectedId);
+                else void startSession();
+              }}
               disabled={!selectedId}
               className="chip chip-success text-[10.5px] disabled:opacity-50 disabled:cursor-not-allowed"
             >
@@ -257,8 +297,14 @@ export default function RemoteTab() {
         </div>
       )}
 
-      {/* Same as Live: only claim a 16:9 stage once there's a session to show. */}
-      {!session ? (
+      {webrtcAgentId ? (
+        <RemoteStage
+          agentId={webrtcAgentId}
+          agentName={onlineAgents.find((a) => a.id === webrtcAgentId)?.name ?? 'Agent'}
+          onClose={() => setWebrtcAgentId(null)}
+        />
+      ) : /* Same as Live: only claim a 16:9 stage once there's a session to show. */
+      !session ? (
         <div className="panel p-10">
           <EmptyState />
         </div>

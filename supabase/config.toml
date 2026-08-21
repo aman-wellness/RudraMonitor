@@ -51,3 +51,20 @@ verify_jwt = false
 
 [functions.cred-request-decision]
 verify_jwt = false
+
+# Secrets handed to the local edge runtime. Values are read from the project
+# .env so real keys never land in version control. Live View needs all three;
+# Remote needs RD_SESSION_SECRET.
+[edge_runtime.secrets]
+LIVEKIT_URL = "env(LIVEKIT_URL)"
+LIVEKIT_API_URL = "env(LIVEKIT_API_URL)"
+LIVEKIT_WHIP_BASE = "env(LIVEKIT_WHIP_BASE)"
+LIVEKIT_API_KEY = "env(LIVEKIT_API_KEY)"
+LIVEKIT_API_SECRET = "env(LIVEKIT_API_SECRET)"
+RD_SESSION_SECRET = "env(RD_SESSION_SECRET)"
+RUSTDESK_SERVER = "env(RUSTDESK_SERVER)"
+# coturn, for the Remote Desktop relay. Without these,
+# webrtc-turn-credentials answers 503 and sessions rely on a direct
+# path that Chrome's mDNS candidates make unreliable.
+TURN_SHARED_SECRET = "env(TURN_SHARED_SECRET)"
+TURN_HOST = "env(TURN_HOST)"

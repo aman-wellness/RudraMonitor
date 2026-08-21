@@ -15,6 +15,7 @@ type Status = {
   license_present: boolean;
   license_blocked: boolean;
   license_reason: string | null;
+  backend_url: string | null;
 };
 
 export default function App() {
@@ -81,6 +82,15 @@ export default function App() {
               ? 'Just paste the License Key your admin shared and click Enroll.'
               : 'Get the license key from your admin (Setup page in dashboard).'}
           </p>
+          {/* Which backend this build will send the key to. A stale agent.json
+              overrides the URL compiled into the installer, so this is the only
+              place the operator can tell a "wrong server" from a "wrong key" —
+              the server's answer to both is the same sentence. */}
+          {status.backend_url && (
+            <p className="muted" style={{ fontSize: 11, marginTop: 4, wordBreak: 'break-all' }}>
+              Server: {status.backend_url}
+            </p>
+          )}
           <form onSubmit={onEnroll} style={{ marginTop: 12 }}>
             <div className="field">
               <label>Organization License Key</label>
