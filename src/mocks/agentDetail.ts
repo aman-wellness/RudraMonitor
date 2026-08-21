@@ -366,6 +366,7 @@ export const detailBottomTabs = [
   { id: 'alerts', label: 'Alerts', icon: 'ri-notification-3-line' },
   { id: 'system', label: 'System Health', icon: 'ri-heart-pulse-line' },
   { id: 'capture', label: 'Capture Controls', icon: 'ri-camera-line' },
+  { id: 'tools', label: 'Endpoint Tools', icon: 'ri-tools-line' },
 ] as const;
 
 export type DetailTabId = (typeof detailBottomTabs)[number]['id'];

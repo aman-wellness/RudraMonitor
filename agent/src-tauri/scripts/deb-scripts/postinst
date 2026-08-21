@@ -1,0 +1,51 @@
+#!/bin/sh
+# Debian postinst — runs as root after `apt install wellness-extract-agent`
+# (and on every apt upgrade) with $1 = "configure".
+#
+# Purpose: purge stale prior-identity packages that Debian would otherwise
+# happily keep installed alongside us. Package names churned:
+#   v0.1.x: trackforce-agent
+#   v0.2.x - v0.5.5: rudrans-agent
+#   v0.5.6+: wellness-extract-agent (current — matches Cargo name)
+#
+# Because dpkg treats each Package-name as a distinct package, the naive
+# install path leaves `trackforce-agent` and/or `rudrans-agent` installed
+# alongside `wellness-extract-agent` on any customer who ran an older .deb.
+# `dpkg -l | grep agent` shows all three; systemd may still be trying to
+# start units from the orphans.
+#
+# All operations are best-effort — a fresh install with no legacy state
+# hits `dpkg -l` misses and moves on without erroring the postinst.
+#
+# The agent's in-process legacy_sweep::run_once() ALSO does this cleanup
+# on every boot; this script is the belt-and-suspenders path so apt users
+# get cleanup at install time (before the new agent even starts).
+
+set -e
+
+case "$1" in
+    configure)
+        for OLD in trackforce-agent rudrans-agent; do
+            if dpkg -l "$OLD" 2>/dev/null | grep -q '^ii'; then
+                dpkg --purge --force-depends "$OLD" 2>/dev/null || true
+            fi
+        done
+        # Stop + disable stale systemd units if the old packages ever
+        # registered one. Failures on non-systemd hosts (unlikely on
+        # Ubuntu target) are silent.
+        for UNIT in trackforce-agent.service rudrans-agent.service; do
+            systemctl stop   "$UNIT" 2>/dev/null || true
+            systemctl disable "$UNIT" 2>/dev/null || true
+        done
+    ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+
+    *)
+        echo "postinst called with unknown argument \`$1'" >&2
+        exit 1
+    ;;
+esac
+
+exit 0

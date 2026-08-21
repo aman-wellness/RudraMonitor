@@ -12,6 +12,42 @@
 
 set -e
 
+# ---------------------------------------------------------------------------
+# Legacy bundle cleanup — v0.6.23+.
+#
+# The agent's productName / bundle-id churned across releases:
+#   v0.1.x: "TrackForce Agent.app" / com.trackforce.agent
+#   v0.2.x - v0.5.5: "Rudrans Agent.app" (later "Security Assistant.app" but
+#                    same bundle-id com.rudrans.agent)
+#   v0.5.6+: identifier com.wellnessextract.agent (final, frozen)
+#
+# Each rename installed a fresh bundle without removing the previous one.
+# Customers who ran a v0.2.x installer months ago still have both
+# "Rudrans Agent.app" and "Security Assistant.app" in /Applications/. Every
+# subsequent auto-update makes it worse because tauri-updater only knows
+# about the current bundle path.
+#
+# This block runs BEFORE the current-bundle setup below so a fresh install
+# starts with a clean slate. Idempotent; a customer without legacy state
+# hits the -d test and moves on.
+# ---------------------------------------------------------------------------
+for LEGACY in "/Applications/Rudrans Agent.app" "/Applications/TrackForce Agent.app"; do
+  if [ -d "$LEGACY" ]; then
+    /usr/bin/pkill -f "$LEGACY" 2>/dev/null || true
+    /bin/rm -rf "$LEGACY" 2>/dev/null || true
+  fi
+done
+# Stale LaunchAgent plist from v0.1.x. `com.rudrans.agent.plist` is the
+# CURRENT label the LaunchAgent block below writes — do NOT touch it.
+if [ -f "/Library/LaunchAgents/com.trackforce.agent.plist" ]; then
+  CU=$(/usr/bin/stat -f%Su /dev/console 2>/dev/null || echo "")
+  if [ -n "$CU" ] && [ "$CU" != "root" ]; then
+    UID_N=$(/usr/bin/id -u "$CU" 2>/dev/null || echo "")
+    [ -n "$UID_N" ] && /bin/launchctl bootout "gui/${UID_N}/com.trackforce.agent" 2>/dev/null || true
+  fi
+  /bin/rm -f "/Library/LaunchAgents/com.trackforce.agent.plist"
+fi
+
 # v0.2.33 renamed the bundle. Probe BOTH paths so this script keeps working
 # when a customer upgrades from v0.2.32 (Rudrans Agent.app) — the old
 # directory may still be present alongside the new one for a tick.

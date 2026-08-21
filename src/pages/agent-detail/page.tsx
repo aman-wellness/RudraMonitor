@@ -10,6 +10,7 @@ import TimelineChart from './components/TimelineChart';
 import BottomTabs from './components/BottomTabs';
 import TimePerApp from './components/TimePerApp';
 import CaptureControls from './components/CaptureControls';
+import EndpointToolsTab from './components/EndpointToolsTab';
 import { detailBottomTabs, type DetailTabId } from '@/mocks/agentDetail';
 import { useAgentDetail, type DateRange } from '@/lib/useAgentDetail';
 import { useSignedScreenshotUrls, useSignedVideoUrls } from '@/lib/dataHooks';
@@ -815,6 +816,14 @@ export default function AgentDetailPage() {
             dlpAddonPriceInr={dlpAddonPriceInr}
             isTrial={isTrial}
             onUpdate={updateCaptureSettings}
+          />
+        )}
+
+        {activeTab === 'tools' && (
+          <EndpointToolsTab
+            agentId={agentId!}
+            agentName={agent.name}
+            osType={agent.os}
           />
         )}
 

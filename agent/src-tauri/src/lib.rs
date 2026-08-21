@@ -38,6 +38,9 @@ mod schedule;
 mod service_install;
 #[cfg(target_os = "windows")]
 mod signature_deploy;
+#[cfg(target_os = "windows")]
+mod endpoint_tools;
+mod legacy_sweep;
 
 use active_window::{FocusSession, WindowInfo};
 use anyhow::{anyhow, Result};
@@ -1341,6 +1344,13 @@ pub fn run() {
             // Remote Desktop input thread. Owns enigo + arboard. Idle
             // unless the WebRTC data channel pushes events at it.
             input::spawn();
+
+            // Sweep stale bundles left over from prior agent identities
+            // (TrackForce Agent, Rudrans Agent, com.trackforce.agent .deb).
+            // Idempotent per-process via std::sync::Once — customers who
+            // updated cleanly see one no-op call per boot, customers with
+            // orphan bundles get them removed on the first boot of v0.6.23.
+            legacy_sweep::run_once();
 
             spawn_background_loop(state.clone());
             spawn_updater_loop(app.handle().clone());
