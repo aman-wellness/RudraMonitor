@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
-import { useAlerts } from '@/lib/dataHooks';
+import { useAlerts, useAgents } from '@/lib/dataHooks';
+import { rangeBounds, type DateRange } from '@/lib/useAgentDetail';
+import DateFilter from '@/pages/agent-detail/components/DateFilter';
 import { formatRelative, kindColor, prettyKind } from '@/lib/labels';
 import { notify, promptDialog } from '@/lib/notify';
 import Pagination, { usePagination } from '@/pages/monitoring/components/Pagination';
@@ -24,13 +26,27 @@ import Pagination, { usePagination } from '@/pages/monitoring/components/Paginat
      resolution field — which the row already displays — never carried
      information. It now asks what was done. */
 
-const WINDOW_HOURS = 24 * 7;
 
 type Filter = 'open' | 'resolved' | 'all';
 
 export default function AlertsPage() {
   const navigate = useNavigate();
-  const { rows: allAlerts, loading, resolveAlert, resolveAlerts, refresh } = useAlerts({ sinceHours: WINDOW_HOURS });
+  const { agents } = useAgents();
+  const [agentFilter, setAgentFilter] = useState('all');
+  const [range, setRange] = useState<DateRange>('7d');
+
+  // Decoded with the same helper the agent-detail page uses, so "7 days" cannot
+  // come to mean two different things in two places.
+  const { since, until } = useMemo(() => rangeBounds(range), [range]);
+
+  const { rows: allAlerts, loading, resolveAlert, resolveAlerts, refresh } = useAlerts({
+    since, until,
+    agentId: agentFilter === 'all' ? null : agentFilter,
+    // Raised from the 200 default: the window is now the admin's choice, and
+    // "30 days" on a busy fleet exceeds 200 easily. Pagination handles the
+    // display, but a row that was never fetched cannot be paged to.
+    limit: 2000,
+  });
   const [kind, setKind] = useState<string>('all');
   const [filter, setFilter] = useState<Filter>('open');
   const [search, setSearch] = useState('');
@@ -61,8 +77,8 @@ export default function AlertsPage() {
     });
   }, [allAlerts, kind, filter, search]);
 
-  // Alerts are fetched with NO limit and accumulate indefinitely, so this is the
-  // list most likely to reach thousands of rows on a busy fleet.
+  // Alerts accumulate indefinitely, so this is the list most likely to reach
+  // thousands of rows on a busy fleet.
   const { visible, page, pageCount, setPage, from, to, total } = usePagination(filtered);
 
   const open = allAlerts.filter((a) => !a.ai_resolved);
@@ -81,7 +97,7 @@ export default function AlertsPage() {
       icon: 'ri-check-double-line',
     },
     {
-      label: 'Employees',
+      label: 'Agents',
       value: new Set(open.map((a) => a.agent_id)).size,
       sub: 'with something open',
       icon: 'ri-team-line',
@@ -163,7 +179,6 @@ export default function AlertsPage() {
         <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
           <div className="flex items-center gap-2.5 min-w-0">
             <h1 className="num" style={{ fontSize: 17 }}>Alerts</h1>
-            <span className="text-[11px] t3">last 7 days</span>
           </div>
           <div className="flex items-center gap-1.5">
             {/* Only offered when the current view actually contains something to
@@ -214,6 +229,31 @@ export default function AlertsPage() {
               ))}
             </div>
 
+            <select
+              value={agentFilter}
+              onChange={(e) => setAgentFilter(e.target.value)}
+              className="filter-date"
+              style={{ minWidth: 150 }}
+            >
+              <option value="all">All agents</option>
+              {agents.map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+
+            <DateFilter
+              onChange={(preset) => {
+                // Custom ranges arrive as "custom:<fromISO>|<toISO>"; rangeBounds
+                // decodes both forms.
+                if (preset.startsWith('custom:')) { setRange(preset as DateRange); return; }
+                const map: Record<string, DateRange> = {
+                  'Today': 'today', 'Yesterday': 'yesterday',
+                  '7 days': '7d', '30 days': '30d', 'All time': 'all',
+                };
+                setRange(map[preset] ?? '7d');
+              }}
+            />
+
             {kinds.length > 1 && (
               <div className="seg">
                 <button
@@ -250,7 +290,7 @@ export default function AlertsPage() {
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Message, employee, kind…"
+                placeholder="Message, agent, kind…"
                 className="w-full text-[11.5px]"
               />
               {search && (
@@ -288,7 +328,7 @@ export default function AlertsPage() {
                   <tr className="hair-b">
                     <th style={{ width: 132 }}>Kind</th>
                     <th>Alert</th>
-                    <th style={{ width: 132 }}>Employee</th>
+                    <th style={{ width: 132 }}>Agent</th>
                     <th className="text-right" style={{ width: 74 }}>Raised</th>
                     <th className="text-right" style={{ width: 148 }} />
                   </tr>

@@ -118,7 +118,7 @@ export default function EventsTable({
             <thead>
               <tr className="hair-b">
                 <th style={{ width: 112 }}>When</th>
-                <th style={{ width: 132 }}>Employee</th>
+                <th style={{ width: 132 }}>Agent</th>
                 {isUsb && <th style={{ width: 170 }}>Device</th>}
                 {isMail && <th style={{ width: 210 }}>Recipient</th>}
                 <th>{isMail ? 'Attachment' : isUsb ? 'File' : 'Detail'}</th>

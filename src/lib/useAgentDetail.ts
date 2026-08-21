@@ -83,7 +83,13 @@ type ActivityRow = {
 // DateFilter popover when the user picks specific start + end timestamps.
 export type DateRange = 'today' | 'yesterday' | '7d' | '30d' | 'all' | `custom:${string}|${string}`;
 
-function rangeBounds(r: DateRange): { since: Date; until: Date } {
+/**
+ * Decodes a DateRange into absolute bounds.
+ *
+ * Exported because the Alerts page needs the same decoding. Duplicating it
+ * would mean "7 days" could quietly mean different things on two pages.
+ */
+export function rangeBounds(r: DateRange): { since: Date; until: Date } {
   if (typeof r === 'string' && r.startsWith('custom:')) {
     const [fromIso, toIso] = r.slice('custom:'.length).split('|');
     const since = fromIso ? new Date(fromIso) : new Date(0);

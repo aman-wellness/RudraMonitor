@@ -101,7 +101,7 @@ export default function EventDetail({ row, onClose }: { row: DlpRow; onClose: ()
 
           <section>
             <p className="label mb-1">Event</p>
-            <Row label="Employee" value={row.agents?.agent_name} />
+            <Row label="Agent" value={row.agents?.agent_name} />
             <Row label="Direction" value={row.direction?.replace(/_/g, ' ')} />
             <Row label="Active window" value={row.active_window} />
             <Row label="Device" value={row.device_name} />

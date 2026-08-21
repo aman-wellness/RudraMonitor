@@ -105,7 +105,7 @@ export default function DlpPage() {
                 </span>
                 <p className="num num-lg mt-1.5">{summary.total}</p>
                 <p className="text-[10px] t3 mt-1 truncate">
-                  across {summary.people || 0} employee{summary.people === 1 ? '' : 's'}
+                  across {summary.people || 0} agent{summary.people === 1 ? '' : 's'}
                 </p>
               </div>
 
@@ -244,7 +244,7 @@ export default function DlpPage() {
                     type="text"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    placeholder="File, device, employee, reason…"
+                    placeholder="File, device, agent, reason…"
                     className="w-full text-[11.5px]"
                   />
                   {search && (
