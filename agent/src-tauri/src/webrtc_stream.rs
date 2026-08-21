@@ -255,6 +255,21 @@ async fn poll_once(state: &AppState, since: &str) -> Result<Option<String>> {
     let mut newest = None;
     for msg in body.messages {
         newest = Some(msg.created_at.clone());
+        // Fallback triggers: the dashboard posts these when its WebRTC
+        // negotiation fails (employee on a UDP-blocked network). The agent then
+        // streams over the TLS-443 relay instead. See relay_fallback.rs.
+        if msg.kind == "relay_start" {
+            if let Some(sid) = msg.session_id.clone().filter(|s| !s.is_empty()) {
+                crate::relay_fallback::spawn_agent_relay(state.clone(), sid);
+            }
+            continue;
+        }
+        if msg.kind == "relay_stop" {
+            if let Some(sid) = msg.session_id.clone().filter(|s| !s.is_empty()) {
+                crate::relay_fallback::stop_relay(&sid);
+            }
+            continue;
+        }
         if msg.kind != "offer" {
             // ICE candidates without an active session are dropped silently —
             // they belong to a peer connection we're not running yet.
@@ -1296,7 +1311,7 @@ fn urlencoding(s: &str) -> String {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
-enum InboundMsg {
+pub(crate) enum InboundMsg {
     Hello { #[serde(default)] proto: u32 },
     MouseMove { x: f64, y: f64 },
     MouseButton { btn: String, down: bool },
@@ -1318,7 +1333,7 @@ enum InboundMsg {
     SetQuality { width: u32, bitrate_kbps: u32 },
 }
 
-fn screen_dims() -> (i32, i32) {
+pub(crate) fn screen_dims() -> (i32, i32) {
     // Use xcap (already a dep for screenshots) to get the primary monitor's
     // logical pixel size. Same display the ffmpeg capture is reading from.
     match xcap::Monitor::all() {
