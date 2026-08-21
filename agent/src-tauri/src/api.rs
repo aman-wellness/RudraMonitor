@@ -151,8 +151,29 @@ pub async fn validate_license(
         .send()
         .await?;
     let status = resp.status();
+    // Check the STATUS before parsing.
+    //
+    // This used to go straight to resp.json(), so any non-2xx response failed as
+    // a deserialisation error and the setup screen reported "invalid license
+    // key" — for a 404, a 502, or a captive portal's HTML login page alike. The
+    // one thing it could not tell you was that the key was fine and the agent
+    // was talking to the wrong place. Diagnosing that cost real time, so name
+    // the URL and the status instead.
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        let hint = if status.as_u16() == 404 {
+            " — nothing is serving that path. Check the backend URL the agent was \
+             built with, and that it points at a reachable Supabase instance."
+        } else {
+            ""
+        };
+        return Err(anyhow!(
+            "validate-license: HTTP {} from {}{}\n{}",
+            status, url, hint, body.trim(),
+        ));
+    }
     let json = resp.json::<ValidateLicenseResponse>().await
-        .map_err(|e| anyhow!("validate-license parse: {} (http {})", e, status))?;
+        .map_err(|e| anyhow!("validate-license parse: {} (http {} from {})", e, status, url))?;
     Ok(json)
 }
 
@@ -221,7 +242,15 @@ pub async fn enroll(
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        return Err(anyhow!("enroll failed: {} — {}", status, body));
+        // Name the URL, not just the status.
+        //
+        // "invalid license key" is what enroll-agent returns when no organization
+        // matches — which is also exactly what a CORRECT key looks like when the
+        // agent is pointed at the WRONG backend. Without the URL the two are
+        // indistinguishable, and the message actively misleads: it blames the key.
+        // The URL is resolved at runtime (env → agent.json → compiled default), so
+        // it is not something the reader can infer from which installer they ran.
+        return Err(anyhow!("enroll failed: {} from {} — {}", status, url, body));
     }
     Ok(resp.json::<EnrollResponse>().await?)
 }

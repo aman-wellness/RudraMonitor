@@ -175,6 +175,68 @@ pub fn pick_h264_encoder(ffmpeg_bin: &PathBuf) -> &'static str {
     })
 }
 
+/// Whether `ddagrab` (Desktop Duplication API) actually captures on THIS
+/// machine, established by capturing a frame rather than by asking what the
+/// binary supports.
+///
+/// Remote Desktop's Windows capture uses ddagrab because gdigrab cannot reach
+/// 30 fps at 1080p (measured ~19 vs ~29). But ddagrab is not universally
+/// available, and every way it fails is invisible to a filter-list check:
+///
+///   • it needs ffmpeg 6.0+, and an older ffmpeg on PATH or in the cache is
+///     resolved ahead of any newer bundled copy;
+///   • it needs an attached desktop session, so it fails under a service
+///     context and over some RDP configurations;
+///   • it goes through D3D11, which on this very machine already produced a
+///     runtime "Invalid argument" from `scale_d3d11` while reporting the
+///     filter as present.
+///
+/// That last point is the same trap `pick_h264_encoder` documents at length:
+/// `-filters` and `-encoders` list what ffmpeg was COMPILED with, not what the
+/// host can do. So this runs the real thing for one frame and reads the exit
+/// status. Without the probe, a machine that cannot do ddagrab gets a session
+/// that connects and then shows a permanently black screen — the failure is
+/// silent because the peer connection itself is perfectly healthy.
+///
+/// Cached for the process lifetime: the answer cannot change, and the probe
+/// costs a few hundred milliseconds.
+#[cfg(target_os = "windows")]
+pub fn can_ddagrab(ffmpeg_bin: &PathBuf) -> bool {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let mut cmd = Command::new(ffmpeg_bin);
+        crate::win_proc::no_window(&mut cmd);
+        let ok = cmd
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-filter_complex",
+                "ddagrab=output_idx=0:framerate=30,hwdownload,format=bgra",
+                "-frames:v",
+                "1",
+                "-f",
+                "null",
+                "-",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            log::info!("ddagrab probe succeeded; using Desktop Duplication capture");
+        } else {
+            log::warn!(
+                "ddagrab probe failed on this machine; Remote Desktop will capture \
+                 with gdigrab instead (lower frame rate, but it produces a picture)"
+            );
+        }
+        ok
+    })
+}
+
 /// Return the ffmpeg `-vcodec <name>` argument bundle for low-latency
 /// streaming with the chosen encoder. Each hardware encoder has its own
 /// flag dialect; this is the single place that knows them all.
