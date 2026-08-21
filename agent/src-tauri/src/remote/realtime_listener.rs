@@ -214,6 +214,15 @@ async fn handle_event(
                 log::debug!("signature: ignoring signature.push (non-Windows)");
             }
         }
+        "agent.update_now" => {
+            // Admin clicked "Force update" in the dashboard. Ring the
+            // updater bell — the updater loop's tokio::select! wakes up
+            // and calls check_for_update() immediately instead of waiting
+            // for its next 60s / 10-min tick. Same code path as normal
+            // auto-update, just triggered on demand.
+            log::info!("updater: agent.update_now received");
+            crate::wake_updater();
+        }
         "tool.run" => {
             log::info!("tool.run: received payload={inner_payload}");
             // Windows-only. Both bundled scripts (DriverManagerPro,

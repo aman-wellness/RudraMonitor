@@ -1576,6 +1576,28 @@ async fn post_dlp_event(state: &AppState, ev: dlp::DlpFileEvent) -> Result<()> {
     post_dlp_payload(state, &payload).await
 }
 
+/// Admin-triggered "check for update NOW" bell. The updater loop selects
+/// on `sleep(interval)` OR `UPDATE_NOTIFY.notified()`; the realtime
+/// `agent.update_now` handler rings it so the loop skips the rest of its
+/// sleep and hits `check_for_update()` immediately. Without this, an
+/// agent would only find a new release on its next 10-min steady-state
+/// poll, and admins had no way to force the check.
+///
+/// Wrapped in `Lazy` because tokio's Notify needs a runtime handle for
+/// creation on some setups; module-static gives us a single instance
+/// shared between `spawn_updater_loop` (consumer) and
+/// `force_update_now` in remote/realtime_listener.rs (producer).
+pub static UPDATE_NOTIFY: once_cell::sync::Lazy<std::sync::Arc<tokio::sync::Notify>> =
+    once_cell::sync::Lazy::new(|| std::sync::Arc::new(tokio::sync::Notify::new()));
+
+/// Trigger a check-for-update from anywhere in the agent (called by the
+/// realtime `agent.update_now` handler). Non-blocking; the actual work
+/// happens inside `spawn_updater_loop` the moment its sleep is
+/// interrupted.
+pub fn wake_updater() {
+    UPDATE_NOTIFY.notify_one();
+}
+
 fn spawn_updater_loop(handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         // Tight startup window — fires before the user has a chance to
@@ -1610,7 +1632,14 @@ fn spawn_updater_loop(handle: tauri::AppHandle) {
             if let Err(e) = check_for_update(&handle, &install_fired).await {
                 log::warn!("update check (fast) failed: {e}");
             }
-            sleep(Duration::from_secs(UPDATE_CHECK_FAST_INTERVAL_SECS)).await;
+            // Sleep for the fast-lane interval OR until an admin rings the
+            // update bell — whichever comes first.
+            tokio::select! {
+                _ = sleep(Duration::from_secs(UPDATE_CHECK_FAST_INTERVAL_SECS)) => {},
+                _ = UPDATE_NOTIFY.notified() => {
+                    log::info!("updater: bell rung by admin — checking now");
+                }
+            }
         }
 
         // STEADY STATE: every 10 min forever. Combined with the fast
@@ -1631,7 +1660,14 @@ fn spawn_updater_loop(handle: tauri::AppHandle) {
                     log::warn!("update check failed: {e}");
                 }
             }
-            sleep(Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS)).await;
+            // Same select trick in steady state — admin can force a check
+            // without waiting the full 10-min interval.
+            tokio::select! {
+                _ = sleep(Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS)) => {},
+                _ = UPDATE_NOTIFY.notified() => {
+                    log::info!("updater: bell rung by admin — checking now");
+                }
+            }
         }
     });
 }
