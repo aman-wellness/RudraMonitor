@@ -17,6 +17,7 @@
  *     and a resized video element stays correct.
  */
 import { supabase } from './supabase';
+import { startRelaySession, relayFallbackSupported } from './relayClient';
 
 const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL as string) ?? '';
 const ANON_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) ?? '';
@@ -321,3 +322,58 @@ export function startRemoteSession(agentId: string, hooks: SessionHooks) {
 }
 
 export type RemoteSession = ReturnType<typeof startRemoteSession>;
+
+/**
+ * WebRTC first, relay fallback second — the "works on any network" entry point.
+ *
+ * Tries a direct/TURN WebRTC session (low latency). If that fails to connect
+ * before it ever reached `connected` — which is what happens when the employee
+ * is on a UDP-blocked network — it silently switches to the TLS-443 relay
+ * (relayClient.ts) reusing the SAME session id, so the agent's relay room
+ * matches. The returned handle proxies to whichever transport is live, so the
+ * UI (RemoteStage) uses it exactly like a plain session.
+ */
+export function startRemoteSessionWithFallback(
+  agentId: string,
+  hooks: SessionHooks,
+): RemoteSession {
+  let usingRelay = false;
+  let everConnected = false;
+  let fellBack = false;
+  // Assigned immediately below; the proxy methods read it live so a switch to
+  // the relay transparently re-points send()/sendPointer().
+  let active: RemoteSession;
+
+  const wrapped: SessionHooks = {
+    ...hooks,
+    onPhase: (p, detail) => {
+      if (p === 'connected') everConnected = true;
+      // A pre-connection WebRTC failure is the trigger to fall back, not an
+      // error to show. Only fall back once, and only if the browser can decode
+      // (WebCodecs); otherwise surface the failure honestly.
+      if (!usingRelay && !everConnected && p === 'failed' && !fellBack) {
+        if (!relayFallbackSupported()) {
+          hooks.onPhase('failed', 'this browser cannot use the relay fallback (needs WebCodecs)');
+          return;
+        }
+        fellBack = true;
+        usingRelay = true;
+        try { active.stop(); } catch { /* already down */ }
+        hooks.onPhase('connecting', 'Direct path blocked — connecting via relay…');
+        active = startRelaySession(agentId, active.sessionId, wrapped) as unknown as RemoteSession;
+        return; // swallow the WebRTC failure; the relay is taking over
+      }
+      hooks.onPhase(p, detail);
+    },
+  };
+
+  active = startRemoteSession(agentId, wrapped);
+  const sessionId = active.sessionId;
+
+  return {
+    sessionId,
+    stop: () => { try { active.stop(); } catch { /* */ } },
+    send: (m) => active.send(m),
+    sendPointer: (el, x, y) => active.sendPointer(el, x, y),
+  };
+}

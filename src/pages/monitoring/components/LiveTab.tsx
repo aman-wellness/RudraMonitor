@@ -20,6 +20,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ConnectionState, type RemoteTrack, type Room } from 'livekit-client';
 import { useAgents } from '@/lib/dataHooks';
 import { connectToAgent } from '@/lib/livekit-client';
+import { startRelaySession, relayFallbackSupported, type RelaySession } from '@/lib/relayClient';
 
 type Status = 'idle' | 'connecting' | 'live' | 'failed';
 
@@ -35,6 +36,12 @@ export default function LiveTab() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const handleRef = useRef<{ leave: () => Promise<void>; room: Room } | null>(null);
   const trackRef = useRef<RemoteTrack | null>(null);
+  // Relay fallback for Live View. LiveKit needs the agent to reach the SFU over
+  // UDP; when the employee's network blocks that, LiveKit never gets a track
+  // and we fall back to the TLS-443 relay (same path Remote uses). One attempt
+  // per selected agent.
+  const relayRef = useRef<RelaySession | null>(null);
+  const triedRelayRef = useRef(false);
 
   // Re-establish the room whenever the selected agent changes.
   useEffect(() => {
@@ -150,10 +157,45 @@ export default function LiveTab() {
       try { t.detach(videoRef.current); } catch { /* ignore */ }
     }
     trackRef.current = null;
+    if (relayRef.current) {
+      try { relayRef.current.stop(); } catch { /* already down */ }
+      relayRef.current = null;
+    }
+    if (videoRef.current) videoRef.current.srcObject = null;
+    triedRelayRef.current = false;
     const h = handleRef.current;
     handleRef.current = null;
     if (h) await h.leave();
   };
+
+  // Relay fallback trigger. When the LiveKit path fails before any video
+  // arrived, try once over the TLS-443 relay so an employee on a UDP-blocked
+  // network is still viewable. View-only: we attach the relay's stream but send
+  // no input.
+  useEffect(() => {
+    if (status !== 'failed' || !selectedId) return;
+    if (triedRelayRef.current || relayRef.current) return;
+    if (!relayFallbackSupported()) return;
+    triedRelayRef.current = true;
+    const agentId = selectedId;
+    setStatus('connecting');
+    setErrorMsg('Direct path blocked — connecting via relay…');
+    const sessionId = crypto.randomUUID();
+    relayRef.current = startRelaySession(agentId, sessionId, {
+      onPhase: (p, d) => {
+        if (p === 'failed') { setStatus('failed'); setErrorMsg(d ?? 'relay failed'); }
+      },
+      onTrack: (stream) => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play().catch(() => { /* muted autoplay */ });
+        }
+        setStatus('live');
+        setErrorMsg(null);
+      },
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, selectedId]);
 
   const tone = status === 'live' ? 'var(--d-success)'
     : status === 'connecting' ? 'var(--d-warning)'

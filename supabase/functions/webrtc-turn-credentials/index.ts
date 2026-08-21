@@ -23,6 +23,19 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const TURN_SECRET = Deno.env.get("TURN_SHARED_SECRET") ?? "";
 const TURN_HOST = Deno.env.get("TURN_HOST") ?? "ems.wellnessextract.com";
+// TLS host must match the CN/SAN on coturn's certificate. Defaults to TURN_HOST
+// because that is the common single-box setup, but is overridable for a relay
+// whose cert is on a different name.
+const TURN_TLS_HOST = Deno.env.get("TURN_TLS_HOST") ?? TURN_HOST;
+// The plain UDP/TCP relay port. 3478 is the IANA default.
+const TURN_PORT = Deno.env.get("TURN_PORT") ?? "3478";
+// The TLS relay port. 443 is deliberate, not a placeholder: TURN-over-TLS on
+// 443 is the ONE transport that reaches a client on essentially any network,
+// because to every firewall in between it looks exactly like an HTTPS
+// connection. This is what makes remote access work from a home, a hotel, a
+// phone tether, or a locked-down office in another country. Overridable only
+// if 443 is already taken on the relay host.
+const TURN_TLS_PORT = Deno.env.get("TURN_TLS_PORT") ?? "443";
 const TTL_SECONDS = 4 * 60 * 60; // 4 hours
 
 Deno.serve(async (req) => {
@@ -93,10 +106,37 @@ Deno.serve(async (req) => {
     // TCP/TURNS variants for now: the TLS listener isn't configured
     // (Let's Encrypt cert path missing in coturn config), and TCP-TURN
     // adds head-of-line blocking we don't want for screen video.
+    // Order matters for LATENCY. ICE gathers candidates from all of these and
+    // then uses the best pair it can actually connect, so the list is arranged
+    // cheapest-path-first:
+    //
+    //   1. STUN — discovers the public address for a DIRECT peer-to-peer path.
+    //      When it works (most home and mobile networks), media never touches
+    //      the relay and latency is the raw network round-trip. This is the
+    //      common case and the fast one.
+    //   2. TURN over UDP — relay fallback with the least overhead, for when
+    //      direct fails but UDP still flows.
+    //   3. TURN over TCP — for networks that pass TCP but drop UDP.
+    //   4. TURN over TLS/443 — the last resort that works almost everywhere,
+    //      at the cost of an extra hop. Only used when 1–3 all fail.
+    //
+    // Because relay is last, a well-connected viewer/agent pays no relay
+    // latency; a badly-firewalled one still connects. That is the whole point:
+    // fast when possible, reachable always.
     iceServers: [
-      { urls: `stun:${TURN_HOST}:3478` },
+      { urls: `stun:${TURN_HOST}:${TURN_PORT}` },
       {
-        urls: `turn:${TURN_HOST}:3478?transport=udp`,
+        urls: `turn:${TURN_HOST}:${TURN_PORT}?transport=udp`,
+        username,
+        credential,
+      },
+      {
+        urls: `turn:${TURN_HOST}:${TURN_PORT}?transport=tcp`,
+        username,
+        credential,
+      },
+      {
+        urls: `turns:${TURN_TLS_HOST}:${TURN_TLS_PORT}?transport=tcp`,
         username,
         credential,
       },

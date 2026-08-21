@@ -15,6 +15,7 @@ pub use watchdog::{is_guardian_invocation, run_guardian_loop, mark_graceful_shut
 mod idle;
 mod input;
 mod metrics;
+mod relay_fallback;
 mod screenshots;
 mod video;
 mod webrtc_stream;

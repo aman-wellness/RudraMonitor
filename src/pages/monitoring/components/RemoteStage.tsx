@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { startRemoteSession, type Phase, type RemoteSession } from '@/lib/remoteControl';
+import { startRemoteSessionWithFallback, type Phase, type RemoteSession } from '@/lib/remoteControl';
 import { notify } from '@/lib/notify';
 
 /* The interactive remote screen.
@@ -65,7 +65,7 @@ export default function RemoteStage({ agentId, agentName, onClose }: Props) {
 
   useEffect(() => {
     let retried = false;
-    const s = startRemoteSession(agentId, {
+    const s = startRemoteSessionWithFallback(agentId, {
       onPhase: (p, d) => {
         setPhase(p);
         setDetail(d ?? null);
