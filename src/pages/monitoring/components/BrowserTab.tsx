@@ -86,7 +86,7 @@ export default function BrowserTab() {
         onAgentChange={setAgentFilter}
         search={search}
         onSearchChange={setSearch}
-        searchPlaceholder="Site, page, employee…"
+        searchPlaceholder="Site, page, agent…"
         category={catFilter}
         onCategoryChange={setCatFilter}
         count={
@@ -118,7 +118,7 @@ export default function BrowserTab() {
                 <tr className="hair-b">
                   <th style={{ width: hasPath ? '20%' : 190 }}>Site</th>
                   {hasPath && <th>Page</th>}
-                  <th style={{ width: 150 }}>Employee</th>
+                  <th style={{ width: 150 }}>Agent</th>
                   <th style={{ width: 122 }}>Category</th>
                   <th className="text-right" style={showBar ? undefined : { width: 96 }}>Time (24h)</th>
                   <th className="text-right" style={{ width: 56 }}>Visits</th>

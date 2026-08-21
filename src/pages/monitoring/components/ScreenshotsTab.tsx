@@ -70,7 +70,7 @@ export default function ScreenshotsTab() {
         onAgentChange={setAgentFilter}
         search={search}
         onSearchChange={setSearch}
-        searchPlaceholder="Employee or trigger…"
+        searchPlaceholder="Agent or trigger…"
         count={
           filtered.length > 0 ? (
             <span className="text-[10.5px] t3 tnum">{filtered.length} of {rows.length}</span>

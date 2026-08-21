@@ -576,7 +576,9 @@ export function useBrowserUsage(filter: { agentId?: string; sinceHours?: number 
  * apart from "a site that breaches policy".
  */
 export type Category = 'productive' | 'unproductive' | 'neutral' | 'prohibited';
-export type MatchType = 'app' | 'host';
+/** 'host_contains' matches anywhere in the hostname — for sites that rotate
+ * domains, where a per-domain rule goes stale within days. */
+export type MatchType = 'app' | 'host' | 'host_contains';
 
 export type ProductivityRule = {
   id: string;
@@ -588,28 +590,33 @@ export type ProductivityRule = {
   department: string | null;
 };
 
-// Lookup table for O(1) classification. The key includes the department scope
-// because a pattern can carry both an organisation-wide default and a
-// department override — keying on (match_type, pattern) alone made the two
-// collide, and whichever row the query happened to return last silently won.
-export type RuleMap = Record<string, Category>;
+/**
+ * Compiled ruleset for classification.
+ *
+ * Not a flat lookup any more: `host_contains` rules cannot be keyed by the
+ * subject they will match, so they have to be scanned. Exact and suffix matches
+ * still resolve from the map, which is the overwhelming majority of lookups.
+ */
+export type RuleMap = {
+  /** key: `${department}|${matchType}:${pattern}` — exact and suffix rules. */
+  keyed: Record<string, Category>;
+  /** Substring rules, scanned in order. Small: one per site family. */
+  contains: Array<{ department: string; pattern: string; category: Category }>;
+};
 
 export const ruleKey = (matchType: MatchType, pattern: string, department?: string | null) =>
   `${(department ?? '').trim().toLowerCase()}|${matchType}:${pattern.toLowerCase()}`;
 
 /**
- * Candidate patterns for a subject, most specific first.
+ * Candidate patterns for a subject, most specific first: the hostname itself,
+ * then each parent domain.
  *
- * Hosts also match by SUFFIX, so one rule per registrable domain covers its
- * subdomains — `github.com` classifies `gist.github.com`. Without this, a rule
- * catalogue would classify almost nothing, because real browsing is mostly
- * subdomains (`console.firebase.google.com`,
- * `eu-north-1.console.aws.amazon.com`). Applications are matched exactly; a
- * process name has no hierarchy to walk.
- *
- * Longest first, so an explicit `docs.google.com` rule beats a general
- * `google.com` one — the same ordering the RPC applies with
- * `ORDER BY length(pattern) DESC`.
+ * Hosts match by SUFFIX as well as exactly, so one rule per registrable domain
+ * covers its subdomains — `github.com` classifies `gist.github.com`. Without it
+ * a catalogue would classify almost nothing, since real browsing is mostly
+ * subdomains. Applications match exactly; a process name has no hierarchy, and
+ * substring matching there would be dangerous ('chrome' would catch
+ * 'chromedriver').
  */
 const candidatePatterns = (matchType: MatchType, subject: string): string[] => {
   const s = subject.trim().toLowerCase();
@@ -621,20 +628,33 @@ const candidatePatterns = (matchType: MatchType, subject: string): string[] => {
   return out.length ? out : [s];
 };
 
+/** Substring rules matching this subject, longest pattern first. */
+const containsMatches = (
+  rules: RuleMap, matchType: MatchType, subject: string, department: string,
+) => {
+  if (matchType !== 'host') return [];
+  const s = subject.trim().toLowerCase();
+  return rules.contains
+    .filter((r) => r.department === department && s.includes(r.pattern))
+    .sort((a, b) => b.pattern.length - a.pattern.length);
+};
+
 /**
  * Effective category for a subject, from the point of view of one department.
  *
- * Precedence mirrors the LEFT JOIN LATERAL in the org_productivity_* RPCs
- * exactly: EVERY department-scoped match outranks EVERY organisation-wide one,
- * and within a scope the most specific pattern wins. Note the ordering — a
- * department rule for `google.com` beats an org-wide rule for
- * `docs.google.com`, because the RPC sorts by `(department IS NULL)` before
- * `length(pattern)`. If the two implementations disagreed, the dashboard would
- * show one category and the productivity figure would be computed from another.
+ * Precedence mirrors public.resolve_rule_category exactly:
+ *   1. department-scoped rules before organisation-wide ones
+ *   2. within a scope, most specific match type: exact, then suffix, then
+ *      contains
+ *   3. then the longest pattern
  *
- * Falls back to 'unproductive', not 'neutral': anything not in the catalogue
- * does not count as work (see migration 0134). 'neutral' remains reachable only
- * as an explicit rule, and is excluded from the ratio entirely.
+ * Point 2 is what lets an admin whitelist one site inside an otherwise-blocked
+ * brand: an exact rule always outranks a substring rule. If this and the SQL
+ * ever disagree, the dashboard shows one category while productivity is
+ * computed from another.
+ *
+ * Falls back to 'unproductive', not 'neutral': anything uncatalogued does not
+ * count as work (migration 0134).
  */
 export const classify = (
   rules: RuleMap,
@@ -642,17 +662,21 @@ export const classify = (
   pattern: string,
   department?: string | null,
 ): Category => {
-  const candidates = candidatePatterns(matchType, pattern);
-  for (const scope of department ? [department, null] : [null]) {
-    for (const c of candidates) {
-      const hit = rules[ruleKey(matchType, c, scope)];
+  const scopes = department ? [department, ''] : [''];
+  for (const scope of scopes) {
+    // Exact, then each parent domain (suffix), most specific first.
+    for (const c of candidatePatterns(matchType, pattern)) {
+      const hit = rules.keyed[ruleKey(matchType, c, scope || null)];
       if (hit) return hit;
     }
+    // Only then substring rules, so they can never override an explicit host.
+    const [first] = containsMatches(rules, matchType, pattern, scope);
+    if (first) return first.category;
   }
   return 'unproductive';
 };
 
-/** True when a department override — not the org-wide default — is deciding this row. */
+/** True when a department override — not the org-wide default — decides this row. */
 export const isDepartmentOverridden = (
   rules: RuleMap,
   matchType: MatchType,
@@ -660,8 +684,9 @@ export const isDepartmentOverridden = (
   department?: string | null,
 ): boolean => {
   if (!department) return false;
-  return candidatePatterns(matchType, pattern)
-    .some((c) => rules[ruleKey(matchType, c, department)] !== undefined);
+  const keyed = candidatePatterns(matchType, pattern)
+    .some((c) => rules.keyed[ruleKey(matchType, c, department)] !== undefined);
+  return keyed || containsMatches(rules, matchType, pattern, department).length > 0;
 };
 
 export function useProductivityRules() {
@@ -689,8 +714,18 @@ export function useProductivityRules() {
   }, [refresh]);
 
   const ruleMap: RuleMap = useMemo(() => {
-    const m: RuleMap = {};
-    for (const r of rules) m[ruleKey(r.match_type, r.pattern, r.department)] = r.category;
+    const m: RuleMap = { keyed: {}, contains: [] };
+    for (const r of rules) {
+      if (r.match_type === 'host_contains') {
+        m.contains.push({
+          department: (r.department ?? '').trim().toLowerCase(),
+          pattern: r.pattern.trim().toLowerCase(),
+          category: r.category,
+        });
+      } else {
+        m.keyed[ruleKey(r.match_type, r.pattern, r.department)] = r.category;
+      }
+    }
     return m;
   }, [rules]);
 
@@ -776,7 +811,16 @@ export type AlertRow = {
 };
 
 export function useAlerts(
-  opts: { sinceHours?: number; untilHours?: number; agentId?: string | null; limit?: number } = {},
+  opts: {
+    sinceHours?: number;
+    untilHours?: number;
+    /** Absolute bounds. Take precedence over the *Hours options when given —
+     *  a custom date range cannot be expressed as an offset from "now". */
+    since?: Date | null;
+    until?: Date | null;
+    agentId?: string | null;
+    limit?: number;
+  } = {},
 ) {
   const { organization } = useAuth();
   const [rows, setRows] = useState<AlertRow[]>([]);
@@ -786,6 +830,10 @@ export function useAlerts(
   const untilHours = opts.untilHours ?? 0;
   const agentId = opts.agentId ?? null;
   const limit = opts.limit ?? 200;
+  // Date objects would be a new identity on every render and re-fire the fetch
+  // forever, so the effect depends on their epoch values.
+  const sinceMs = opts.since ? opts.since.getTime() : null;
+  const untilMs = opts.until ? opts.until.getTime() : null;
 
   const refresh = useCallback(async () => {
     if (!organization) {
@@ -794,8 +842,12 @@ export function useAlerts(
       return;
     }
     setLoading(true);
-    const since = new Date(Date.now() - sinceHours * 3600 * 1000).toISOString();
-    const until = new Date(Date.now() - untilHours * 3600 * 1000).toISOString();
+    const since = (sinceMs !== null
+      ? new Date(sinceMs)
+      : new Date(Date.now() - sinceHours * 3600 * 1000)).toISOString();
+    const until = (untilMs !== null
+      ? new Date(untilMs)
+      : new Date(Date.now() - untilHours * 3600 * 1000)).toISOString();
     let q = supabase
       .from('alerts')
       .select('id, agent_id, alert_type, message, ai_resolved, resolution, created_at, agents!inner(agent_name, org_id)')
@@ -826,7 +878,7 @@ export function useAlerts(
       );
     }
     setLoading(false);
-  }, [organization, sinceHours, untilHours, agentId, limit]);
+  }, [organization, sinceHours, untilHours, sinceMs, untilMs, agentId, limit]);
 
   useEffect(() => {
     void refresh();

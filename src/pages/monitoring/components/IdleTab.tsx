@@ -47,7 +47,7 @@ export default function IdleTab() {
   // the Applications and Browser tabs.
   const longest = Math.max(1, ...visible.map((r) => r.duration ?? 0));
   const threshold = thresholdLabel(agents, agentFilter);
-  // How many distinct people the listed periods belong to — "8 events" reads
+  // How many distinct agents the listed periods belong to — "8 events" reads
   // very differently spread over one machine vs four.
   const peopleAffected = new Set(filtered.map((r) => r.agent_id)).size;
 
@@ -66,9 +66,9 @@ export default function IdleTab() {
     { label: 'Idle periods', value: String(filtered.length), sub: 'last 24 hours', icon: 'ri-pause-circle-line' },
     { label: 'Total idle', value: formatDurationShort(totalIdle), sub: 'summed across agents', icon: 'ri-timer-line' },
     {
-      label: 'Employees',
+      label: 'Agents',
       value: String(peopleAffected),
-      sub: peopleAffected === 1 ? 'with idle time' : 'with idle time',
+      sub: 'with idle time',
       icon: 'ri-team-line',
     },
     { label: 'Threshold', value: threshold.value, sub: threshold.sub, icon: 'ri-settings-3-line' },
@@ -97,7 +97,7 @@ export default function IdleTab() {
         onAgentChange={setAgentFilter}
         search={search}
         onSearchChange={setSearch}
-        searchPlaceholder="Employee or time…"
+        searchPlaceholder="Agent or time…"
         count={
           filtered.length > 0 ? (
             <span className="text-[10.5px] t3 tnum">{filtered.length} of {rows.length}</span>
@@ -123,7 +123,7 @@ export default function IdleTab() {
             <table className="d-table" style={{ minWidth: 560 }}>
               <thead>
                 <tr className="hair-b">
-                  <th>Employee</th>
+                  <th>Agent</th>
                   <th className="text-right" style={{ width: 80 }}>Start</th>
                   <th className="text-right" style={{ width: 80 }}>End</th>
                   <th className="text-right" style={{ width: '34%' }}>Duration</th>

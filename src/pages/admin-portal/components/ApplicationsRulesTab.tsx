@@ -14,7 +14,7 @@ import Pager from '@/components/Pager';
    of the feature: youtube.com can be productive for Content and unproductive
    for IT off one default plus one override. */
 
-type MatchType = 'app' | 'host';
+type MatchType = 'app' | 'host' | 'host_contains';
 type Category = 'productive' | 'unproductive' | 'neutral' | 'prohibited';
 
 type Rule = {
@@ -233,8 +233,12 @@ export default function ApplicationsRulesTab({ orgId }: Props) {
             ) : visible.map((r) => (
               <tr key={r.id} className="hover:bg-dark-900/40">
                 <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap">
-                  <i className={`mr-1.5 ${r.match_type === 'app' ? 'ri-window-line' : 'ri-global-line'}`} />
-                  {r.match_type === 'app' ? 'App' : 'Website'}
+                  <i className={`mr-1.5 ${
+                    r.match_type === 'app' ? 'ri-window-line'
+                      : r.match_type === 'host_contains' ? 'ri-search-line' : 'ri-global-line'
+                  }`} />
+                  {r.match_type === 'app' ? 'App'
+                    : r.match_type === 'host_contains' ? 'Contains' : 'Website'}
                 </td>
                 <td className="px-4 py-2.5 text-white font-mono text-xs">{r.pattern}</td>
                 <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap">
@@ -286,17 +290,18 @@ export default function ApplicationsRulesTab({ orgId }: Props) {
             <div className="space-y-1.5">
               <label className="text-[11px] text-gray-400">Match</label>
               <div className="flex gap-2">
-                {(['app', 'host'] as MatchType[]).map((mt) => (
+                {(['app', 'host', 'host_contains'] as MatchType[]).map((mt) => (
                   <button
                     key={mt}
                     onClick={() => setEditing({ ...editing, match_type: mt })}
-                    className={`flex-1 px-3 py-1.5 text-xs rounded-lg border ${
+                    className={`flex-1 px-2 py-1.5 text-xs rounded-lg border ${
                       editing.match_type === mt
                         ? 'border-cyan-500 text-white bg-dark-900'
                         : 'border-dark-700 text-gray-400 hover:text-gray-200'
                     }`}
                   >
-                    {mt === 'app' ? 'Application' : 'Website'}
+                    {mt === 'app' ? 'Application'
+                      : mt === 'host' ? 'Website' : 'Website contains'}
                   </button>
                 ))}
               </div>
@@ -304,18 +309,22 @@ export default function ApplicationsRulesTab({ orgId }: Props) {
 
             <div className="space-y-1.5">
               <label className="text-[11px] text-gray-400">
-                {editing.match_type === 'app' ? 'Application name' : 'Website domain'}
+                {editing.match_type === 'app' ? 'Application name'
+                  : editing.match_type === 'host' ? 'Website domain' : 'Text in the hostname'}
               </label>
               <input
                 value={editing.pattern}
                 onChange={(e) => setEditing({ ...editing, pattern: e.target.value })}
-                placeholder={editing.match_type === 'app' ? 'Code' : 'youtube.com'}
+                placeholder={editing.match_type === 'app' ? 'Code'
+                  : editing.match_type === 'host' ? 'youtube.com' : 'vegamovie'}
                 className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500 font-mono"
               />
               <p className="text-[10px] text-gray-500">
                 {editing.match_type === 'app'
                   ? 'Matched against the reported process name, case-insensitively — exactly as it appears in Live monitoring → Applications.'
-                  : 'Matched against the hostname of the visited URL, case-insensitively.'}
+                  : editing.match_type === 'host'
+                    ? 'Matches this hostname and any subdomain of it, case-insensitively.'
+                    : 'Matches anywhere in the hostname. Use this for sites that keep changing domain — "vegamovie" catches vegamovie.se, vegamovie.pe and vegamoviess.pro. Keep it distinctive: a short or common word will catch legitimate sites too.'}
               </p>
             </div>
 

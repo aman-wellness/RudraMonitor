@@ -10,7 +10,7 @@ import { Bar } from '@/pages/dashboard/components/ui';
 import { C } from '@/pages/dashboard/components/chartKit';
 import Pagination, { usePagination } from './Pagination';
 
-/* Foreground application time per employee, last 24h.
+/* Foreground application time per agent, last 24h.
 
    Was a grid of one card per (app × employee) pair: 120px tall each, holding an
    app name, a person, an always-empty window-title line, a duration and a
@@ -90,7 +90,7 @@ export default function ApplicationsTab() {
         onAgentChange={setAgentFilter}
         search={search}
         onSearchChange={setSearch}
-        searchPlaceholder="App, window title, employee…"
+        searchPlaceholder="App, window title, agent…"
         category={catFilter}
         onCategoryChange={setCatFilter}
         count={
@@ -122,7 +122,7 @@ export default function ApplicationsTab() {
                 <tr className="hair-b">
                   <th style={{ width: hasTitles ? '22%' : 200 }}>Application</th>
                   {hasTitles && <th>Window</th>}
-                  <th style={{ width: 150 }}>Employee</th>
+                  <th style={{ width: 150 }}>Agent</th>
                   <th style={{ width: 122 }}>Category</th>
                   <th className="text-right" style={showBar ? undefined : { width: 96 }}>Time (24h)</th>
                   <th className="text-right" style={{ width: 74 }}>Last seen</th>
