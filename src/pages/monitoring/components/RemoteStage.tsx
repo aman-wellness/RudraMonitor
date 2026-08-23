@@ -17,8 +17,13 @@ import { notify } from '@/lib/notify';
  *  • Keys are captured with preventDefault so browser shortcuts (Ctrl+W,
  *    Ctrl+T, F5) act on the remote machine instead of closing the operator's
  *    own tab. That is also why they are only captured while armed.
- *  • Clipboard is explicit both ways. Reading the local clipboard needs a user
- *    gesture in most browsers, so it cannot be done silently on Ctrl+V.
+ *  • Clipboard syncs on the shortcuts themselves: Ctrl/Cmd+V pushes the
+ *    operator's clipboard to the remote just before the paste (the keydown is
+ *    the user gesture the browser requires to read it), and Ctrl/Cmd+C pulls
+ *    the remote's clipboard back afterwards. The explicit Send/Get buttons
+ *    remain for when a browser blocks the out-of-gesture write.
+ *  • A small file can be pushed to the remote machine's Downloads folder via
+ *    the "Send file" button or by dragging it onto the screen.
  */
 
 type Props = { agentId: string; agentName: string; onClose: () => void };
@@ -65,13 +70,18 @@ export default function RemoteStage({ agentId, agentName, onClose }: Props) {
 
   useEffect(() => {
     let retried = false;
+    let connectedOnce = false;
     const s = startRemoteSessionWithFallback(agentId, {
       onPhase: (p, d) => {
         setPhase(p);
         setDetail(d ?? null);
-        // 'closed' after a successful connection is a normal hang-up; only a
-        // failure before we ever connected is worth another attempt.
-        if (p === 'failed' && !retried && attempt + 1 < MAX_ATTEMPTS) {
+        if (p === 'connected') connectedOnce = true;
+        // Only retry a failure that happened BEFORE we ever connected (audit
+        // M11). A drop AFTER a working session is a transient blip WebRTC can
+        // recover on its own — tearing the whole session down and re-negotiating
+        // would interrupt the operator for nothing. (The comment always said
+        // this; now the code actually tracks it.)
+        if (p === 'failed' && !connectedOnce && !retried && attempt + 1 < MAX_ATTEMPTS) {
           retried = true;
           setDetail(`Negotiation failed, retrying (${attempt + 2} of ${MAX_ATTEMPTS})…`);
           // Remount with a new session by bumping the attempt counter.
@@ -158,7 +168,25 @@ export default function RemoteStage({ agentId, agentName, onClose }: Props) {
       // on the AGENT rather than the operator's tab.
       e.preventDefault();
       e.stopPropagation();
+      const mod = e.ctrlKey || e.metaKey;
+      // Seamless PASTE: right before the remote sees Ctrl/Cmd+V, push our own
+      // clipboard to it so the paste uses what the operator just copied here.
+      // A keydown is a user gesture, so the browser allows the read. We delay
+      // only this one keydown (a few ms) until the clipboard is synced.
+      if (down && mod && e.code === 'KeyV') {
+        void navigator.clipboard.readText()
+          .then((text) => sessionRef.current?.send({ t: 'clip_set', text }))
+          .catch(() => { /* no permission: falls back to the remote's clipboard */ })
+          .finally(() => sessionRef.current?.send({ t: 'key', code: e.code, down }));
+        return;
+      }
       sessionRef.current?.send({ t: 'key', code: e.code, down });
+      // Seamless COPY: after a copy/cut on the remote, pull its clipboard back
+      // to ours so the operator can paste locally. Best-effort — the browser
+      // may block the out-of-gesture write; "Get clipboard" always works.
+      if (!down && mod && (e.code === 'KeyC' || e.code === 'KeyX')) {
+        window.setTimeout(() => sessionRef.current?.send({ t: 'clip_get' }), 120);
+      }
     };
     const kd = onKey(true);
     const ku = onKey(false);
@@ -189,6 +217,32 @@ export default function RemoteStage({ agentId, agentName, onClose }: Props) {
     } catch {
       notify.fail('Could not read your clipboard', 'Your browser needs permission to read it');
     }
+  };
+
+  // ---- file transfer (operator -> remote machine) -------------------------
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [sending, setSending] = useState<{ name: string; pct: number } | null>(null);
+
+  const sendFile = useCallback(async (file: File | undefined | null) => {
+    if (!file || !sessionRef.current || sending) return;
+    setSending({ name: file.name, pct: 0 });
+    try {
+      const { savedAs } = await sessionRef.current.sendFile(file, (sent, total) => {
+        setSending({ name: file.name, pct: total ? Math.round((sent / total) * 100) : 0 });
+      });
+      notify.success(`Sent "${file.name}" to the remote machine`,
+        savedAs ? `Saved to ${savedAs}` : undefined);
+    } catch (e) {
+      notify.fail('File transfer failed', e instanceof Error ? e.message : undefined);
+    } finally {
+      setSending(null);
+    }
+  }, [sending]);
+
+  const onDrop = (e: React.DragEvent) => {
+    if (phase !== 'connected') return;
+    e.preventDefault();
+    void sendFile(e.dataTransfer.files?.[0]);
   };
 
   const tone = phase === 'connected' ? 't-success'
@@ -236,13 +290,32 @@ export default function RemoteStage({ agentId, agentName, onClose }: Props) {
           >
             <i className="ri-file-copy-line" /> Get clipboard
           </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            onChange={(e) => { void sendFile(e.target.files?.[0]); e.target.value = ''; }}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={phase !== 'connected' || sending !== null}
+            className="chip chip-quiet text-[10.5px] disabled:opacity-40"
+            title="Send a file to the remote machine's Downloads folder (max 20 MB). You can also drag a file onto the screen."
+          >
+            <i className="ri-upload-2-line" />
+            {sending ? `Sending ${sending.pct}%` : 'Send file'}
+          </button>
           <button onClick={onClose} className="chip chip-quiet text-[10.5px]">
             <i className="ri-close-line" /> End
           </button>
         </div>
       </div>
 
-      <div className="panel overflow-hidden relative aspect-video">
+      <div
+        className="panel overflow-hidden relative aspect-video"
+        onDragOver={(e) => { if (phase === 'connected') e.preventDefault(); }}
+        onDrop={onDrop}
+      >
         <video
           ref={videoRef}
           muted
@@ -256,6 +329,15 @@ export default function RemoteStage({ agentId, agentName, onClose }: Props) {
           className="absolute inset-0 w-full h-full object-contain outline-none"
           style={{ cursor: controlling ? 'none' : 'default', background: '#000' }}
         />
+        {sending && (
+          <div className="absolute bottom-2 left-2 right-2 pointer-events-none">
+            <div className="panel-2 rounded-md px-2.5 py-1.5 text-[10.5px] t2 flex items-center gap-2">
+              <i className="ri-upload-2-line t-accent" />
+              <span className="truncate flex-1">Sending {sending.name}</span>
+              <span className="tnum t3">{sending.pct}%</span>
+            </div>
+          </div>
+        )}
         {phase !== 'connected' && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className="text-center">
@@ -284,7 +366,7 @@ export default function RemoteStage({ agentId, agentName, onClose }: Props) {
 
       <p className="text-[10.5px] t3">
         {controlling
-          ? 'Mouse and keyboard are going to the remote machine. Escape releases control. Browser shortcuts are forwarded, not handled here.'
+          ? 'Mouse and keyboard are going to the remote machine. Ctrl/Cmd+C and Ctrl/Cmd+V sync the clipboard. Drag a file onto the screen to send it. Escape releases control.'
           : 'View only. Take control to send mouse and keyboard.'}
       </p>
     </div>

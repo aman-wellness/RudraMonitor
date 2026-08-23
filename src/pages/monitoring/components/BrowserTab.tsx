@@ -52,7 +52,8 @@ export default function BrowserTab() {
   const unresolvedSeconds = rows[0]?.unresolved_seconds ?? 0;
 
   const filtered = useMemo(() => aggregated.filter((log) => {
-    const matchCat = catFilter === 'all' || log.category === catFilter;
+    const matchCat = catFilter === 'all' || log.category === catFilter
+      || (catFilter === 'unproductive' && log.category === 'prohibited');
     const matchSearch =
       search === '' ||
       log.url.toLowerCase().includes(search.toLowerCase()) ||

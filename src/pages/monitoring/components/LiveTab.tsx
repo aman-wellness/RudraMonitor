@@ -178,6 +178,20 @@ export default function LiveTab() {
     if (!relayFallbackSupported()) return;
     triedRelayRef.current = true;
     const agentId = selectedId;
+    // Hang up the failed LiveKit connection BEFORE opening the relay (audit
+    // H16). Otherwise the agent keeps publishing to LiveKit in the background
+    // while the relay also runs — a leaked stream that only closes on
+    // agent-switch/unmount, and stacks up across repeated failures. We stop
+    // just the LiveKit handle here (not the full teardown(), which would reset
+    // the relay guard and loop).
+    if (handleRef.current) {
+      void handleRef.current.leave();
+      handleRef.current = null;
+    }
+    if (trackRef.current && videoRef.current) {
+      try { trackRef.current.detach(videoRef.current); } catch { /* ignore */ }
+      trackRef.current = null;
+    }
     setStatus('connecting');
     setErrorMsg('Direct path blocked — connecting via relay…');
     const sessionId = crypto.randomUUID();

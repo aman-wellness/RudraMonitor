@@ -50,11 +50,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   useEffect(() => {
-    supabase.auth.getSession().then(async ({ data }) => {
-      setSession(data.session);
-      if (data.session?.user) await loadOrg(data.session.user.id);
-      setLoading(false);
-    });
+    // setLoading(false) MUST run even if getSession() rejects or loadOrg throws
+    // — otherwise ProtectedRoute/RequireRole spin on "Loading…" forever with no
+    // recovery (audit H14). try/catch/finally guarantees the app leaves the
+    // loading state on any outcome.
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        setSession(data.session);
+        if (data.session?.user) await loadOrg(data.session.user.id);
+      } catch (e) {
+        console.error('auth bootstrap failed', e);
+      } finally {
+        setLoading(false);
+      }
+    })();
     const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
       // Ignore noisy events that don't represent a real user transition.
       // INITIAL_SESSION fires right after getSession() above (duplicate);

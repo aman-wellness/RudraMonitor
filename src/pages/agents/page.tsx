@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import { useAgents, useProductivityPerAgent, type UiAgent } from '@/lib/dataHooks';
 import { supabase } from '@/lib/supabase';
+import { useAuth } from '@/context/AuthContext';
 import { Bar, EmptyNote, Panel, Segmented } from '@/pages/dashboard/components/ui';
 import { C, formatHm } from '@/pages/dashboard/components/chartKit';
 import { confirmDialog, notify } from '@/lib/notify';
@@ -10,11 +11,17 @@ import Pagination, { usePagination } from '@/pages/monitoring/components/Paginat
 
 /* All Agents.
 
-   Everything on this page is derived from the agents actually enrolled — the
-   previous version shipped a hardcoded department list (Development / HR /
-   Finance / Design / Marketing) that matched no real data, and colour-coded
-   only those names. Departments, their counts and their colours now all come
-   from the rows themselves, and a department can be created inline.
+   Nothing here is hardcoded — an earlier version shipped a fixed department
+   list (Development / HR / Finance / Design / Marketing) that matched no real
+   data and colour-coded only those names.
+
+   Departments come from TWO sources, and both are needed. org_departments is
+   what the org has declared; the agent rows supply the headcounts. Deriving the
+   list from the agents alone (which this page did until it was reported showing
+   one department out of six) hides every department nobody is in yet — and
+   since this page's dropdown is how an agent gets assigned, such a department
+   could never receive its first member. Colours are hashed from the name, so
+   they stay stable across pages without anyone maintaining a map.
 
    Density and surfaces match the dashboard's design system so the two pages
    read as one product. */
@@ -37,6 +44,10 @@ const STATUSES: { id: StatusFilter; label: string }[] = [
 ];
 
 const UNASSIGNED = 'Unassigned';
+
+/** Tallest the department list inside the assign popover may get, in px.
+ *  Roughly nine rows at 28px; beyond that it scrolls. */
+const DEPT_MENU_MAX_H = 252;
 
 /** Stable colour per label: same department, same colour, everywhere, without
  *  anyone maintaining a name→colour map. */
@@ -79,6 +90,7 @@ type Row = UiAgent & {
 
 export default function AgentsPage() {
   const navigate = useNavigate();
+  const { organization } = useAuth();
   const {
     agents: rawAgents,
     loading,
@@ -154,10 +166,45 @@ export default function AgentsPage() {
     };
   }, [bulkOpen, editingDeptId]);
 
-  /** Departments that actually exist, with their headcounts. */
+  /* The org's declared departments, which are NOT derivable from the agents.
+     A department nobody is in yet has no agent row to be inferred from, so
+     building the list purely from `agents` hid every empty department — and
+     since this dropdown is how an agent gets assigned, an empty department
+     could never receive its first member. A catch-22 that got worse the more
+     departments the org created.
+
+     Fetched once for the page rather than per dropdown: the list is small,
+     several surfaces here need it (the badge popover, the filter row, the bulk
+     bar), and re-fetching per popover made the options appear a beat late. */
+  const [orgDepts, setOrgDepts] = useState<string[]>([]);
+  const [deptRefreshKey, setDeptRefreshKey] = useState(0);
+  useEffect(() => {
+    if (!organization) return;
+    let alive = true;
+    (async () => {
+      const { data, error } = await supabase
+        .from('org_departments')
+        .select('name')
+        .eq('org_id', organization.id)
+        .order('name');
+      if (!alive) return;
+      if (error) { console.error('org_departments', error.message); return; }
+      setOrgDepts((data ?? []).map((d) => (d as { name: string }).name).filter(Boolean));
+    })();
+    return () => { alive = false; };
+    // refreshKey so a department created inline below shows up without a reload.
+  }, [organization, deptRefreshKey]);
+
+  /** Every department the org has, with live headcounts. */
   const departments = useMemo(() => {
     const counts = new Map<string, number>();
+    // Seed with the declared list at zero, so an empty department is offered
+    // for assignment and reports an honest count rather than being absent.
+    for (const name of orgDepts) counts.set(name, 0);
     for (const a of agents) counts.set(a.department, (counts.get(a.department) ?? 0) + 1);
+    // Unassigned is a UI placeholder for a NULL department, not a row in
+    // org_departments, so it only belongs here when an agent is actually in it.
+    if (counts.get(UNASSIGNED) === 0) counts.delete(UNASSIGNED);
     return [...counts.entries()]
       .map(([name, count]) => ({ name, count }))
       // Unassigned last; otherwise biggest first, then alphabetical.
@@ -168,7 +215,7 @@ export default function AgentsPage() {
             ? -1
             : b.count - a.count || a.name.localeCompare(b.name),
       );
-  }, [agents]);
+  }, [agents, orgDepts]);
 
   const counts = useMemo(
     () => ({
@@ -314,6 +361,11 @@ export default function AgentsPage() {
     setDeptAnchor(null);
     setNewDept('');
     await updateDepartment(agentId, name);
+    // updateDepartment also upserts into org_departments (see ensureDepartment
+    // in dataHooks), so re-read the list: a name typed into "New department"
+    // would otherwise be missing from every other agent's dropdown until a
+    // page reload.
+    setDeptRefreshKey((k) => k + 1);
     notify.success(`Moved to ${name}`, { description: agent?.name });
   };
 
@@ -326,7 +378,9 @@ export default function AgentsPage() {
     }
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     // Estimated menu height; flip above the trigger when it wouldn't fit below.
-    const height = departments.length * 28 + 62;
+    // Capped to match the scroll container in deptMenu — without the cap this
+    // over-estimates for a long list and flips a menu that would have fit.
+    const height = Math.min(departments.length * 28, DEPT_MENU_MAX_H) + 62;
     const below = window.innerHeight - r.bottom;
     setDeptAnchor({
       left: Math.min(r.left, window.innerWidth - 196),
@@ -375,16 +429,26 @@ export default function AgentsPage() {
         style={{ position: 'fixed', left: deptAnchor.left, top: deptAnchor.top, right: 'auto', minWidth: 188 }}
         onClick={(e) => e.stopPropagation()}
       >
-        {departments.map((d) => (
-          <button key={d.name} onClick={() => void assignDept(agent.id, d.name)}>
-            <span
-              className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-              style={{ background: catColor(d.name) }}
-            />
-            <span className="flex-1 text-left truncate">{d.name}</span>
-            {d.name === agent.department && <i className="ri-check-line text-[12px]" />}
-          </button>
-        ))}
+        {/* Scrolls rather than growing without limit. Now that empty
+            departments are listed too, an org with a long list would otherwise
+            render a menu taller than the viewport, and the flip-above logic
+            would only move where it gets cut off. DEPT_MENU_MAX_H keeps the
+            "New department" field below permanently reachable. */}
+        <div style={{ maxHeight: DEPT_MENU_MAX_H, overflowY: 'auto' }}>
+          {departments.map((d) => (
+            <button key={d.name} onClick={() => void assignDept(agent.id, d.name)}>
+              <span
+                className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                style={{ background: catColor(d.name) }}
+              />
+              <span className="flex-1 text-left truncate">{d.name}</span>
+              {/* Headcount, so an admin can see which departments are empty
+                  without cross-referencing the filter row. */}
+              {d.count > 0 && <span className="text-[10px] t3 tnum">{d.count}</span>}
+              {d.name === agent.department && <i className="ri-check-line text-[12px]" />}
+            </button>
+          ))}
+        </div>
         {/* Without this, deriving the list from existing rows would make a new
             department impossible to create. */}
         <div className="p-1 hair-t mt-1">
@@ -532,7 +596,15 @@ export default function AgentsPage() {
           </div>
         </div>
 
-        {/* Departments come from the data, with live counts. */}
+        {/* Filters, with live counts.
+
+            Only departments that actually have someone in them. The assign
+            dropdown deliberately lists empty ones — that is how they get their
+            first member — but a filter chip for a department with nobody in it
+            can only ever produce an empty table, so it is width spent on a
+            dead end. The one exception is a filter already active: dropping the
+            chip mid-filter would strand the user on a selection they can see no
+            way back out of. */}
         <div className="flex items-center gap-2 flex-wrap mb-4">
           <div className="seg overflow-x-auto max-w-full">
             <button
@@ -541,7 +613,7 @@ export default function AgentsPage() {
             >
               All<span className="t3"> {counts.all}</span>
             </button>
-            {departments.map((d) => (
+            {departments.filter((d) => d.count > 0 || deptFilter === d.name).map((d) => (
               <button
                 key={d.name}
                 onClick={() => setDeptFilter(d.name)}

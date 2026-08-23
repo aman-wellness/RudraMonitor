@@ -71,10 +71,30 @@ Deno.serve(async (req) => {
   if (!tokenResp.ok) return json({ error: `token: ${await tokenResp.text()}` }, 502);
   const { access_token } = await tokenResp.json();
 
+  // SECURITY (audit H7): `notif.resource` is attacker-controlled and was
+  // interpolated straight into a Graph URL, so a forged notification could
+  // drive the org's privileged app token to fetch ANY Graph resource (SSRF).
+  // Constrain it to the exact shape of a Teams channel message
+  // (`teams/{team}/channels/{channel}/messages/{id}`) — no schemes, hosts,
+  // `..`, or query — and bind it to the org's configured channel so a
+  // notification for a different channel is rejected. This closes the SSRF and
+  // makes forgery require knowing the org's real team/channel/message IDs.
+  const RESOURCE_RE = /^teams\/[A-Za-z0-9._@:=-]+\/channels\/[A-Za-z0-9._@:=%-]+\/messages\/[A-Za-z0-9._@:=-]+$/;
+  const chanId = (cfg.teams_channel_id ?? "").trim();
+
   const results: unknown[] = [];
   for (const notif of payload.value ?? []) {
-    if (!notif.resource) continue;
-    const msgResp = await fetch(`https://graph.microsoft.com/v1.0/${notif.resource}`, {
+    const resource = (notif.resource ?? "").trim();
+    if (!resource) continue;
+    if (!RESOURCE_RE.test(resource)) {
+      results.push({ skipped: "invalid resource shape" });
+      continue;
+    }
+    if (chanId && !(resource.includes(`/channels/${chanId}/`) || resource.includes(`/channels/${encodeURIComponent(chanId)}/`))) {
+      results.push({ skipped: "channel not this org's" });
+      continue;
+    }
+    const msgResp = await fetch(`https://graph.microsoft.com/v1.0/${resource}`, {
       headers: { Authorization: `Bearer ${access_token}` },
     });
     if (!msgResp.ok) { results.push({ skipped: msgResp.status }); continue; }

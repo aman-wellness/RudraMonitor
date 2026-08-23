@@ -216,7 +216,7 @@ export default function CustomerDetail() {
 
   const activeSeats = licenses.filter((l) => l.status === 'active').reduce((s, l) => s + l.seat_count, 0);
   const usedSeats = agents.length;
-  const totalRevenue = invoices.filter((i) => i.status === 'paid').reduce((s, i) => s + Number(i.total_amount || 0), 0);
+  const totalRevenue = invoices.filter((i) => i.status === 'paid').reduce((s, i) => s + Number(i.total_inr || 0), 0);
 
   return (
     <AdminLayout title={org.name}>
@@ -352,7 +352,8 @@ export default function CustomerDetail() {
                               .eq('organization_id', customerId)
                               .order('issued_at', { ascending: false });
                             setLicenses((licRes as unknown as LicenseRow[]) ?? []);
-                            await load();
+                            // (was `await load()` — no such function in scope; the
+                            // licenses list is already refreshed just above.)
                           }
                         }}
                         className="px-2.5 py-1 rounded-md text-[10px] font-medium bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/25"
@@ -859,7 +860,7 @@ function SubscriptionControls({
     return true;
   };
 
-  const setStatus = async (status: 'trial' | 'active' | 'suspended' | 'canceled') => {
+  const setStatus = async (status: 'trial' | 'active' | 'suspended' | 'cancelled') => {
     if (!await confirmDialog({ title: `Change subscription status to "${status}"?` })) return;
     await patch('status', { subscription_status: status });
   };
@@ -971,8 +972,8 @@ function SubscriptionControls({
                 Suspend
               </button>
             )}
-            {org.subscription_status !== 'canceled' && (
-              <button onClick={() => setStatus('canceled')} disabled={busy === 'status'}
+            {org.subscription_status !== 'cancelled' && (
+              <button onClick={() => setStatus('cancelled')} disabled={busy === 'status'}
                 className="px-2.5 py-1 text-[10px] rounded-md bg-rose-500/15 text-rose-300 border border-rose-500/30 hover:bg-rose-500/25 disabled:opacity-40">
                 Cancel
               </button>

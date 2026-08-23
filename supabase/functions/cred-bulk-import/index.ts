@@ -62,8 +62,13 @@ Deno.serve(async (req) => {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 
-  const { data: mem } = await admin.from("org_members").select("org_id").eq("user_id", u.user.id).limit(1);
+  // Bulk-importing shared vault credentials is an owner/admin action (audit
+  // M17) — same gate as cred-save/cred-delete.
+  const { data: mem } = await admin.from("org_members").select("org_id, role").eq("user_id", u.user.id).limit(1);
   if (!mem?.length) return json({ error: "no org for caller" }, 403);
+  if (!["owner", "admin"].includes(String(mem[0].role ?? ""))) {
+    return json({ error: "owner or admin role required" }, 403);
+  }
   const orgId = mem[0].org_id as string;
 
   // Pre-fetch departments so we can resolve names to ids (CSV writers won't

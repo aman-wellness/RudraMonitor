@@ -31,6 +31,17 @@ const BIN_NAME: &str = "ffmpeg.exe";
 #[cfg(not(target_os = "windows"))]
 const BIN_NAME: &str = "ffmpeg";
 
+// Pinned SHA-256 of the downloaded ffmpeg (audit H9). The download path fetches
+// an executable from public storage and runs it; without an integrity check, a
+// compromised bucket/CDN means remote code execution on every agent that hits
+// the fallback. Set this at build time (`RUDRANS_FFMPEG_SHA256=<hex>`) so a
+// release build REQUIRES the exact binary. Empty (unset) keeps the old
+// behaviour but logs a loud warning — pin it for production builds.
+const EXPECTED_FFMPEG_SHA256: &str = match option_env!("RUDRANS_FFMPEG_SHA256") {
+    Some(v) => v,
+    None => "",
+};
+
 fn cache_path() -> Result<PathBuf> {
     let base = dirs::data_dir().ok_or_else(|| anyhow!("could not resolve OS data dir"))?;
     let dir = base.join("RudransAgent").join("bin");
@@ -425,6 +436,31 @@ async fn download_to(dest: &PathBuf) -> Result<()> {
             "ffmpeg download suspiciously small ({} bytes) — likely an error page",
             bytes.len()
         ));
+    }
+
+    // Integrity check (audit H9). Compute the SHA-256 of what we downloaded and,
+    // if a hash was pinned at build time, REFUSE to install anything else — so a
+    // tampered storage bucket cannot deliver malicious code to run on the
+    // employee's machine. If unpinned, log the hash + a warning rather than
+    // silently trusting the download.
+    let digest = {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(&bytes);
+        hex::encode(h.finalize())
+    };
+    if !EXPECTED_FFMPEG_SHA256.is_empty() {
+        if !digest.eq_ignore_ascii_case(EXPECTED_FFMPEG_SHA256) {
+            return Err(anyhow!(
+                "ffmpeg checksum mismatch — refusing to install. got {digest}, expected {EXPECTED_FFMPEG_SHA256}"
+            ));
+        }
+    } else {
+        log::warn!(
+            "ffmpeg downloaded from {FFMPEG_URL} with NO pinned checksum \
+             (RUDRANS_FFMPEG_SHA256 unset). Set it for release builds so a \
+             compromised bucket cannot deliver malicious code. sha256={digest}"
+        );
     }
 
     // Write to a tmp sibling and atomically rename so a partial download never gets cached.

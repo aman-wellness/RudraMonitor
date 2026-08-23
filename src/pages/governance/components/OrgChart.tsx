@@ -860,14 +860,6 @@ function OrgChartInner({
 
   const t = THEMES[theme];
 
-  if (activeEmployees.length === 0) {
-    return (
-      <div className="rounded-lg border border-dashed border-dark-700 bg-dark-900/40 p-10 text-center text-sm text-gray-500">
-        No employees yet — add employees (with managers) at <Link to="/employees" className="text-emerald-400 hover:underline">/employees</Link> and the chart will populate automatically.
-      </div>
-    );
-  }
-
   const containerStyle = fullscreen
     ? { position: 'fixed' as const, top: 0, left: 0, right: 0, bottom: 0, height: '100vh', zIndex: 50, borderRadius: 0 }
     : { height: 720 };
@@ -894,6 +886,19 @@ function OrgChartInner({
     if (error) { notify.error('Failed', { description: String(error.message) }); return; }
     onEmployeeMoved?.();
   }, [onEmployeeMoved]);
+
+  // Empty-state early return AFTER every hook above. React requires the same
+  // hooks to run in the same order on every render; this component mounts empty
+  // and then re-renders once employees load, so an early return placed above
+  // any hook changed the hook count between those two renders and crashed the
+  // whole page with "Rendered more hooks than during the previous render".
+  if (activeEmployees.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed border-dark-700 bg-dark-900/40 p-10 text-center text-sm text-gray-500">
+        No employees yet — add employees (with managers) at <Link to="/employees" className="text-emerald-400 hover:underline">/employees</Link> and the chart will populate automatically.
+      </div>
+    );
+  }
 
   return (
     <>

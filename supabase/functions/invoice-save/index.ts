@@ -39,15 +39,27 @@ Deno.serve(async (req) => {
   // is now optional after migration 0091 — we'll fall back to the caller's
   // org via org_members). Manual uploads without a vendor-credential match
   // are stored as Unassigned invoices.
+  // SECURITY (audit H3): when UPDATING an existing invoice (`id` present), the
+  // org MUST be derived from that invoice row and the caller authorised against
+  // IT — otherwise a caller could pass a `credential_id` they own together with
+  // another org's invoice `id`, pass the membership check on their own org, and
+  // have the UPDATE (scoped only by id) land on the other org's invoice. So
+  // `id` takes precedence for org resolution, and if a `credential_id` is also
+  // supplied it must belong to the same org.
   let orgId: string | null = null;
-  if (credId) {
+  if (id) {
+    const { data: existing } = await admin.from("credential_invoices").select("id, org_id").eq("id", id).maybeSingle();
+    if (!existing) return json({ error: "invoice not found" }, 404);
+    orgId = existing.org_id as string;
+    if (credId) {
+      const { data: cred } = await admin.from("credentials").select("id, org_id").eq("id", credId).maybeSingle();
+      if (!cred) return json({ error: "credential not found" }, 404);
+      if (cred.org_id !== orgId) return json({ error: "credential/invoice org mismatch" }, 403);
+    }
+  } else if (credId) {
     const { data: cred } = await admin.from("credentials").select("id, org_id").eq("id", credId).maybeSingle();
     if (!cred) return json({ error: "credential not found" }, 404);
     orgId = cred.org_id;
-  } else if (id) {
-    const { data: existing } = await admin.from("credential_invoices").select("id, org_id").eq("id", id).maybeSingle();
-    if (!existing) return json({ error: "invoice not found" }, 404);
-    orgId = existing.org_id;
   } else {
     // No id, no credential — pick the caller's first org membership.
     const { data: m } = await admin.from("org_members").select("org_id").eq("user_id", u.user.id).limit(1).maybeSingle();
@@ -97,7 +109,8 @@ Deno.serve(async (req) => {
   }
 
   if (id) {
-    const { error } = await admin.from("credential_invoices").update(row).eq("id", id);
+    // Scope the write to the authorised org as defence-in-depth (audit H3).
+    const { error } = await admin.from("credential_invoices").update(row).eq("id", id).eq("org_id", orgId!);
     if (error) return json({ error: error.message }, 500);
     return json({ ok: true, id }, 200);
   } else {

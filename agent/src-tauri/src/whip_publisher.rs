@@ -500,6 +500,28 @@ async fn run_session(
         .await
     });
 
+    // Stop the pre-warmed pump on ANY early return from here on (re-audit
+    // finding). The pump is spawned before the WHIP handshake to warm the
+    // encoder, but every error path between here and the steady-state await
+    // below (create_offer, set_local, the WHIP POST, parse/set answer) used to
+    // return without stopping it — and since ICE never reaches Failed on a
+    // handshake that never connected, nothing tripped stop_flag, so ffmpeg kept
+    // capturing forever (holding the single OS screen-capture device and, on
+    // macOS, starving the screenshot/clip recorders). This guard sets stop_flag
+    // when dropped unless disarmed once the session is established.
+    struct StopOnDrop {
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        armed: bool,
+    }
+    impl Drop for StopOnDrop {
+        fn drop(&mut self) {
+            if self.armed {
+                self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    }
+    let mut pump_guard = StopOnDrop { stop: stop_flag.clone(), armed: true };
+
     // Fetch the Ingress now (two network hops). The capture pump spawned
     // just above has been warming up in parallel during this await, so by
     // the time the WHIP exchange completes the encoder is already producing
@@ -609,6 +631,10 @@ async fn run_session(
             })
         }));
     }
+
+    // Session is established — the steady-state await below now owns the pump's
+    // lifecycle, so disarm the early-return guard.
+    pump_guard.armed = false;
 
     // Wait for the ffmpeg pump task (spawned above, running in
     // parallel with the WHIP handshake). It exits when stop_flag is

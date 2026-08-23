@@ -934,6 +934,39 @@ export function useAlerts(
   return { rows, loading, refresh, resolveAlert, resolveAlerts };
 }
 
+/**
+ * Exact count of UNRESOLVED alerts for the current org — for the sidebar/bell
+ * badge. Uses a COUNT query (`head: true, count: 'exact'`) so it returns just
+ * the number with no row payload and no page-size cap: the badge can show the
+ * true count instead of being limited by a fetch `limit`. No time window — an
+ * unresolved alert stays "unresolved" until acted on, so the badge reflects all
+ * of them.
+ */
+export function useUnresolvedAlertCount() {
+  const { organization } = useAuth();
+  const [count, setCount] = useState(0);
+
+  const refresh = useCallback(async () => {
+    if (!organization) { setCount(0); return; }
+    const { count: c, error } = await supabase
+      .from('alerts')
+      .select('id, agents!inner(org_id)', { count: 'exact', head: true })
+      .eq('agents.org_id', organization.id)
+      .eq('ai_resolved', false);
+    if (!error) setCount(c ?? 0);
+  }, [organization]);
+
+  useEffect(() => {
+    void refresh();
+    // Poll on the same relaxed cadence the dashboard uses elsewhere so the
+    // badge stays roughly current without a realtime subscription.
+    const id = window.setInterval(() => void refresh(), 60_000);
+    return () => window.clearInterval(id);
+  }, [refresh]);
+
+  return { count, refresh };
+}
+
 // =============== Latest system metrics per agent ===============
 
 export type MetricsRow = {

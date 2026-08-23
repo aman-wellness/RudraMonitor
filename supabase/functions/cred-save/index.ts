@@ -37,8 +37,14 @@ Deno.serve(async (req) => {
   });
 
   // Resolve caller's org via membership.
-  const { data: mem } = await admin.from("org_members").select("org_id").eq("user_id", u.user.id).limit(1);
+  // Writing shared vault credentials is an owner/admin action (audit M17) —
+  // same gate as cred-delete/cred-grant-access. Previously any org member
+  // (viewer/manager) could create or overwrite the org's shared credentials.
+  const { data: mem } = await admin.from("org_members").select("org_id, role").eq("user_id", u.user.id).limit(1);
   if (!mem?.length) return json({ error: "no org for caller" }, 403);
+  if (!["owner", "admin"].includes(String(mem[0].role ?? ""))) {
+    return json({ error: "owner or admin role required" }, 403);
+  }
   const orgId = mem[0].org_id as string;
 
   const id = (body.id as string | undefined) ?? null;

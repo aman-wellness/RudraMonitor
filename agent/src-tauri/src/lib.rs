@@ -51,7 +51,7 @@ use idle::IdleSession;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use tauri::{
     image::Image,
@@ -615,6 +615,16 @@ async fn window_tick(state: &AppState) -> Result<()> {
     Ok(())
 }
 
+/// Consecutive 401/403/404 responses from `agent-settings`. Reset by the first
+/// success. Only an UNBROKEN run reaches the wipe threshold (audit M13).
+static SETTINGS_REJECTIONS: AtomicU32 = AtomicU32::new(0);
+/// How many consecutive rejections it takes to believe the agent is really gone
+/// from the server rather than the backend being mid-restart/mis-deploy. At the
+/// settings poll interval this is a couple of minutes — long enough to outlast
+/// a gateway restart, short enough that a genuinely deleted agent returns to the
+/// setup screen promptly.
+const SETTINGS_REJECTIONS_BEFORE_WIPE: u32 = 4;
+
 async fn settings_tick(state: &AppState) -> Result<()> {
     let cfg = state.config.lock().await.clone();
     let enrollment = cfg.enrollment.clone().ok_or_else(|| anyhow!("not enrolled"))?;
@@ -636,17 +646,35 @@ async fn settings_tick(state: &AppState) -> Result<()> {
                 || msg.contains("http_status=403")
                 || msg.contains("http_status=404");
             if server_rejected {
-                log::warn!("server rejected enrollment ({msg}) — clearing local config to re-enroll");
-                let mut cfg_w = state.config.lock().await;
-                cfg_w.enrollment = None;
-                cfg_w.license_key = None;
-                let _ = config::save(&cfg_w);
+                // Require the rejection to PERSIST before discarding enrollment
+                // (audit M13). A single mis-deploy of the agent-settings function
+                // returning 404/401 to everyone would otherwise de-enrol the whole
+                // fleet at once, forcing every machine to re-enter its licence key.
+                // The cost is wildly asymmetric — a wipe is destructive; waiting a
+                // few more ticks costs only a stale settings snapshot — so only an
+                // unbroken run of rejections clears local config.
+                let n = SETTINGS_REJECTIONS.fetch_add(1, Ordering::SeqCst) + 1;
+                if n < SETTINGS_REJECTIONS_BEFORE_WIPE {
+                    log::warn!(
+                        "server rejected enrollment ({msg}) — {n}/{} before clearing; treating as transient",
+                        SETTINGS_REJECTIONS_BEFORE_WIPE
+                    );
+                } else {
+                    log::warn!("server rejected enrollment {n}x ({msg}) — clearing local config to re-enroll");
+                    let mut cfg_w = state.config.lock().await;
+                    cfg_w.enrollment = None;
+                    cfg_w.license_key = None;
+                    let _ = config::save(&cfg_w);
+                    SETTINGS_REJECTIONS.store(0, Ordering::SeqCst);
+                }
             } else {
                 log::warn!("settings_tick transient error (will retry): {msg}");
             }
             return Err(e);
         }
     };
+    // A success clears the rejection streak — only an unbroken run wipes.
+    SETTINGS_REJECTIONS.store(0, Ordering::SeqCst);
     *state.settings.lock().await = s;
 
     // License re-validation. If a license_key is configured we honour it; if not,
@@ -757,7 +785,13 @@ async fn metrics_tick(state: &AppState) -> Result<()> {
     let supabase_url = config::supabase_url(&cfg).ok_or_else(|| anyhow!("no supabase url"))?;
     let anon_key = config::supabase_anon_key(&cfg).ok_or_else(|| anyhow!("no anon key"))?;
 
-    let sample = metrics::collect();
+    // metrics::collect() is synchronous and sleeps ~0.75s internally (CPU + net
+    // sampling windows). Run it on the blocking pool so it doesn't freeze an
+    // async worker thread and stall other agent tasks (audit M12) — mirroring
+    // how screenshot capture is already offloaded.
+    let sample = tauri::async_runtime::spawn_blocking(metrics::collect)
+        .await
+        .map_err(|e| anyhow!("metrics collect task failed: {e}"))?;
     let client = api::build_client()?;
     api::ingest(
         &client,

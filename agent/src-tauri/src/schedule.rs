@@ -95,9 +95,20 @@ pub fn is_within_tracking_hours(schedule_json: Option<&str>, now_utc: DateTime<U
     for r in ranges {
         let Some(start_secs) = parse_hhmm_to_secs(&r.start) else { continue };
         let Some(end_secs) = parse_hhmm_to_secs(&r.end) else { continue };
-        // Half-open interval [start, end). 09:00–18:00 means
-        // active from 09:00:00 inclusive to 17:59:59 inclusive.
-        if cur_secs >= start_secs && cur_secs < end_secs {
+        // Half-open interval [start, end). 09:00–18:00 means active from
+        // 09:00:00 inclusive to 17:59:59 inclusive.
+        //
+        // A range where end <= start CROSSES MIDNIGHT (e.g. 22:00–06:00 night
+        // shift). The old `start <= cur < end` could never be true for those,
+        // so any org with a night shift got zero tracking during it (audit
+        // M15). Handle both: same-day ranges use the interval; overnight ranges
+        // match when the time is at/after start OR before end.
+        let matches = if end_secs > start_secs {
+            cur_secs >= start_secs && cur_secs < end_secs
+        } else {
+            cur_secs >= start_secs || cur_secs < end_secs
+        };
+        if matches {
             return true;
         }
     }

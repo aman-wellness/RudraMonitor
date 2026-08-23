@@ -101,17 +101,31 @@ export default function GovernancePage() {
     setUsers((uRes.data ?? []) as OrgUser[]);
 
     // Resolve founder display name from organizations.owner_user_id → v_org_users
+    // Audit M7: v_org_users has NO user_id column, so the old
+    // `.eq('user_id', ownerUid)` always errored (swallowed) → the founder was
+    // never detected and the CEO badge/root never rendered. Map the owner's
+    // auth uid → their login email (org_members) → their employee row
+    // (v_org_users.work_email).
     const ownerUid = (ownerRes.data as { owner_user_id?: string | null } | null)?.owner_user_id ?? null;
     let founderEmpId: string | null = null;
-    if (ownerUid) {
-      const { data: ownerRow } = await supabase
-        .from('v_org_users')
-        .select('display_name, employee_id')
+    if (ownerUid && orgId) {
+      const { data: ownerMem } = await supabase
+        .from('org_members')
+        .select('email')
         .eq('user_id', ownerUid)
+        .eq('org_id', orgId)
         .maybeSingle();
-      const o = ownerRow as { display_name?: string; employee_id?: string } | null;
-      setFounderName(o?.display_name ?? null);
-      founderEmpId = o?.employee_id ?? null;
+      const ownerEmail = (ownerMem as { email?: string } | null)?.email ?? null;
+      if (ownerEmail) {
+        const { data: ownerRow } = await supabase
+          .from('v_org_users')
+          .select('display_name, employee_id')
+          .eq('work_email', ownerEmail)
+          .maybeSingle();
+        const o = ownerRow as { display_name?: string; employee_id?: string } | null;
+        setFounderName(o?.display_name ?? null);
+        founderEmpId = o?.employee_id ?? null;
+      }
     }
 
     // Build the org-chart employee list — annotate the founder's row so

@@ -306,12 +306,27 @@ async function handleGet(
     const { data: rows } = await q;
 
     if (rows && rows.length > 0) {
-      // Final authorization tightening: ensure all returned rows match
-      // the caller's expected scope.
+      // SECURITY (audit M18): the user path never actually verified session
+      // ownership (the old comment claimed it did). A user who knew any
+      // session_id could read another org's SDP/ICE signaling. Bind user
+      // callers to the org of the row's agent — the same membership check the
+      // POST path does — and drop rows for agents outside their org(s).
+      let allowedAgentIds: Set<string> | null = null;
+      if (caller.type === "user") {
+        const agentIds = [...new Set(rows.map((r) => String((r as { agent_id: string }).agent_id)))];
+        const { data: ags } = await admin.from("agents").select("id, org_id").in("id", agentIds);
+        const orgByAgent = new Map((ags ?? []).map((a) => [String((a as { id: string }).id), String((a as { org_id: string }).org_id)]));
+        const orgIds = [...new Set([...orgByAgent.values()])];
+        const { data: mems } = orgIds.length
+          ? await admin.from("org_members").select("org_id").eq("user_id", caller.userId!).in("org_id", orgIds)
+          : { data: [] as { org_id: string }[] };
+        const memberOrgs = new Set((mems ?? []).map((m) => String((m as { org_id: string }).org_id)));
+        allowedAgentIds = new Set(agentIds.filter((id) => memberOrgs.has(orgByAgent.get(id) ?? "")));
+      }
       const safe = rows.filter((r) => {
         const rAgent = String((r as { agent_id: string }).agent_id);
         if (caller.type === "agent") return rAgent === caller.agentId;
-        return true; // user case already verified above via session ownership
+        return allowedAgentIds!.has(rAgent); // user: only agents in the caller's org(s)
       });
       if (safe.length > 0) {
         return json({
