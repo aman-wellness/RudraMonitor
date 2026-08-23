@@ -94,8 +94,8 @@ export default function OAuthMobileBridge() {
       </h1>
       <p style={{ fontSize: 14, color: "#9ba3af", maxWidth: 320, margin: "0 0 28px", lineHeight: 1.5 }}>
         {isFallback
-          ? "Your browser didn’t auto-launch the app. Tap the button below to return to Rudrans Invoice."
-          : "Returning you to Rudrans Invoice…"}
+          ? "Your browser didn’t auto-launch the app. Tap the button below to return to Wellness Extract Invoice."
+          : "Returning you to Wellness Extract Invoice…"}
       </p>
 
       {/* Real anchor — strategy #2 above auto-clicks this ref. Stays

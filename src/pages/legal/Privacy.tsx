@@ -10,14 +10,14 @@ export default function Privacy() {
     <LegalLayout title="Privacy Policy" lastUpdated="17 May 2026">
       <Section title="1. Who we are">
         <P>
-          Rudrans is a workplace monitoring and employee-management SaaS operated by
-          <strong> Rudrans India Private Limited</strong> ("we", "us", "Rudrans"),
+          Wellness Extract is a workplace monitoring and employee-management SaaS operated by
+          <strong> Wellness Extract India Private Limited</strong> ("we", "us", "Wellness Extract"),
           a company registered in India. Our registered support address is{' '}
           <a className="text-emerald-300" href="mailto:support@wellnessextract.com">support@wellnessextract.com</a>.
         </P>
         <P>
           This policy explains what data we collect when you (the customer) and your
-          employees (the end users) use Rudrans, how we use that data, who we share
+          employees (the end users) use Wellness Extract, how we use that data, who we share
           it with, and the rights you have over it.
         </P>
       </Section>
@@ -98,7 +98,7 @@ export default function Privacy() {
         </P>
         <Bullets items={[
           'Be informed by your employer that monitoring is in place (we require this in our Terms)',
-          'Request a copy of the data Rudrans holds about you',
+          'Request a copy of the data Wellness Extract holds about you',
           'Request correction of inaccurate data',
           'Request deletion when you leave the employer',
         ]} />
@@ -129,7 +129,7 @@ export default function Privacy() {
 
       <Section title="9. Children">
         <P>
-          Rudrans is a workplace tool. We do not knowingly process data of anyone
+          Wellness Extract is a workplace tool. We do not knowingly process data of anyone
           under 16.
         </P>
       </Section>

@@ -311,6 +311,7 @@ echo "Done. Launch Security Assistant and enter your License Key."
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
               <span className="text-xs text-emerald-400 font-medium">Latest Version: v{agentVersion}</span>
             </span>
+            <ForceUpdateButton />
             <button
               onClick={() => setAddOpen(true)}
               className="px-3 py-1.5 rounded-lg bg-emerald-500/15 text-emerald-400 text-xs font-medium border border-emerald-500/25 hover:bg-emerald-500/25 transition-colors flex items-center gap-1.5"
@@ -674,5 +675,74 @@ function UninstallCommandCard() {
         Reboot recommended after — macOS caches Login Items in memory until next login.
       </p>
     </div>
+  );
+}
+/**
+ * "Force update all agents" — one-click org-wide push that wakes every
+ * agent's Tauri updater loop immediately instead of waiting on its
+ * 60 s / 10 min poll. See `agent-force-update` edge function and
+ * `wake_updater()` in the agent's lib.rs.
+ *
+ * Agents on v0.6.23 or older don't have the realtime handler yet, so
+ * they'll silently ignore the ring and rely on their normal poll. Once
+ * they upgrade past v0.6.24, this button starts working for them.
+ */
+function ForceUpdateButton() {
+  const [busy, setBusy] = useState(false);
+  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+
+  const forceUpdate = async () => {
+    setBusy(true);
+    setToast(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const r = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/agent-force-update`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${session?.access_token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({}), // empty → org-wide fan-out via JWT
+        },
+      );
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
+      setToast({
+        kind: 'ok',
+        text: `Ping sent to ${j.notified}/${j.total} agents. Agents on v0.6.24+ will check + install immediately; older versions upgrade on their next normal poll.`,
+      });
+    } catch (e) {
+      setToast({ kind: 'err', text: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={forceUpdate}
+        disabled={busy}
+        className="px-3 py-1.5 rounded-lg bg-blue-500/15 text-blue-400 text-xs font-medium border border-blue-500/25 hover:bg-blue-500/25 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+        title="Ring every agent's updater to check for the latest version immediately."
+      >
+        <i className={`ri-refresh-line text-sm ${busy ? 'animate-spin' : ''}`} />
+        {busy ? 'Sending…' : 'Force update all agents'}
+      </button>
+      {toast && (
+        <div className={`fixed bottom-6 right-6 z-50 max-w-md px-4 py-3 rounded-lg border text-sm shadow-lg ${
+          toast.kind === 'ok'
+            ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+            : 'border-red-500/40 bg-red-500/10 text-red-300'
+        }`}
+             onClick={() => setToast(null)}
+             role="status">
+          {toast.text}
+        </div>
+      )}
+    </>
   );
 }

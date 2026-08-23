@@ -129,19 +129,23 @@ Deno.serve(async (req) => {
     .eq("provider", "m365")
     .eq("account_enabled", true);
 
-  if (body.employee_ids && body.employee_ids !== "all") {
-    // Map employee_ids → their m365 UPN via the employees table's work_email.
-    // (directory_users has no employee_id column — join is via UPN/email.)
-    if (body.employee_ids.length === 0) return json({ pushed: 0, results: [] }, 200, cors);
-    const { data: emps } = await admin
-      .from("employees")
-      .select("work_email")
-      .eq("org_id", orgId)
-      .in("id", body.employee_ids);
-    const upns = (emps ?? []).map((e) => e.work_email).filter(Boolean) as string[];
-    if (upns.length === 0) return json({ error: "no matching M365 users for those employees" }, 400, cors);
-    dirQ = dirQ.in("upn", upns);
+  // Explicit per-user selection is REQUIRED. We deliberately removed the
+  // `employee_ids: "all"` shortcut — every push has to be a conscious admin
+  // action targeting specific employees. This is what the customer wants:
+  // "jab tak admin khud se har user ke account per publish na kare tab tak
+  // nhi kam karna chahiye".
+  if (!body.employee_ids || body.employee_ids === "all" || !Array.isArray(body.employee_ids)) {
+    return json({ error: "employee_ids must be a non-empty array of employee UUIDs" }, 400, cors);
   }
+  if (body.employee_ids.length === 0) return json({ pushed: 0, results: [] }, 200, cors);
+  const { data: emps } = await admin
+    .from("employees")
+    .select("work_email")
+    .eq("org_id", orgId)
+    .in("id", body.employee_ids);
+  const upns = (emps ?? []).map((e) => e.work_email).filter(Boolean) as string[];
+  if (upns.length === 0) return json({ error: "no matching M365 users for those employees" }, 400, cors);
+  dirQ = dirQ.in("upn", upns);
 
   const { data: dirUsers, error: dirErr } = await dirQ;
   if (dirErr) return json({ error: `directory query: ${dirErr.message}` }, 500, cors);
@@ -150,12 +154,12 @@ Deno.serve(async (req) => {
   }
 
   // Pull matching employee rows to enrich token rendering.
-  const upns = dirUsers.map((u) => u.upn).filter(Boolean);
+  const dirUpns = dirUsers.map((u) => u.upn).filter(Boolean);
   const { data: employees } = await admin
     .from("employees")
     .select("id, work_email, full_name, job_title, phone, department_id, org_departments(name)")
     .eq("org_id", orgId)
-    .in("work_email", upns);
+    .in("work_email", dirUpns);
   const empByUpn = new Map<string, EmployeeLite>();
   for (const e of (employees ?? []) as unknown as Array<
     EmployeeLite & { department_id: string | null; org_departments: { name: string } | null }
@@ -209,15 +213,25 @@ Deno.serve(async (req) => {
     });
 
     try {
+      // Signature name = employee's own name (or fallback to display name /
+      // UPN). Matches what the Windows agent-side path writes into
+      // %APPDATA%\Signatures\, so the same person sees the same signature
+      // name whether they're in Classic Outlook or Outlook Web.
+      const sigName = (
+        emp?.full_name?.trim() ||
+        du.display_name?.trim() ||
+        du.upn.split("@")[0]
+      ).slice(0, 60);
+
       await pushOneSignature({
         exchangeToken,
         tenantId,
         upn: du.upn,
+        signatureName: sigName,
         signatureHtml: rendered,
         signatureText: textFallback,
         autoAddNewMessage: tpl.auto_add_new_message,
         autoAddReplyForward: tpl.auto_add_reply_forward,
-        autoAddMobile: tpl.auto_add_mobile,
       });
       await upsertStatus(admin, {
         template_id: tpl.id,
@@ -241,6 +255,15 @@ Deno.serve(async (req) => {
       results.push({ upn: du.upn, state: "failed", error: msg });
     }
   });
+
+  // NOTE: We do NOT create an Exchange Transport Rule anymore. Transport
+  // rules are org-wide (apply to EVERY outgoing message) and cannot be
+  // scoped per-user without creating N individual rules (Exchange has a
+  // ~300-rule limit). The Outlook add-in path (Office.js
+  // setSignatureAsync) is now the canonical way to inject signatures
+  // per-user, and it queries our fetch endpoints which gate on
+  // signature_push_status — so a user only sees the signature if the admin
+  // explicitly pushed to them.
 
   const applied = results.filter((r) => r.state === "applied").length;
   const failed  = results.filter((r) => r.state === "failed").length;
@@ -369,27 +392,34 @@ async function pushOneSignature(args: {
   exchangeToken: string;
   tenantId: string;
   upn: string;
+  signatureName: string;
   signatureHtml: string;
   signatureText: string;
   autoAddNewMessage: boolean;
   autoAddReplyForward: boolean;
-  autoAddMobile: boolean;
 }) {
   const url = `https://outlook.office365.com/adminapi/beta/${args.tenantId}/InvokeCommand`;
+  // Only pass the parameters the modern Exchange REST endpoint accepts.
+  // `SignatureTextOnMobileOWA` and `AutoAddSignatureOnMobile` were rejected
+  // in 2026 (AmbiguousParameterSetException) — mobile is manual per user.
+  //
+  // `SignatureName` + `DefaultSignature` + `DefaultSignatureOnReply` are the
+  // critical trio for modern Outlook. Without `DefaultSignature`,
+  // `AutoAddSignature=true` doesn't know WHICH signature to attach when a
+  // user has multiple, and the push silently no-ops at compose time even
+  // though the mailbox settings row got written.
   const payload = {
     CmdletInput: {
       CmdletName: "Set-MailboxMessageConfiguration",
       Parameters: {
         Identity: args.upn,
+        SignatureName: args.signatureName,
         SignatureHtml: args.signatureHtml,
         SignatureText: args.signatureText,
-        // Mobile OWA parameter is separate — Exchange treats it as a distinct
-        // string so users get a plain-text signature on the Outlook mobile
-        // signature-line even if HTML rendering is disabled.
-        SignatureTextOnMobileOWA: args.signatureText,
+        DefaultSignature: args.signatureName,
+        DefaultSignatureOnReply: args.signatureName,
         AutoAddSignature: args.autoAddNewMessage,
         AutoAddSignatureOnReply: args.autoAddReplyForward,
-        AutoAddSignatureOnMobile: args.autoAddMobile,
       },
     },
   };

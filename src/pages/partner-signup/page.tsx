@@ -41,9 +41,9 @@ export default function PartnerSignup() {
     <div className="min-h-screen bg-dark-950 flex items-center justify-center px-4 py-10">
       <div className="max-w-lg w-full bg-dark-800 border border-dark-700 rounded-xl p-8">
         <div className="mb-6">
-          <p className="text-[10px] uppercase tracking-widest text-cyan-400 font-semibold">Rudrans</p>
+          <p className="text-[10px] uppercase tracking-widest text-cyan-400 font-semibold">Wellness Extract</p>
           <h1 className="text-xl text-white font-semibold mt-1">Become a Partner</h1>
-          <p className="text-gray-500 text-sm mt-1">Sell Rudrans to your customers and earn recurring commission.</p>
+          <p className="text-gray-500 text-sm mt-1">Sell Wellness Extract to your customers and earn recurring commission.</p>
         </div>
 
         {error && <p className="text-red-400 text-sm mb-3">{error}</p>}

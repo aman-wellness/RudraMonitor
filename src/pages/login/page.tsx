@@ -58,13 +58,13 @@ export default function Login() {
   return (
     <LoginLayout
       accent="indigo"
-      brandLabel="Rudrans"
+      brandLabel="Wellness Extract"
       brandIcon="ri-shield-check-line"
       illustrationUrl="https://illustrations.popsy.co/violet/work-from-home.svg"
       illustrationCaption="Welcome back"
       illustrationSubtitle="Sign in to manage your team's productivity, track agents, and review insights — all from one place."
       title="Sign In"
-      subtitle="Enter your credentials to access your Rudrans admin portal."
+      subtitle="Enter your credentials to access your Wellness Extract admin portal."
       footer={
         <p className="text-sm text-slate-500 text-center">
           Don&apos;t have an account?{' '}

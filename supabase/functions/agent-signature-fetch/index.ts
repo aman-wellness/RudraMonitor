@@ -76,6 +76,12 @@ Deno.serve(async (req) => {
     .maybeSingle();
   if (!tpl) return json({ enabled: false, reason: "no_template" });
 
+  // 2b. Per-user gate — the agent should NOT deploy a signature unless the
+  // admin has explicitly pushed to this user. We check by the agent's
+  // matched employee.work_email (resolved below) against the
+  // signature_push_status table. If the admin hasn't ticked this user, the
+  // agent gets `enabled: false` and skips the local file write.
+
   // 3. Resolve agent → employee → UPN
   //
   // Match strategy (case-insensitive):
@@ -130,6 +136,17 @@ Deno.serve(async (req) => {
 
   if (!workEmail) {
     return json({ enabled: false, reason: "no_user_match" });
+  }
+
+  // Enforce the per-user gate now that we know the UPN.
+  const { data: pushStatus } = await admin
+    .from("signature_push_status")
+    .select("state")
+    .eq("template_id", tpl.id)
+    .ilike("upn", workEmail)
+    .maybeSingle();
+  if (!pushStatus || pushStatus.state !== "applied") {
+    return json({ enabled: false, reason: "not_enabled_for_this_user" });
   }
 
   // 4. Pull directory row for token values (uses UPN as the anchor)

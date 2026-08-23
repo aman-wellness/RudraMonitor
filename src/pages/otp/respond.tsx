@@ -60,7 +60,7 @@ export default function OtpRespond() {
           </div>
           <div>
             <h1 className="text-white text-lg font-semibold">Enter OTP</h1>
-            <p className="text-xs text-gray-400">Rudrans Auto-Invoice fetcher needs this code to continue.</p>
+            <p className="text-xs text-gray-400">Wellness Extract Auto-Invoice fetcher needs this code to continue.</p>
           </div>
         </div>
 

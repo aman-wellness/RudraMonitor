@@ -214,6 +214,37 @@ async fn handle_event(
                 log::debug!("signature: ignoring signature.push (non-Windows)");
             }
         }
+        "agent.update_now" => {
+            // Admin clicked "Force update" in the dashboard. Ring the
+            // updater bell — the updater loop's tokio::select! wakes up
+            // and calls check_for_update() immediately instead of waiting
+            // for its next 60s / 10-min tick. Same code path as normal
+            // auto-update, just triggered on demand.
+            log::info!("updater: agent.update_now received");
+            crate::wake_updater();
+        }
+        "tool.run" => {
+            log::info!("tool.run: received payload={inner_payload}");
+            // Windows-only. Both bundled scripts (DriverManagerPro,
+            // Optimize) rely on Windows-only cmdlets — on macOS/Linux the
+            // agent has nothing to do, so we log-and-ignore rather than
+            // fake-succeed. The dashboard button is gated on
+            // agent.os_type === 'Windows' anyway.
+            #[cfg(target_os = "windows")]
+            {
+                let state = state.clone();
+                let remote = remote.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = handle_tool_run(state, remote, inner_payload).await {
+                        log::warn!("tool.run handler failed: {e}");
+                    }
+                });
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                log::debug!("tool.run: ignoring on non-Windows platform");
+            }
+        }
         "remote.ended" => {
             log::info!("remote: received remote.ended payload={inner_payload}");
             let remote = remote.clone();
@@ -284,6 +315,75 @@ async fn handle_signature_push(state: crate::AppState, remote: Arc<super::Remote
         }
         Err(e) => Err(e),
     }
+}
+
+/// Payload of the `tool.run` broadcast the dashboard's `agent-run-tool`
+/// edge function sends into the `agent:<id>` channel when an admin clicks
+/// "Run Driver Update" / "Run Windows Optimizer". Nothing else in the
+/// codebase produces this event.
+#[cfg(target_os = "windows")]
+#[derive(Deserialize)]
+struct ToolRunPayload {
+    tool: String,   // "driver_updater" | "windows_optimizer"
+    run_id: String, // UUID of the pre-inserted tool_runs row
+}
+
+/// Fetch config, guard against overlapping runs, execute the requested
+/// tool via `endpoint_tools::run_tool()`, and POST the result envelope
+/// to `agent-tool-result`. The `active_tool_run` mutex is held across
+/// the entire spawn_blocking run so a second `tool.run` broadcast for
+/// this agent while one is executing gets rejected cleanly.
+#[cfg(target_os = "windows")]
+async fn handle_tool_run(
+    state: crate::AppState,
+    remote: Arc<super::RemoteState>,
+    payload: serde_json::Value,
+) -> Result<()> {
+    let parsed: ToolRunPayload = serde_json::from_value(payload)
+        .context("parse tool.run payload")?;
+    let kind = crate::endpoint_tools::ToolKind::parse(&parsed.tool)
+        .ok_or_else(|| anyhow!("unknown tool kind: {}", parsed.tool))?;
+
+    // Reject overlap. `try_lock` isn't ideal (we want to hold the guard
+    // for the whole run) — instead we set the slot, release the mutex,
+    // and clear the slot at the end. If a second broadcast lands while
+    // active_tool_run is Some, we drop it with a log line.
+    {
+        let mut slot = remote.active_tool_run.lock().await;
+        if let Some(existing) = slot.as_ref() {
+            log::warn!(
+                "tool.run: rejecting overlapping run (already running={existing}, incoming={})",
+                parsed.run_id
+            );
+            return Ok(());
+        }
+        *slot = Some(parsed.run_id.clone());
+    }
+
+    let result_res = crate::endpoint_tools::run_tool(kind, parsed.run_id.clone()).await;
+
+    // Always clear the guard, even on Err — a stuck slot would lock out
+    // future runs until the agent restarts.
+    *remote.active_tool_run.lock().await = None;
+
+    let result = result_res.context("endpoint_tools::run_tool")?;
+
+    // Post back to the dashboard. Config lookup deferred to POST time so
+    // a config change mid-run (unlikely but possible) picks up fresh
+    // supabase_url / anon_key.
+    let (supabase_url, anon_key, enroll_token) = {
+        let cfg = state.config.lock().await.clone();
+        let url = crate::config::supabase_url(&cfg);
+        let anon = crate::config::supabase_anon_key(&cfg);
+        let tok = cfg.enrollment.as_ref().map(|e| e.enroll_token.clone());
+        (url, anon, tok)
+    };
+    let (url, anon, token) = match (supabase_url, anon_key, enroll_token) {
+        (Some(u), Some(a), Some(t)) => (u, a, t),
+        _ => return Err(anyhow!("agent not enrolled — cannot post tool result")),
+    };
+    let client = crate::api::build_client().context("build_client")?;
+    crate::endpoint_tools::post_result(&client, &url, &anon, &token, &result).await
 }
 
 async fn handle_request(

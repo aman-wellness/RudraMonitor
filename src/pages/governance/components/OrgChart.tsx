@@ -1023,7 +1023,7 @@ function OrgChartInner({
             </Link>
           </div>
           <p className="text-[11px] text-amber-200/70 mb-3">
-            These employees imported from M365/Google directory without a manager_id, OR were never assigned one in Rudrans.
+            These employees imported from M365/Google directory without a manager_id, OR were never assigned one in Wellness Extract.
             They're hidden from the chart above. Assign a manager OR mark them offboarded if they're not actually in your org.
           </p>
           <div className="overflow-hidden rounded-lg border border-amber-500/20">

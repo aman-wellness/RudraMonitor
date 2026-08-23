@@ -46,6 +46,13 @@ pub struct RemoteState {
     /// reinstalled Office and lost the registry keys. Unused on non-Windows
     /// but kept in the shared struct for cross-platform code simplicity.
     pub last_signature_checksum: Mutex<Option<String>>,
+    /// run_id of the currently-executing endpoint tool run (driver updater
+    /// or Windows optimizer), or None when no tool is running. Guards
+    /// against overlapping runs — a second `tool.run` broadcast for the
+    /// same agent while one is in flight is rejected with a log line.
+    /// Windows-only feature but the field lives here so `realtime_listener`
+    /// compiles cross-platform.
+    pub active_tool_run: Mutex<Option<String>>,
 }
 
 impl RemoteState {
@@ -53,6 +60,7 @@ impl RemoteState {
         Self {
             active_session: Mutex::new(None),
             last_signature_checksum: Mutex::new(None),
+            active_tool_run: Mutex::new(None),
         }
     }
 }

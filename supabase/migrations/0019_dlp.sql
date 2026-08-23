@@ -96,7 +96,7 @@ create table if not exists public.dlp_alert_recipients (
 );
 
 -- Global recipients (org_id IS NULL) catch DLP alerts from EVERY org — used for
--- Rudrans's own ops team / CSM bcc.
+-- TrackForce's own ops team / CSM bcc.
 create index if not exists dlp_recipients_org_idx
   on public.dlp_alert_recipients(org_id) where is_active = true;
 create index if not exists dlp_recipients_global_idx

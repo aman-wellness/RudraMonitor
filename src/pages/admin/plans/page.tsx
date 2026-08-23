@@ -77,7 +77,7 @@ export default function AdminPlans() {
         <p className="text-xs text-gray-500 max-w-2xl">
           Each plan stores three prices: <span className="text-emerald-400">List INR</span> (used for invoices &amp; GST),
           {' '}<span className="text-cyan-400">List USD</span> (shown on the marketing website), and
-          {' '}<span className="text-amber-400">Partner INR</span> (wholesale rate Rudrans charges partners).
+          {' '}<span className="text-amber-400">Partner INR</span> (wholesale rate Wellness Extract charges partners).
         </p>
         <button onClick={() => setEditing({ billing_cycle: 'yearly', is_active: true, seat_count: 5, price_inr: 10000, partner_price_inr: 7000 })}
           className="px-3 py-1.5 text-xs rounded-lg bg-cyan-500 hover:bg-cyan-400 text-dark-950 font-medium">

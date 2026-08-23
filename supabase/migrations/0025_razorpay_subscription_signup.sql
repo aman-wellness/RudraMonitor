@@ -13,7 +13,7 @@
 --   6. On `subscription.charged` webhook → license auto-renewed +1 cycle.
 --   7. On `subscription.halted` webhook → org suspended.
 
--- ── Razorpay plan id on each Rudrans plan ───────────────────────────────
+-- ── Razorpay plan id on each TrackForce plan ───────────────────────────────
 alter table public.plans
   add column if not exists razorpay_plan_id text;
 

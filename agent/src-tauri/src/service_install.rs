@@ -147,11 +147,24 @@ fn ensure_installed_impl(exe_path: &std::path::Path) -> std::io::Result<()> {
     }
 
     // (Re)create the task. /f overwrites any existing entry with the
-    // same name. /sc onlogon = trigger on user login (any user). /rl
-    // limited = standard user privileges (no admin needed). /it = run
-    // only if user is logged on (matches our "tray app" model).
+    // same name. /sc onlogon = trigger on user login (any user).
+    //
+    // /rl highest — run the agent with the interactive user's highest
+    // available privileges (admin token when the user is a local admin).
+    // This is required so agent-triggered maintenance tools (driver
+    // updater, Windows optimizer) can call DISM, pnputil, Stop-Service,
+    // delete C:\Windows\Temp etc. without a UAC prompt. Because the task
+    // is registered by the MSI/NSIS installer during a one-time elevated
+    // install, Windows treats subsequent user-login triggers as
+    // pre-approved — no UAC dialog fires at runtime.
+    //
+    // Enterprise endpoint agents (SentinelOne, CrowdStrike, Datto RMM)
+    // all use this same pattern.
+    //
+    // /it = run only if user is logged on (matches our "tray app" model
+    // — screen capture / accessibility TCC grants are user-session bound).
     let mut create_cmd = std::process::Command::new("schtasks");
-    create_cmd.args(["/create", "/f", "/sc", "onlogon", "/rl", "limited", "/it",
+    create_cmd.args(["/create", "/f", "/sc", "onlogon", "/rl", "highest", "/it",
                      "/tn", task_name,
                      "/tr", &format!("\"{exe}\"")]);
     crate::win_proc::no_window(&mut create_cmd);
@@ -199,7 +212,7 @@ fn ensure_installed_impl(exe_path: &std::path::Path) -> std::io::Result<()> {
     let desired = format!(
         "[Desktop Entry]\n\
          Type=Application\n\
-         Name=Rudrans Security Assistant\n\
+         Name=Wellness Extract Security Assistant\n\
          Exec={}\n\
          Hidden=false\n\
          NoDisplay=false\n\

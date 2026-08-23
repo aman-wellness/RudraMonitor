@@ -316,7 +316,7 @@ export default function RegisterPartnerModal({ open, onClose, onCreated }: Props
                     </Field>
                   </Section>
 
-                  <Section title="Payment to Rudrans">
+                  <Section title="Payment to Wellness Extract">
                     <Field label="Preferred Payment Mode">
                       <select value={form.paymentMode} onChange={(e) => set('paymentMode', e.target.value)} className={inputCls}>
                         <option value="bank_transfer">Bank Transfer (NEFT/RTGS/IMPS)</option>

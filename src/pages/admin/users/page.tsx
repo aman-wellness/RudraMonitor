@@ -103,7 +103,7 @@ export default function AdminUsersPage() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
         <div>
           <p className="text-sm text-gray-400 max-w-2xl">
-            Users with super-admin access to the Rudrans platform. They can manage every partner, customer, plan, integration, and invoice.
+            Users with super-admin access to the Wellness Extract platform. They can manage every partner, customer, plan, integration, and invoice.
           </p>
         </div>
         <button
@@ -127,7 +127,7 @@ export default function AdminUsersPage() {
         <div className="mb-4 bg-dark-800 border border-dark-700 rounded-xl p-4 space-y-3">
           <h3 className="text-sm font-semibold text-white">Invite a new super-admin</h3>
           <p className="text-[11px] text-gray-500">
-            If the email already has a Rudrans account, we'll grant them super_admin instantly.
+            If the email already has a Wellness Extract account, we'll grant them super_admin instantly.
             Otherwise we'll send a signup invite and pre-stage the role for first login.
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

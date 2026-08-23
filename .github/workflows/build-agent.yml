@@ -163,6 +163,14 @@ jobs:
           curl -fL --retry 3 "$URL" -o "$OUT"
           chmod +x "$OUT" || true
           ls -lh "$OUT"
+          # Sanity check — real ffmpeg is 25MB+, anything smaller means the
+          # bucket has a placeholder stub and we'd ship a broken agent
+          # (v0.6.26 shipped this way on macOS; screen video + Live died).
+          size=$(stat -c%s "$OUT" 2>/dev/null || stat -f%z "$OUT")
+          if [ "$size" -lt 5000000 ]; then
+            echo "::error::ffmpeg fetched from $URL is only $size bytes — bucket has a stub, refusing to ship"
+            exit 1
+          fi
 
       # Pull the per-platform RustDesk runtime tree from Supabase Storage's
       # `rustdesk` bucket (packaged by scripts/package-rustdesk.sh from the
@@ -555,7 +563,7 @@ jobs:
         run: |
           BASE="agent/src-tauri/target/${{ matrix.target }}/release/bundle"
           shopt -s nullglob
-          # Tauri writes the updater archive with the productName ("Rudrans
+          # Tauri writes the updater archive with the productName ("TrackForce
           # Agent" — space in the filename) which breaks Supabase Storage URLs,
           # so we rename to a URL-safe hyphenated form before upload. We use a
           # case statement (NOT associative arrays — macOS ships bash 3.2 which
@@ -793,7 +801,7 @@ jobs:
             else PLATFORMS_JSON+=",\"$PKEY\":$ENTRY"; fi
           done
           cat > /tmp/latest.json <<EOF
-          { "version": "$VERSION", "notes": "Rudrans Agent v$VERSION", "pub_date": "$PUB_DATE", "platforms": { $PLATFORMS_JSON } }
+          { "version": "$VERSION", "notes": "TrackForce Agent v$VERSION", "pub_date": "$PUB_DATE", "platforms": { $PLATFORMS_JSON } }
           EOF
           jq . /tmp/latest.json
           echo "version=$VERSION" >> $GITHUB_OUTPUT

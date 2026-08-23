@@ -254,7 +254,7 @@ function DefaultRecipientsCard() {
     saved.it && `IT: ${saved.it.split(',')[0]}${saved.it.includes(',') ? ` +${saved.it.split(',').length - 1}` : ''}`,
     saved.hr && `HR: ${saved.hr.split(',')[0]}${saved.hr.includes(',') ? ` +${saved.hr.split(',').length - 1}` : ''}`,
     saved.acc && `Accounts: ${saved.acc.split(',')[0]}${saved.acc.includes(',') ? ` +${saved.acc.split(',').length - 1}` : ''}`,
-  ].filter(Boolean).join(' · ') || 'Not set — using Rudrans default fallback';
+  ].filter(Boolean).join(' · ') || 'Not set — using Wellness Extract default fallback';
 
   return (
     <section className="mb-5 bg-dark-800/50 border border-dark-700 rounded-xl overflow-hidden">

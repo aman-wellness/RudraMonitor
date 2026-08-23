@@ -22,7 +22,15 @@ import { corsHeaders } from "../_shared/cors.ts";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const TURN_SECRET = Deno.env.get("TURN_SHARED_SECRET") ?? "";
-const TURN_HOST = Deno.env.get("TURN_HOST") ?? "ems.wellnessextract.com";
+// Default points at the production Supabase host, which is the same host
+// that fronts coturn (single-box deploy). MUST resolve to exactly one IP:
+// `rudrans.com` used to sit here, but its DNS returns TWO A records
+// (65.0.93.60 alongside 18.145.223.204) — the browser round-robin
+// occasionally picks the dead IP and the whole ICE gather stalls with
+// "no usable network path within 8s". `api-ems.wellnessextract.com`
+// resolves to a single live IP, so every candidate the client tries is
+// reachable.
+const TURN_HOST = Deno.env.get("TURN_HOST") ?? "api-ems.wellnessextract.com";
 // TLS host must match the CN/SAN on coturn's certificate. Defaults to TURN_HOST
 // because that is the common single-box setup, but is overridable for a relay
 // whose cert is on a different name.

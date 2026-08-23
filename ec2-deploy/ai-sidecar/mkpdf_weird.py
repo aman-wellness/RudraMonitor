@@ -11,7 +11,7 @@ lines = [
     "Reference: QSC/2026/JUN/0042",
     "Generated on the tenth of June, 2026",
     "",
-    "Customer: Rudrans Pvt Ltd",
+    "Customer: Wellness Extract Pvt Ltd",
     "",
     "Plan: Quirky Premium Annual",
     "Coverage window: June 10 thru July 10, 2026",

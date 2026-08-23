@@ -1,6 +1,6 @@
-# Rudrans Rollout Checklist
+# TrackForce Rollout Checklist
 
-End-to-end steps for taking Rudrans from "works on my machine" to "deployed on real employee laptops". Each section is ordered. Skip nothing in **Required**; **Optional** is for production polish.
+End-to-end steps for taking TrackForce from "works on my machine" to "deployed on real employee laptops". Each section is ordered. Skip nothing in **Required**; **Optional** is for production polish.
 
 ---
 
@@ -135,7 +135,7 @@ npm run tauri:build
 
 The bundler will sign + notarize automatically. Verify:
 ```bash
-spctl -a -vv "src-tauri/target/release/bundle/macos/Rudrans Agent.app"
+spctl -a -vv "src-tauri/target/release/bundle/macos/TrackForce Agent.app"
 ```
 
 ### 6.4 Windows code signing (Required for non-EV friction)
@@ -167,8 +167,8 @@ Three patterns, pick one:
 To skip the manual "paste URL/key" step on every machine, set env vars at install time:
 
 ```
-RUDRANS_SUPABASE_URL=https://xxx.supabase.co
-RUDRANS_SUPABASE_ANON_KEY=eyJhbGciOi...
+TRACKFORCE_SUPABASE_URL=https://xxx.supabase.co
+TRACKFORCE_SUPABASE_ANON_KEY=eyJhbGciOi...
 ```
 
 These take precedence over `agent.json` on disk. For Windows MSI, embed via an MST transform; for macOS pkg, set via a postinstall script writing to `/etc/launchd.conf` or LaunchAgents plist; for Linux, set in the systemd user unit.
