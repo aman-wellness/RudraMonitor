@@ -1,6 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { eventTypeLabel, formatBytes, sevTone, type DlpRow } from '../useDlp';
 import { notify } from '@/lib/notify';
+import { supabase } from '@/lib/supabase';
 
 /* Everything the agent captured about one event.
 
@@ -124,10 +125,27 @@ export default function EventDetail({ row, onClose }: { row: DlpRow; onClose: ()
             <section>
               <p className="label mb-1">Mail</p>
               <Row label="Provider" value={row.mail_provider} />
-              <Row label="From" value={row.sender_email} copy />
-              <Row label="To" value={row.recipient_email} copy />
+              <Row label="From" value={row.email_send?.from_address ?? row.sender_email} copy />
+              {row.email_send ? (
+                <>
+                  <Row label="To" value={row.email_send.to_recipients.join(', ') || null} copy />
+                  <Row label="Cc" value={row.email_send.cc_recipients.join(', ') || null} copy />
+                  <Row label="Bcc" value={row.email_send.bcc_recipients.join(', ') || null} copy />
+                </>
+              ) : (
+                <Row label="To" value={row.recipient_email} copy />
+              )}
               <Row label="URL" value={row.mail_url} mono />
             </section>
+          )}
+
+          {row.email_send && (
+            <>
+              <EmailBodySection subject={row.email_send.subject} bodyText={row.email_send.body_text} bodyHtml={row.email_send.body_html} />
+              {row.email_send.attachments.length > 0 && (
+                <AttachmentsSection attachments={row.email_send.attachments} />
+              )}
+            </>
           )}
 
           {/* Only when there's something to put in it — otherwise this was a
@@ -151,5 +169,93 @@ export default function EventDetail({ row, onClose }: { row: DlpRow; onClose: ()
         </div>
       </aside>
     </div>
+  );
+}
+
+/** Subject + body preview for a full-email intercept row.
+ *  Body HTML is sandbox-rendered into an iframe with srcdoc so no
+ *  navigation, script, or network request from the captured email can
+ *  reach the surrounding dashboard. Plain-text fallback shows when the
+ *  agent captured only body_text or the org disabled body capture. */
+function EmailBodySection({
+  subject, bodyText, bodyHtml,
+}: { subject: string | null; bodyText: string | null; bodyHtml: string | null }) {
+  const [showHtml, setShowHtml] = useState(true);
+  return (
+    <section>
+      <p className="label mb-1">Message</p>
+      <Row label="Subject" value={subject} copy />
+      {(bodyHtml || bodyText) && (
+        <div className="sunken rounded-lg p-2.5 mt-2">
+          <div className="flex items-center justify-between mb-1.5">
+            <p className="label">Body</p>
+            {bodyHtml && bodyText && (
+              <button
+                onClick={() => setShowHtml((v) => !v)}
+                className="text-[10.5px] t-accent hover:underline"
+              >
+                {showHtml ? 'View plain text' : 'View HTML'}
+              </button>
+            )}
+          </div>
+          {showHtml && bodyHtml ? (
+            <iframe
+              title="Email body"
+              sandbox=""
+              srcDoc={bodyHtml}
+              className="w-full rounded"
+              style={{ minHeight: 200, background: 'var(--d-panel)', border: '1px solid var(--d-line-soft)' }}
+            />
+          ) : (
+            <pre className="text-[11.5px] t2 whitespace-pre-wrap break-words leading-relaxed">
+              {bodyText ?? '(body not captured — org policy has body_capture=false)'}
+            </pre>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** Attachment list with signed-URL download buttons.
+ *  Signed URL is minted on click so links don't sit stale in the DOM;
+ *  each is single-use over 5 minutes, which is enough for the admin's
+ *  browser to actually start the download. */
+function AttachmentsSection({
+  attachments,
+}: {
+  attachments: Array<{ id: string; file_name: string; file_size_bytes: number; file_mime: string | null; storage_path: string }>;
+}) {
+  const download = async (path: string, name: string) => {
+    const { data, error } = await supabase.storage
+      .from('dlp-email-attachments')
+      .createSignedUrl(path, 300, { download: name });
+    if (error || !data) {
+      notify.error('Download failed', { description: error?.message ?? 'no signed url' });
+      return;
+    }
+    window.open(data.signedUrl, '_blank', 'noopener');
+  };
+  return (
+    <section>
+      <p className="label mb-1">Attachments ({attachments.length})</p>
+      <div className="space-y-1.5">
+        {attachments.map((a) => (
+          <div key={a.id} className="flex items-center justify-between gap-2 sunken rounded-md px-2.5 py-1.5">
+            <div className="min-w-0">
+              <p className="text-[11.5px] t1 truncate" title={a.file_name}>{a.file_name}</p>
+              <p className="text-[10px] t3">{formatBytes(a.file_size_bytes)} · {a.file_mime ?? 'unknown type'}</p>
+            </div>
+            <button
+              onClick={() => void download(a.storage_path, a.file_name)}
+              className="icon-btn flex-shrink-0"
+              title="Download attachment"
+            >
+              <i className="ri-download-line" />
+            </button>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
