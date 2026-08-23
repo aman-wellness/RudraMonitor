@@ -209,19 +209,22 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
   // the badge). The badge count comes from a COUNT query, not from the number
   // of fetched rows — that's why it can show the true total instead of being
   // capped by a fetch `limit` (the old `limit: 5` was why it was stuck at "5").
-  const { rows: alertRows, resolveAlerts } = useAlerts({ sinceHours: 24 * 7, limit: 50 });
-  const { count: unresolvedAlertCount, refresh: refreshUnresolvedCount } = useUnresolvedAlertCount();
+  const { rows: alertRows, refresh: refreshAlerts } = useAlerts({ sinceHours: 24 * 7, limit: 50 });
+  const { count: unresolvedAlertCount, clearAllForOrg } = useUnresolvedAlertCount();
   const [clearingAlerts, setClearingAlerts] = useState(false);
   const openAlertRows = alertRows.filter((a) => !a.ai_resolved);
   const clearAllNotifications = async () => {
-    const openIds = openAlertRows.map((a) => a.id);
-    if (openIds.length === 0) return;
+    // Resolve EVERY unresolved alert in the org — the tray only fetches 50
+    // but the badge can be 99+, so limiting the clear to the fetched rows
+    // leaves the badge stuck. clearAllForOrg goes wide and drops the badge
+    // to 0 in-hand.
+    if (openAlertRows.length === 0 && unresolvedAlertCount === 0) return;
     setClearingAlerts(true);
     try {
-      await resolveAlerts(openIds, 'cleared from notification tray');
-      // The bell badge polls every 60s; drop it to 0 immediately so the tray
-      // and the badge stay in sync the moment the user clicks Clear all.
-      void refreshUnresolvedCount();
+      await clearAllForOrg('cleared from notification tray');
+      // Refetch the tray rows so the "resolved" flag we just set is visible
+      // in the currently-loaded slice (in case realtime hasn't caught up).
+      void refreshAlerts();
     } catch (e) {
       console.error('clear notifications failed', e);
     } finally {
@@ -634,7 +637,7 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
                 <div className="s-pop w-72">
                   <div className="px-3.5 py-2.5 s-pop-head flex items-center justify-between">
                     <span className="text-[11.5px] font-medium t1">Notifications</span>
-                    {openAlertRows.length > 0 && (
+                    {(openAlertRows.length > 0 || unresolvedAlertCount > 0) && (
                       <button
                         onClick={clearAllNotifications}
                         disabled={clearingAlerts}
