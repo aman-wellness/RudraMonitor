@@ -272,7 +272,12 @@ pub fn encoder_args(encoder: &str) -> Vec<&'static str> {
             "-allow_sw", "1",        // graceful fall-back if HW path is busy
             "-pix_fmt", "yuv420p",
             "-profile:v", "main",
-            "-level", "4.0",
+            // NOTE: ffmpeg 9.0+ h264_videotoolbox rejects `-level 4.0` with
+            // "Cannot prepare encoder: -12902" — the level was previously
+            // needed to keep Baseline<3.1 encoders honest at 1080p, but on
+            // `main` profile VideoToolbox picks a spec-clean level (4.0
+            // for 1920×1080@30 with our bitrate) without help. Do not
+            // re-add the explicit -level here.
             "-g", "15",
             "-bf", "0",              // no B-frames — keep zero-latency contract
             "-bsf:v", "dump_extra",  // SPS/PPS before every IDR
