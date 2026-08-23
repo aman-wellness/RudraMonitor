@@ -209,7 +209,20 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
   // the badge). The badge count comes from a COUNT query, not from the number
   // of fetched rows — that's why it can show the true total instead of being
   // capped by a fetch `limit` (the old `limit: 5` was why it was stuck at "5").
-  const { rows: alertRows } = useAlerts({ sinceHours: 24 * 7, limit: 50 });
+  const { rows: alertRows, resolveAlerts } = useAlerts({ sinceHours: 24 * 7, limit: 50 });
+  const [clearingAlerts, setClearingAlerts] = useState(false);
+  const clearAllNotifications = async () => {
+    const openIds = alertRows.filter((a) => !a.ai_resolved).map((a) => a.id);
+    if (openIds.length === 0) return;
+    setClearingAlerts(true);
+    try {
+      await resolveAlerts(openIds, 'cleared from notification tray');
+    } catch (e) {
+      console.error('clear notifications failed', e);
+    } finally {
+      setClearingAlerts(false);
+    }
+  };
   const { count: unresolvedAlertCount } = useUnresolvedAlertCount();
   const { role: appRole } = useAppRole();
   const features = useFeatures();
@@ -615,8 +628,18 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
 
               {notifOpen && (
                 <div className="s-pop w-72">
-                  <div className="px-3.5 py-2.5 s-pop-head">
+                  <div className="px-3.5 py-2.5 s-pop-head flex items-center justify-between">
                     <span className="text-[11.5px] font-medium t1">Notifications</span>
+                    {alertRows.some((a) => !a.ai_resolved) && (
+                      <button
+                        onClick={clearAllNotifications}
+                        disabled={clearingAlerts}
+                        className="text-[10px] font-medium t-accent hover:underline disabled:opacity-50"
+                        title="Mark all unread notifications as resolved"
+                      >
+                        {clearingAlerts ? 'Clearing…' : 'Clear all'}
+                      </button>
+                    )}
                   </div>
                   <div className="max-h-64 overflow-y-auto">
                     {alertRows.length === 0 ? (
