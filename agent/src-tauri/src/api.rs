@@ -203,6 +203,97 @@ pub async fn dlp_ingest(
     Ok(())
 }
 
+/// Two-phase email ingest — Phase 1 opens an event, gets signed upload
+/// URLs per attachment, we PUT each attachment via reqwest, then we call
+/// finalize. Returns the `event_id` so the caller can correlate upstream.
+///
+/// Payload shape mirrors `supabase/functions/dlp-email-ingest/index.ts`:
+///   {
+///     action: "open",
+///     mail_provider, mail_url?, from_address?, subject?, body_text?,
+///     body_html?, to_recipients, cc_recipients?, bcc_recipients?,
+///     active_window?, screenshot_b64?,
+///     attachments: [{ file_name, file_size_bytes, file_mime?, file_hash_sha256? }]
+///   }
+pub async fn dlp_email_open(
+    client: &Client,
+    supabase_url: &str,
+    anon_key: &str,
+    enroll_token: &str,
+    payload: &Value,
+) -> Result<Value> {
+    let url = format!(
+        "{}/functions/v1/dlp-email-ingest",
+        supabase_url.trim_end_matches('/')
+    );
+    let resp = client
+        .post(&url)
+        .bearer_auth(anon_key)
+        .header("apikey", anon_key)
+        .header("X-Agent-Token", enroll_token)
+        .json(payload)
+        .send()
+        .await?;
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        return Err(anyhow!("dlp-email-ingest open: {} — {}", status, body));
+    }
+    Ok(body)
+}
+
+/// PUT attachment bytes to a signed upload URL returned by dlp_email_open.
+/// The signed URL is already scoped to the exact storage path, so this is
+/// a straight PUT with the content-type header the object should carry.
+pub async fn dlp_email_upload(
+    client: &Client,
+    signed_url: &str,
+    content_type: &str,
+    bytes: Vec<u8>,
+) -> Result<()> {
+    let resp = client
+        .put(signed_url)
+        .header("content-type", content_type)
+        .body(bytes)
+        .send()
+        .await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("dlp-email attachment PUT: {} — {}", status, body));
+    }
+    Ok(())
+}
+
+/// Finalize an email event once all attachments have been PUT.
+pub async fn dlp_email_finalize(
+    client: &Client,
+    supabase_url: &str,
+    anon_key: &str,
+    enroll_token: &str,
+    event_id: &str,
+) -> Result<()> {
+    let url = format!(
+        "{}/functions/v1/dlp-email-ingest",
+        supabase_url.trim_end_matches('/')
+    );
+    let payload = serde_json::json!({ "action": "finalize", "event_id": event_id });
+    let resp = client
+        .post(&url)
+        .bearer_auth(anon_key)
+        .header("apikey", anon_key)
+        .header("X-Agent-Token", enroll_token)
+        .json(&payload)
+        .send()
+        .await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("dlp-email-ingest finalize: {} — {}", status, body));
+    }
+    Ok(())
+}
+
 pub fn build_client() -> Result<Client> {
     Ok(Client::builder()
         .timeout(Duration::from_secs(20))

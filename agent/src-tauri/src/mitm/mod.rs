@@ -31,6 +31,23 @@ mod system_proxy;
 
 pub use cert_authority::Authority;
 
+/// The minimum config the interceptor needs to fire off a DLP ingest
+/// call. Stashed in a `OnceCell` at `start()` so the interceptor task
+/// (spawned per TLS session, no AppState reference) can pull it without
+/// threading Tauri state through every layer.
+#[derive(Clone, Debug)]
+pub struct MitmConfig {
+    pub supabase_url: String,
+    pub anon_key: String,
+    pub enroll_token: String,
+}
+
+static MITM_CFG: once_cell::sync::OnceCell<MitmConfig> = once_cell::sync::OnceCell::new();
+
+pub(crate) fn mitm_cfg() -> Option<&'static MitmConfig> {
+    MITM_CFG.get()
+}
+
 /// Loopback bind address for the local proxy. The port is chosen high
 /// enough to avoid collision with common dev tools (Vite 5173, Next.js
 /// 3000, etc.) and low enough that firewalls treat it as ephemeral. Not
@@ -50,11 +67,12 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 /// logged, not fatal — the listener still runs so a self-configured
 /// browser (e.g. Firefox with an explicit proxy setting) can still route
 /// through it.
-pub async fn start() -> anyhow::Result<()> {
+pub async fn start(cfg: MitmConfig) -> anyhow::Result<()> {
     if RUNNING.swap(true, Ordering::SeqCst) {
         log::debug!("mitm: start() called while already running — ignoring");
         return Ok(());
     }
+    let _ = MITM_CFG.set(cfg);
 
     // Install the ring crypto provider before touching rustls anywhere
     // — rustls 0.23 requires an explicit CryptoProvider install once

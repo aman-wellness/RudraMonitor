@@ -275,9 +275,12 @@ where
 }
 
 /// Fire-and-forget hand-off from the interceptor to the DLP ingest
-/// pipeline. Phase 4b will wire this to `api::dlp_email_ingest`; for
-/// now it just logs so we can smoke-test the intercept path without
-/// depending on backend availability.
+/// pipeline. Two-phase: open (metadata + attachment manifest → returns
+/// signed upload URLs) → PUT each attachment's bytes → finalize.
+///
+/// Everything is best-effort: an ingest failure logs and returns, it
+/// never blocks the user's actual browsing (this fn is always spawned).
+/// Missing mitm config (agent not yet enrolled) also returns silently.
 async fn emit_capture(captured: CapturedEmail) {
     log::info!(
         "mitm: captured email — provider={} subject={:?} to={:?} cc={:?} bcc={:?} attachments={}",
@@ -288,5 +291,109 @@ async fn emit_capture(captured: CapturedEmail) {
         captured.bcc_recipients,
         captured.attachments.len(),
     );
-    // TODO(phase4b): call api::dlp_email_ingest with open() → upload → finalize.
+
+    let cfg = match super::mitm_cfg() {
+        Some(c) => c,
+        None => {
+            log::debug!("mitm: emit_capture skipped — MitmConfig not set yet");
+            return;
+        }
+    };
+
+    let client = match crate::api::build_client() {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("mitm: emit_capture http client build failed: {e}");
+            return;
+        }
+    };
+
+    // ---- Phase 1: open the event ----
+    let manifest: Vec<serde_json::Value> = captured
+        .attachments
+        .iter()
+        .map(|a| {
+            let mut o = serde_json::Map::new();
+            o.insert("file_name".into(), a.file_name.clone().into());
+            o.insert(
+                "file_size_bytes".into(),
+                a.file_size_bytes.unwrap_or(0).into(),
+            );
+            if let Some(m) = &a.file_mime {
+                o.insert("file_mime".into(), m.clone().into());
+            }
+            serde_json::Value::Object(o)
+        })
+        .collect();
+
+    let payload = serde_json::json!({
+        "action": "open",
+        "mail_provider": captured.mail_provider,
+        "mail_url": captured.mail_url,
+        "from_address": captured.from_address,
+        "subject": captured.subject,
+        "body_text": captured.body_text,
+        "body_html": captured.body_html,
+        "to_recipients": captured.to_recipients,
+        "cc_recipients": captured.cc_recipients,
+        "bcc_recipients": captured.bcc_recipients,
+        "attachments": manifest,
+        "occurred_at": chrono::Utc::now().to_rfc3339(),
+    });
+
+    let open_resp = match crate::api::dlp_email_open(
+        &client,
+        &cfg.supabase_url,
+        &cfg.anon_key,
+        &cfg.enroll_token,
+        &payload,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("mitm: dlp-email open failed: {e}");
+            return;
+        }
+    };
+
+    let event_id = match open_resp.get("event_id").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => {
+            log::debug!("mitm: dlp-email open returned no event_id ({open_resp})");
+            return;
+        }
+    };
+
+    // ---- Phase 2: attachments ----
+    //
+    // Attachment BYTES aren't captured by the Gmail parser yet — the
+    // /_/upload correlation lives in Phase 4c. When it lands, the
+    // bytes for each attachment will be attached to the CapturedEmail
+    // before this point; today the send row is created with the right
+    // count but the bucket has nothing yet. Finalize still runs so the
+    // event isn't stuck at ingest_state='pending'.
+    let finalize_required = open_resp
+        .get("finalize_required")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if !finalize_required {
+        return; // no attachments, event auto-ingested by open()
+    }
+
+    // TODO(phase4c): iterate open_resp["upload_urls"] and PUT bytes.
+
+    // ---- Phase 3: finalize ----
+    if let Err(e) = crate::api::dlp_email_finalize(
+        &client,
+        &cfg.supabase_url,
+        &cfg.anon_key,
+        &cfg.enroll_token,
+        &event_id,
+    )
+    .await
+    {
+        log::warn!("mitm: dlp-email finalize failed: {e}");
+    }
 }

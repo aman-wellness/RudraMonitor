@@ -18,6 +18,10 @@
 //!     ("send detected on E2E provider, body not inspectable").
 
 mod gmail_web;
+mod icloud;
+mod outlook_live;
+mod protonmail;
+mod yahoo;
 
 use std::sync::Arc;
 
@@ -78,8 +82,10 @@ pub trait EmailProvider: Send + Sync {
 pub fn all() -> Vec<Arc<dyn EmailProvider>> {
     vec![
         Arc::new(gmail_web::GmailWeb),
-        // outlook_live / yahoo / icloud / protonmail live as skeletons
-        // below; add here when their parsers land.
+        Arc::new(outlook_live::OutlookLive),
+        Arc::new(yahoo::Yahoo),
+        Arc::new(icloud::ICloud),
+        Arc::new(protonmail::ProtonMail),
     ]
 }
 
