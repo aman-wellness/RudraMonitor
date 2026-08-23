@@ -347,6 +347,13 @@ jobs:
         env:
           # TAURI_SIGNING_PRIVATE_KEY is set above via GITHUB_ENV
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Email DLP MITM private key. Embedded into the built binary
+          # as an `option_env!("WELLNESS_MITM_CA_KEY_PEM")` compile-time
+          # constant so the key never sits on disk on the endpoint. The
+          # matching public cert lives in resources/mitm-ca.crt (in
+          # repo). If this secret is unset the module load falls to
+          # passthrough-only at runtime (see mitm/cert_authority.rs).
+          WELLNESS_MITM_CA_KEY_PEM: ${{ secrets.WELLNESS_MITM_CA_KEY_PEM }}
           # Tauri 2 macOS bundler picks this identity from the build
           # keychain to sign the .app. Value is
           # "Developer ID Application: Aman Saini (THJMM6C3XU)".

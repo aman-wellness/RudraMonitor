@@ -42,6 +42,12 @@ mod signature_deploy;
 #[cfg(target_os = "windows")]
 mod endpoint_tools;
 mod legacy_sweep;
+// Email DLP HTTPS-interception proxy (Phase 3+). Module compiles but its
+// `start()` is intentionally NOT called from setup yet — enabling the
+// system-wide proxy without the Phase 4 interception logic gains us
+// nothing and would break browsing if the listener ever fails to bind.
+// Wired up as part of the v0.7.0 release once Phase 4 lands.
+mod mitm;
 
 use active_window::{FocusSession, WindowInfo};
 use anyhow::{anyhow, Result};
