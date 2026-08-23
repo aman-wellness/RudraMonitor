@@ -163,17 +163,25 @@ async fn run(state: &AppState, session_id: &str, stop: Arc<AtomicBool>) -> Resul
     });
 
     // ---- control: viewer → agent input ------------------------------------
-    while let Some(msg) = ws_rx.next().await {
+    // select! so `stop` is honoured within ~250ms even when no websocket
+    // message is arriving (audit H17). Parking solely on `ws_rx.next().await`
+    // meant stop_relay()'s flag was only noticed after the next inbound frame,
+    // so a stopped/superseded session lingered and blocked re-starting the
+    // relay for that employee.
+    loop {
+        tokio::select! {
+            maybe = ws_rx.next() => {
+                match maybe {
+                    Some(Ok(Message::Text(t))) => handle_control(&t, w, h, &out_tx).await,
+                    Some(Ok(Message::Ping(p))) => { let _ = out_tx.send(Message::Pong(p)); }
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    _ => {}
+                }
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {}
+        }
         if stop.load(Ordering::SeqCst) {
             break;
-        }
-        match msg {
-            Ok(Message::Text(t)) => handle_control(&t, w, h, &out_tx).await,
-            Ok(Message::Ping(p)) => {
-                let _ = out_tx.send(Message::Pong(p));
-            }
-            Ok(Message::Close(_)) | Err(_) => break,
-            _ => {}
         }
     }
 

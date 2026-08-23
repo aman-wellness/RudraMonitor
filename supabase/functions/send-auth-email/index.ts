@@ -54,11 +54,18 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
 
   // 1. Verify the standard-webhooks signature.
+  // SECURITY (audit M24): FAIL CLOSED. Previously verification ran only
+  // `if (HOOK_SECRET)`, so with the secret unset the function became an open
+  // relay — anyone could send Rudrans-branded mail to any address with an
+  // attacker-controlled redirect link (phishing). Now a missing secret is a
+  // hard 500 (misconfiguration) and a bad/absent signature is always rejected.
   const rawBody = await req.text();
-  if (HOOK_SECRET) {
-    const ok = await verifyWebhook(req.headers, rawBody, HOOK_SECRET);
-    if (!ok) return json({ error: "invalid signature" }, 401);
+  if (!HOOK_SECRET) {
+    console.error("SUPABASE_AUTH_HOOK_SECRET not configured — refusing to send");
+    return json({ error: "server not configured" }, 500);
   }
+  const ok = await verifyWebhook(req.headers, rawBody, HOOK_SECRET);
+  if (!ok) return json({ error: "invalid signature" }, 401);
 
   let body: AuthHookPayload;
   try { body = JSON.parse(rawBody); } catch { return json({ error: "invalid json" }, 400); }

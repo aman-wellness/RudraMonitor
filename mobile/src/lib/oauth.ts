@@ -34,6 +34,12 @@ import { Capacitor } from "@capacitor/core";
 import { Browser } from "@capacitor/browser";
 import { supabase } from "./supabase";
 
+// The PKCE `state` of the in-progress OAuth flow. Retrieval is keyed on it
+// (audit C3 — the server no longer supports the insecure `latest=true` mode),
+// and the foreground-resume path (tryConsumeOAuthHandoff) has no argument to
+// receive it, so it's stashed here when a flow starts.
+let lastOAuthState = "";
+
 // cordova-plugin-inappbrowser exposes `window.cordova.InAppBrowser.open`
 // which, with the `_system` target, launches the URL via Android's
 // Intent.ACTION_VIEW — i.e. the default browser as a SEPARATE process.
@@ -119,12 +125,12 @@ export async function startOAuth(provider: "google" | "azure"): Promise<void> {
   // here so we can poll the retrieve endpoint after the browser closes.
   const stateMatch = /[?&]state=([^&]+)/.exec(data.url);
   const oauthState = stateMatch ? decodeURIComponent(stateMatch[1]) : "";
+  lastOAuthState = oauthState;
 
   // Kick off polling BEFORE opening the browser so even fast OAuth
-  // round-trips don't race past the first poll. Implicit flow doesn't
-  // expose a client-side state, so the poll uses `latest=true` —
-  // oauthState here is only used for diagnostic logging.
-  pollHandoff(oauthState || "(implicit)");
+  // round-trips don't race past the first poll. Retrieval is keyed on the
+  // PKCE `state` extracted above (the server requires it — audit C3).
+  pollHandoff(oauthState);
 
   // Prefer InAppBrowser's `_system` target — this fires Android's
   // Intent.ACTION_VIEW which honors App Link verification, so the
@@ -196,8 +202,11 @@ async function applyDepositCode(code: string): Promise<boolean> {
 export async function tryConsumeOAuthHandoff(): Promise<boolean> {
   const RETRIEVE_URL =
     "https://api-ems.wellnessextract.com/functions/v1/oauth-mobile-retrieve";
+  // Keyed on the PKCE state stashed when the flow started (audit C3). If there
+  // is none (no flow in progress), there is nothing to consume.
+  if (!lastOAuthState) return false;
   try {
-    const r = await fetch(`${RETRIEVE_URL}?latest=true`);
+    const r = await fetch(`${RETRIEVE_URL}?state=${encodeURIComponent(lastOAuthState)}`);
     if (!r.ok) return false;
     const body = (await r.json()) as { ready?: boolean; code?: string };
     if (!body.ready || !body.code) return false;
@@ -208,12 +217,23 @@ export async function tryConsumeOAuthHandoff(): Promise<boolean> {
   }
 }
 
-function pollHandoff(_unusedState: string): void {
+function pollHandoff(state: string): void {
   const RETRIEVE_URL =
     "https://api-ems.wellnessextract.com/functions/v1/oauth-mobile-retrieve";
   const startedAt = Date.now();
   const stopAfterMs = 120_000;
   let applied = false;
+
+  // SECURITY (audit C3): retrieval is keyed on the caller's own PKCE `state`
+  // (extracted from the OAuth URL) — the server removed the insecure
+  // `latest=true` "give me the most recent" mode that let anyone grab a
+  // logging-in user's code. supabase-js's signInWithOAuth uses PKCE, so this
+  // state is present; if it somehow isn't, we cannot (and must not) retrieve.
+  if (!state) {
+    console.warn("oauth.pollHandoff: no PKCE state — cannot retrieve handoff");
+    return;
+  }
+  const retrieveUrl = `${RETRIEVE_URL}?state=${encodeURIComponent(state)}`;
 
   const tick = async (): Promise<void> => {
     if (applied) return;
@@ -222,12 +242,7 @@ function pollHandoff(_unusedState: string): void {
       return;
     }
     try {
-      // `latest=true` returns whichever was deposited most recently
-      // within the last 60 s. The state value Supabase generates for
-      // implicit flow is server-side and we can't predict it, so we
-      // poll the freshest row instead. Single-device single-flow
-      // guarantees this resolves to the right session.
-      const r = await fetch(`${RETRIEVE_URL}?latest=true`);
+      const r = await fetch(retrieveUrl);
       if (r.ok) {
         const body = (await r.json()) as { ready?: boolean; code?: string };
         if (body.ready && body.code) {

@@ -107,13 +107,15 @@ export default function ReportsPage() {
   const { agents: dbAgents } = useAgents();
   const { byAgent: perAgent } = useProductivityPerAgent(rangeHours, rangeUntilHours);
   const { byAgent: latestMetrics } = useLatestSystemMetrics();
-  // The trend used to be useOrgProductivityDaily(7) — a hardcoded week that
-  // never moved, so picking This Month changed every table on the page while the
-  // chart underneath kept showing the same seven days. It takes the selected
-  // range now (capped at 31 buckets, which is as many bars as the strip can
-  // hold), including the end of a historic custom range.
-  const trendDays = Math.min(31, Math.max(1, Math.ceil(rangeHours / 24)));
-  const { rows: dailyRows } = useOrgProductivityDaily(trendDays, rangeUntilHours);
+  // The trend is a FIXED recent window (last 30 days, ending now) — deliberately
+  // decoupled from the table's range selector above it. Coupling it to the range
+  // was the source of two bugs: on the default "Today" range it collapsed to a
+  // single bar, and anchoring to a historic custom range's end could point the
+  // window at a no-data period so the whole strip read as empty. A trend should
+  // always show recent history regardless of which day the tables are filtered
+  // to, so it's a constant window now.
+  const TREND_DAYS = 30;
+  const { rows: dailyRows } = useOrgProductivityDaily(TREND_DAYS, 0);
 
   // All per-agent aggregates come from a single RPC call; each table just maps over them.
   const { agents, systemData, timeData, activityCounts, weeklyProductivity } = useMemo(() => {
@@ -967,16 +969,12 @@ export default function ReportsPage() {
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-sm font-semibold text-white">Productivity trend</h3>
               <span className="text-xs text-gray-500">
-                {weeklyProductivity.length === 0
-                  ? rangeLabel
-                  : weeklyProductivity.length === 1
-                    ? `${rangeLabel} · one day`
-                    : `${rangeLabel} · ${weeklyProductivity.length} days`}
+                {weeklyProductivity.length === 0 ? 'No data' : `Last ${weeklyProductivity.length} days`}
               </span>
             </div>
             {weeklyProductivity.length === 0 && (
               <p className="text-xs text-gray-500 py-8 text-center">
-                No productivity recorded in {rangeLabel.toLowerCase()}.
+                No productivity recorded in the last 30 days.
               </p>
             )}
             <div className="flex items-end gap-1 md:gap-2 h-32">

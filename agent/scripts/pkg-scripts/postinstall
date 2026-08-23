@@ -45,11 +45,13 @@ do
 done
 
 if [ -n "$CER" ]; then
-  # trustRoot policy = the cert anchors trust for ALL purposes (codeSigning +
-  # SSL etc). For our use we only need codeSigning anchoring, but the more
-  # specific `-r codeSign` flag isn't universally honoured across macOS
-  # versions; trustRoot is the safe option.
-  /usr/bin/security add-trusted-cert -d -r trustRoot \
+  # SECURITY (audit H10): scope this anchor to CODE SIGNING only, via the
+  # `-p codeSign` policy flag. Previously it used `-r trustRoot` with no policy,
+  # which anchors the cert for ALL purposes including SSL/TLS — meaning whoever
+  # holds the CA's private key could transparently MITM any HTTPS connection on
+  # the machine, not just verify our code signatures. `-r trustRoot -p codeSign`
+  # keeps the anchoring we actually need and nothing more.
+  /usr/bin/security add-trusted-cert -d -r trustRoot -p codeSign \
     -k /Library/Keychains/System.keychain "$CER" 2>/dev/null || true
 fi
 

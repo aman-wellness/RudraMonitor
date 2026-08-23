@@ -101,19 +101,23 @@ Deno.serve(async (req) => {
     if (matched) emp = matched as EmpRow;
   }
 
-  // Authorise: caller must be either an org_member or the organisation owner.
+  // Authorise (audit H2): deleting a person — including soft-deleting their
+  // Microsoft/Google cloud account — is a destructive admin action, so the
+  // caller must be an OWNER or ADMIN of the target org, not merely any member.
+  // Previously any org_member (viewer/member/manager) passed this check.
   const { data: mem } = await admin
     .from("org_members")
-    .select("org_id")
+    .select("org_id, role")
     .eq("user_id", callerId)
-    .eq("org_id", targetOrgId);
+    .eq("org_id", targetOrgId)
+    .in("role", ["owner", "admin"]);
   const { data: ownerRow } = await admin
     .from("organizations")
     .select("id")
     .eq("id", targetOrgId)
     .eq("owner_user_id", callerId);
   if ((mem?.length ?? 0) === 0 && (ownerRow?.length ?? 0) === 0) {
-    return json({ error: "not authorised for this org" }, 403);
+    return json({ error: "not authorised for this org (owner/admin only)" }, 403);
   }
 
   const providerResults: Record<string, { ok: boolean; error?: string }> = {};

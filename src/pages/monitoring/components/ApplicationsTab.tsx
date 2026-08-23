@@ -54,7 +54,8 @@ export default function ApplicationsTab() {
   );
 
   const filtered = useMemo(() => aggregated.filter((log) => {
-    const matchCat = catFilter === 'all' || log.category === catFilter;
+    const matchCat = catFilter === 'all' || log.category === catFilter
+      || (catFilter === 'unproductive' && log.category === 'prohibited');
     const matchSearch =
       search === '' ||
       log.appName.toLowerCase().includes(search.toLowerCase()) ||

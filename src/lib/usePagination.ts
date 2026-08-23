@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 /* Paging for tables that already hold their full result set.
    Style-agnostic on purpose: the monitoring tables live inside the `.dash`
@@ -9,21 +9,37 @@ import { useEffect, useMemo, useState } from 'react';
 export const DEFAULT_PAGE_SIZE = 25;
 
 /**
- * Slices `items` into pages, returning to page 1 when the collection size
- * changes — otherwise filtering a long list down to three rows would leave the
- * viewer stranded on an empty page 4.
+ * Slices `items` into pages.
  *
- * The reset depends on items.LENGTH, not on the array itself. Callers build
- * their lists with a plain `.filter()`, which produces a new array identity on
- * every render; depending on the array made the effect fire after every render,
- * so clicking a page number reset it to 1 before the new page could paint and
- * paging appeared to do nothing at all.
+ * Reset behaviour (audit M8):
+ *   - Reset to page 1 when the list SHRINKS (a filter was applied) — otherwise
+ *     filtering a long list down to three rows strands the viewer on page 4.
+ *   - Do NOT reset when the list GROWS. Monitoring tables refresh with live
+ *     agent data continuously; resetting on every arrival yanked the viewer
+ *     back to page 1 mid-read. Growth just extends the last page; the clamp
+ *     below handles any transient overflow.
+ *   - Optional `resetKey`: pass a value that identifies WHAT is being shown
+ *     (active tab + filters). Page resets to 1 whenever it changes, which also
+ *     fixes the converse bug — switching to a different dataset that happens to
+ *     have the same row count previously left you on a middle page.
+ *
+ * (The reset keys on items.LENGTH, never the array identity — callers `.filter()`
+ * a fresh array each render, so keying on the array fired every render and made
+ * paging appear to do nothing.)
  */
-export function usePagination<T>(items: T[], pageSize = DEFAULT_PAGE_SIZE) {
+export function usePagination<T>(items: T[], pageSize = DEFAULT_PAGE_SIZE, resetKey?: unknown) {
   const [page, setPage] = useState(1);
   const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
+  const prevLen = useRef(items.length);
 
-  useEffect(() => { setPage(1); }, [items.length]);
+  // Explicit dataset switch → page 1.
+  useEffect(() => { setPage(1); }, [resetKey]);
+
+  // Shrink → page 1; growth → leave the page where it is.
+  useEffect(() => {
+    if (items.length < prevLen.current) setPage(1);
+    prevLen.current = items.length;
+  }, [items.length]);
 
   // Guard against a page index left beyond the end by a shrinking list.
   const current = Math.min(page, pageCount);

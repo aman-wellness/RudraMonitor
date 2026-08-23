@@ -58,6 +58,19 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
 
+  // SECURITY (audit M19): this is an INTERNAL server-to-server function
+  // (dlp-ingest invokes it with the service-role key). It runs as service_role,
+  // returns the org's + global alert recipient list, and mints a signed
+  // screenshot URL — none of which should be reachable by a caller holding only
+  // the public anon key. Require the service-role key. dlp-ingest already sends
+  // it as the `apikey` header; also accept it as a bearer token.
+  const auth = req.headers.get("authorization") ?? "";
+  const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
+  const apikey = req.headers.get("apikey") ?? "";
+  if (bearer !== SERVICE_ROLE_KEY && apikey !== SERVICE_ROLE_KEY) {
+    return json({ error: "forbidden" }, 403);
+  }
+
   let body: { event_id?: string };
   try { body = await req.json(); } catch { return json({ error: "invalid json" }, 400); }
   if (!body.event_id) return json({ error: "event_id required" }, 400);

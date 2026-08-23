@@ -106,9 +106,18 @@ Deno.serve(async (req) => {
         .sort((a: { display_name: string }, b: { display_name: string }) => a.display_name.localeCompare(b.display_name));
     }
 
+    // SECURITY (audit H1): this endpoint is unauthenticated (verify_jwt=false)
+    // and resolves the org from an UNVERIFIED work_email, so anyone who knows a
+    // company's email domain could reach it. Do NOT expose the sensitive fields
+    // (login_url, internal notes) here — the request form only needs the
+    // platform name/category to let the employee pick what to ask for. The
+    // actual credentials are only ever delivered later, over email, to the
+    // employee's real on-file address after approval.
+    // (Full hardening — an email-OTP ownership check before returning anything
+    //  — is tracked as a follow-up in AUDIT_FIX_TRACKER.md.)
     const { data: creds } = await admin
       .from("credentials_safe")
-      .select("id, platform_name, category, login_url, notes, owner_dept_id, tags")
+      .select("id, platform_name, category, owner_dept_id, tags")
       .eq("org_id", orgId)
       .eq("active", true)
       .or(`owner_dept_id.is.null,owner_dept_id.eq.${deptScope}`)
@@ -212,7 +221,7 @@ Deno.serve(async (req) => {
     // Send to every picked manager (first as TO, rest as additional TOs).
     // The single-use manager_approve_token means whichever manager clicks
     // first wins — others' clicks will be rejected as "already used".
-    await sendGraphEmail({ orgId: emp.org_id,
+    await sendGraphEmail({ orgId: orgId,
       to: managerTo,
       cc: itRecipients,
       subject: `[Approval needed] ${requesterName} requested software access`,
@@ -220,7 +229,7 @@ Deno.serve(async (req) => {
     });
   } else {
     // No manager picked or on file — route directly to IT.
-    await sendGraphEmail({ orgId: emp.org_id,
+    await sendGraphEmail({ orgId: orgId,
       to: itRecipients[0],
       cc: itRecipients.slice(1),
       subject: `[Approval needed — no manager] ${requesterName} requested software access`,
@@ -231,7 +240,7 @@ Deno.serve(async (req) => {
   }
 
   // Confirmation to the requester so they know it went through.
-  await sendGraphEmail({ orgId: emp.org_id,
+  await sendGraphEmail({ orgId: orgId,
     to: workEmail,
     subject: "Your software access request was received",
     html: `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;max-width:540px;margin:0 auto;padding:20px;color:#1f2937">

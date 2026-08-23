@@ -23,6 +23,12 @@ export default function DlpPage() {
     if (tab === '' && types.length === 0 && !loading) setTab('settings');
   }, [tab, types, loading]);
 
+  // Reset the severity filter + search when switching tabs (audit M9).
+  // Otherwise a leftover "high" filter or search term carried into another
+  // channel silently hides its events and shows the empty-state, making a full
+  // channel look like it has no data.
+  useEffect(() => { setSevFilter('all'); setSearch(''); }, [tab]);
+
   const visible = useMemo(() => {
     if (tab === 'settings') return [];
     const q = search.trim().toLowerCase();

@@ -44,7 +44,11 @@ export type Organization = {
   phone: string | null;
   created_at: string;
   trial_ends_at: string;
-  subscription_status: 'trial' | 'active' | 'expired';
+  // Includes the states the app actually writes (`suspended`, `cancelled`) —
+  // audit M27. Canonical spelling is `cancelled` (double-l), matching the SQL
+  // renewal-enforcement checks; the UI previously wrote `canceled`, so a
+  // "Canceled" org was never treated as cancelled by access enforcement (M5).
+  subscription_status: 'trial' | 'active' | 'expired' | 'suspended' | 'cancelled';
   subscription_type: 'monthly' | 'yearly' | null;
   license_count: number;
   license_key: string;
@@ -77,6 +81,9 @@ export type Partner = {
   country: string | null;
   status: PartnerStatus;
   commission_pct: number;
+  /** Discount % applied to a partner-routed customer's price (migration 0141).
+   *  Distinct from commission_pct (what the partner earns). */
+  discount_pct: number;
   approved_by: string | null;
   approved_at: string | null;
   rejection_reason: string | null;

@@ -9,13 +9,19 @@ import type { UiAgent } from '@/lib/dataHooks';
    different chip colour maps). One component means one look, and the search
    field picks up the app's own input styling instead of a grey slab. */
 
-export type CategoryFilter = 'all' | 'productive' | 'unproductive' | 'neutral';
+export type CategoryFilter = 'all' | 'productive' | 'unproductive' | 'neutral' | 'prohibited';
 
+// 'prohibited' is a distinct, stronger category the classifier emits for
+// policy-breaching apps/sites (audit M10). Without a chip for it, admins had no
+// way to see prohibited items at all, and the "Unproductive" filter missed them
+// (the tabs also treat 'unproductive' as including 'prohibited' — see their
+// match logic — so filtering Unproductive now surfaces the worst offenders too).
 const CATEGORIES: { value: CategoryFilter; label: string; tone?: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'productive', label: 'Productive', tone: 'var(--d-success)' },
   { value: 'neutral', label: 'Neutral', tone: 'var(--d-neutral)' },
   { value: 'unproductive', label: 'Unproductive', tone: 'var(--d-danger)' },
+  { value: 'prohibited', label: 'Prohibited', tone: 'var(--d-danger)' },
 ];
 
 type Props = {

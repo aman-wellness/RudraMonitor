@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import ErrorBoundary from '@/components/feature/ErrorBoundary';
 
 // Set to `true` for any descendant rendered inside a real DashboardLayout
 // chrome. Nested <DashboardLayout> instances read this and skip rendering
@@ -13,7 +14,7 @@ const DashboardLayoutMounted = createContext(false);
 import { kindColor, prettyKind } from '@/lib/labels';
 import { useTheme } from '@/context/ThemeContext';
 import { useAuth } from '@/context/AuthContext';
-import { useAlerts } from '@/lib/dataHooks';
+import { useAlerts, useUnresolvedAlertCount } from '@/lib/dataHooks';
 import { useAppRole } from '@/lib/useAppRole';
 import { useOrgRole } from '@/lib/useOrgRole';
 import { useFeatures, type FeatureCode } from '@/lib/useFeatures';
@@ -204,7 +205,12 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
   const [notifOpen, setNotifOpen] = useState(false);
   const { isDark, toggleTheme } = useTheme();
   const { user, organization, signOut } = useAuth();
-  const { rows: alertRows } = useAlerts({ sinceHours: 24, limit: 5 });
+  // Rows (for the notifications dropdown list) + an EXACT unresolved count (for
+  // the badge). The badge count comes from a COUNT query, not from the number
+  // of fetched rows — that's why it can show the true total instead of being
+  // capped by a fetch `limit` (the old `limit: 5` was why it was stuck at "5").
+  const { rows: alertRows } = useAlerts({ sinceHours: 24 * 7, limit: 50 });
+  const { count: unresolvedAlertCount } = useUnresolvedAlertCount();
   const { role: appRole } = useAppRole();
   const features = useFeatures();
   const appAccess = useAppAccess();
@@ -377,7 +383,7 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
   // Only the alert nav row carries a count today; keyed by href so adding more
   // later doesn't mean touching the row renderer.
   const badgeFor = (href: string) =>
-    href === '/alerts' && unresolvedAlerts.length > 0 ? unresolvedAlerts.length : null;
+    href === '/alerts' && unresolvedAlertCount > 0 ? unresolvedAlertCount : null;
 
   // Header title follows the route instead of being hardcoded, so the chrome
   // says "Dashboard" on /dashboard and "Reports" on /reports. Longest-prefix
@@ -600,9 +606,9 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
                 aria-label="Notifications"
               >
                 <i className="ri-notification-3-line text-[17px]" />
-                {unresolvedAlerts.length > 0 && (
+                {unresolvedAlertCount > 0 && (
                   <span className="s-badge absolute top-0.5 right-0.5">
-                    {unresolvedAlerts.length > 9 ? '9+' : unresolvedAlerts.length}
+                    {unresolvedAlertCount > 99 ? '99+' : unresolvedAlertCount}
                   </span>
                 )}
               </button>
@@ -668,8 +674,16 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
             {/* Layout-route render path: the child route's element appears
                 here without remounting the surrounding sidebar/header.
                 Legacy fallback: if a page still passes `children`, render
-                those instead. The two never both exist for the same page. */}
-            {children ?? <Outlet />}
+                those instead. The two never both exist for the same page.
+
+                Route-level ErrorBoundary (audit H15): a render crash in one
+                page is contained to this content area — the sidebar/header/nav
+                survive instead of the whole dashboard going to the error
+                screen. Keyed on the path so navigating to another page
+                automatically clears the error (remounts the boundary). */}
+            <ErrorBoundary key={location.pathname}>
+              {children ?? <Outlet />}
+            </ErrorBoundary>
           </div>
         </main>
       </div>
@@ -742,7 +756,7 @@ function SidebarSectionView({
             {/* Surface the children's count on the parent whenever those
                 children aren't visible — closed, or hidden by the rail. */}
             {groupBadge > 0 && (!open || collapsed) && (
-              <span className="s-badge">{groupBadge > 9 ? '9+' : groupBadge}</span>
+              <span className="s-badge">{groupBadge > 99 ? '99+' : groupBadge}</span>
             )}
             <i className={`s-chev ri-arrow-right-s-line ${open ? 'is-open' : ''}`} />
           </button>
@@ -808,7 +822,7 @@ function SidebarRow({
     >
       <i className={`s-ico ${link.icon}`} />
       <span className="s-label">{link.label}</span>
-      {badge !== null && <span className="s-badge">{badge > 9 ? '9+' : badge}</span>}
+      {badge !== null && <span className="s-badge">{badge > 99 ? '99+' : badge}</span>}
     </Link>
   );
 }

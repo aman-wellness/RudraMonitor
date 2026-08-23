@@ -81,6 +81,16 @@ async function process(notifs: Notification[]): Promise<void> {
     seen.add(key);
 
     // Resolve the orgId by looking up which org owns this subscriptionId.
+    // SECURITY (audit M21): subscriptionId comes from the request body and is
+    // interpolated into a raw PostgREST .or() filter. A crafted value like
+    // `x,webhook_secret.is.null` could alter the row-selection filter to match a
+    // row whose clientState check is then skipped. Graph subscription ids are
+    // GUIDs, so reject anything that isn't GUID-shaped before it reaches the
+    // filter — commas, dots and operators (what .or() parses) can't get through.
+    if (!/^[0-9a-fA-F-]{20,64}$/.test(String(n.subscriptionId ?? ""))) {
+      console.warn(`[m365-webhook] rejecting malformed subscriptionId`);
+      continue;
+    }
     // We store BOTH subscription_id_users and subscription_id_groups on the
     // same row so a single .or() query handles either.
     const { data: orgRow } = await admin

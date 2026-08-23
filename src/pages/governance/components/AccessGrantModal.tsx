@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import { notify } from '@/lib/notify';
 import ModalShell from './ModalShell';
 import { RolePill } from './Pill';
 import type { GovPillarPlatform, GovAccessRegister, GovRole, OrgUser } from '../types';
@@ -137,15 +138,28 @@ export default function AccessGrantModal({ platform, users, existing, onSaved, o
     const { data: session } = await supabase.auth.getSession();
     const token = session?.session?.access_token;
     const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/gov-access-register-save`;
-    await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        apikey: import.meta.env.VITE_SUPABASE_ANON_KEY as string,
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ row_ids: ids, mark_reviewed: true }),
-    });
+    // Audit M28: check the response before reporting success. This previously
+    // called onSaved() unconditionally, so a failed "mark reviewed" (4xx/5xx)
+    // was shown to the user as done — a silent no-op on a compliance surface.
+    let resp: Response;
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: import.meta.env.VITE_SUPABASE_ANON_KEY as string,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ row_ids: ids, mark_reviewed: true }),
+      });
+    } catch (e) {
+      notify.error('Failed to mark reviewed', { description: String((e as Error).message) });
+      return;
+    }
+    if (!resp.ok) {
+      notify.error('Failed to mark reviewed', { description: `Server returned ${resp.status}` });
+      return;
+    }
     onSaved();
   };
 

@@ -286,12 +286,19 @@ async fn poll_once(state: &AppState, since: &str) -> Result<Option<String>> {
                 continue;
             }
         };
-        let sdp = msg
-            .payload
-            .get("sdp")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("offer missing sdp"))?
-            .to_string();
+        // A malformed offer (no sdp) must be SKIPPED, not error out of the poll
+        // (audit H11). Returning Err here left the poll cursor un-advanced, so
+        // the same bad row was re-fetched and re-failed every 10s forever,
+        // blocking every valid offer behind it — one bad message permanently
+        // wedged Live/Remote until agent restart. `continue` advances past it
+        // (newest was already set at the top of the loop).
+        let sdp = match msg.payload.get("sdp").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => {
+                log::warn!("webrtc: offer dropped — missing sdp (session {session_id})");
+                continue;
+            }
+        };
         log::info!("webrtc: offer received for session {}", session_id);
         // Handle the session in a dedicated task so the polling loop keeps
         // running. A flaky connection can stall for tens of seconds during
@@ -493,7 +500,15 @@ async fn handle_session(
             let reload = reload_for_dc.clone();
             Box::pin(async move {
                 log::info!("webrtc: data channel '{}' attached", dc.label());
-                attach_control_channel(dc, params, reload);
+                // The dashboard opens two channels: "control" (mouse/keyboard/
+                // clipboard, latency-sensitive) and "file" (operator→machine
+                // small-file transfer). Keep them apart so a file transfer can
+                // never sit in front of a keystroke on the ordered channel.
+                if dc.label() == "file" {
+                    attach_file_channel(dc);
+                } else {
+                    attach_control_channel(dc, params, reload);
+                }
             })
         }));
     }
@@ -1334,8 +1349,35 @@ pub(crate) enum InboundMsg {
 }
 
 pub(crate) fn screen_dims() -> (i32, i32) {
-    // Use xcap (already a dep for screenshots) to get the primary monitor's
-    // logical pixel size. Same display the ffmpeg capture is reading from.
+    // WINDOWS: return exactly what enigo's `Coordinate::Abs` divides by.
+    //
+    // enigo (win_impl.rs) maps an absolute target with
+    //   dx = x * 65535 / GetSystemMetrics(SM_CXSCREEN)
+    // and injects it via SendInput | MOUSEEVENTF_ABSOLUTE. For the cursor to
+    // land where the operator clicked we must hand it `norm * SM_CXSCREEN`, so
+    // that enigo's division cancels back to `norm * 65535` (a fraction of the
+    // primary monitor). xcap instead reports the monitor's *physical* pixels,
+    // which do NOT equal SM_CXSCREEN once the display uses DPI scaling
+    // (125/150/175 %) under a DPI-unaware process — the two disagree by the
+    // scale factor and the cursor lands progressively further from the click
+    // toward the right/bottom edge. That mismatch is the "I click here, the
+    // pointer jumps there / it's not stable" report. Reading the SAME metric
+    // enigo reads makes the mapping exact at any DPI, since both calls run in
+    // this one process and return identical values.
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
+        };
+        let w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+        let h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+        if w > 0 && h > 0 {
+            return (w, h);
+        }
+        log::warn!("screen_dims: GetSystemMetrics returned {w}x{h}, falling back to xcap");
+    }
+    // macOS / Linux (and the Windows fallback): xcap's primary-monitor size.
+    // Same display the ffmpeg capture is reading from.
     match xcap::Monitor::all() {
         Ok(mons) => {
             let mon = mons.iter().find(|m| m.is_primary().unwrap_or(false))
@@ -1483,4 +1525,170 @@ async fn handle_control_msg(
             reload_flag.store(true, std::sync::atomic::Ordering::SeqCst);
         }
     }
+}
+
+// ------------ Small-file transfer data channel ("file") ------------
+//
+// The dashboard opens a SECOND data channel, "file", used only to push a small
+// file from the operator to the employee's machine (drag-drop or "Send file").
+// It is deliberately separate from "control" so a transfer never delays a
+// keystroke on the ordered input channel.
+//
+// Wire protocol on this channel:
+//   • TEXT  {"t":"file_begin","name":..,"size":..}  — start; size in bytes.
+//   • BINARY chunks (raw bytes, in order) until `size` bytes have arrived.
+//   • TEXT  {"t":"file_end"}                         — finish; agent writes it.
+//   • TEXT  {"t":"file_cancel"}                      — abort the in-flight one.
+// The agent replies TEXT {"t":"file_ack","ok":bool,"saved_as":..,"error":..}.
+//
+// The received file is written into the employee's Downloads folder under a
+// sanitized, de-duplicated name. Capped so a hostile/buggy dashboard cannot
+// fill the disk over this channel.
+
+const MAX_FILE_BYTES: u64 = 25 * 1024 * 1024; // 25 MB
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "t", rename_all = "snake_case")]
+enum FileMsg {
+    FileBegin { name: String, #[serde(default)] size: u64 },
+    FileEnd,
+    FileCancel,
+}
+
+struct FileXfer {
+    name: String,
+    limit: u64, // declared size, clamped to MAX_FILE_BYTES
+    buf: Vec<u8>,
+    aborted: bool,
+}
+
+/// basename only, with characters illegal on Windows/macOS stripped, so a
+/// dashboard cannot use the name to escape the Downloads directory.
+fn sanitize_filename(raw: &str) -> String {
+    let base = raw
+        .rsplit(|c| c == '/' || c == '\\')
+        .next()
+        .unwrap_or("");
+    let cleaned: String = base
+        .chars()
+        .filter(|c| !c.is_control() && !matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.').trim();
+    if trimmed.is_empty() {
+        "remote-file".to_string()
+    } else {
+        // Keep the name bounded.
+        trimmed.chars().take(180).collect()
+    }
+}
+
+/// Downloads dir + a name that does not clobber an existing file.
+fn save_incoming_file(name: &str, data: &[u8]) -> std::io::Result<String> {
+    let dir = dirs::download_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join("Downloads")))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let _ = std::fs::create_dir_all(&dir);
+
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 => (&name[..i], &name[i..]),
+        _ => (name, ""),
+    };
+    let mut candidate = dir.join(name);
+    let mut n = 1u32;
+    while candidate.exists() {
+        candidate = dir.join(format!("{stem} ({n}){ext}"));
+        n += 1;
+        if n > 9999 {
+            break;
+        }
+    }
+    std::fs::write(&candidate, data)?;
+    Ok(candidate.display().to_string())
+}
+
+pub(crate) fn attach_file_channel(dc: Arc<RTCDataChannel>) {
+    let state: Arc<std::sync::Mutex<Option<FileXfer>>> = Arc::new(std::sync::Mutex::new(None));
+    let dc_msg = Arc::clone(&dc);
+    dc.on_message(Box::new(move |m: DataChannelMessage| {
+        let dc = dc_msg.clone();
+        let state = state.clone();
+        Box::pin(async move {
+            if m.is_string {
+                let text = match std::str::from_utf8(&m.data) {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                let msg: FileMsg = match serde_json::from_str(text) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        log::warn!("file: bad json {e}: {text}");
+                        return;
+                    }
+                };
+                match msg {
+                    FileMsg::FileBegin { name, size } => {
+                        if size > MAX_FILE_BYTES {
+                            *state.lock().unwrap() = None;
+                            let reply = json!({
+                                "t": "file_ack", "ok": false,
+                                "error": format!("file too large (max {} MB)", MAX_FILE_BYTES / 1024 / 1024)
+                            });
+                            let _ = dc.send_text(reply.to_string()).await;
+                            return;
+                        }
+                        let clean = sanitize_filename(&name);
+                        let cap = size.min(MAX_FILE_BYTES) as usize;
+                        *state.lock().unwrap() = Some(FileXfer {
+                            name: clean,
+                            limit: size.min(MAX_FILE_BYTES),
+                            buf: Vec::with_capacity(cap),
+                            aborted: false,
+                        });
+                        log::info!("file: begin '{name}' {size} bytes");
+                    }
+                    FileMsg::FileEnd => {
+                        let xfer = state.lock().unwrap().take();
+                        let Some(xfer) = xfer else { return };
+                        if xfer.aborted {
+                            let reply = json!({"t":"file_ack","ok":false,"error":"transfer exceeded declared size"});
+                            let _ = dc.send_text(reply.to_string()).await;
+                            return;
+                        }
+                        let saved_name = xfer.name.clone();
+                        let buf = xfer.buf;
+                        let res = tokio::task::spawn_blocking(move || save_incoming_file(&saved_name, &buf)).await;
+                        let reply = match res {
+                            Ok(Ok(saved)) => {
+                                log::info!("file: saved -> {saved}");
+                                json!({"t":"file_ack","ok":true,"name":xfer.name,"saved_as":saved})
+                            }
+                            Ok(Err(e)) => {
+                                log::warn!("file: save failed: {e}");
+                                json!({"t":"file_ack","ok":false,"error":"could not save file on the remote machine"})
+                            }
+                            Err(e) => {
+                                log::warn!("file: save task failed: {e}");
+                                json!({"t":"file_ack","ok":false,"error":"could not save file on the remote machine"})
+                            }
+                        };
+                        let _ = dc.send_text(reply.to_string()).await;
+                    }
+                    FileMsg::FileCancel => {
+                        *state.lock().unwrap() = None;
+                    }
+                }
+            } else {
+                // Binary chunk — append, guarding against a stream that runs past
+                // its declared size (small slack for the final partial chunk).
+                let mut guard = state.lock().unwrap();
+                if let Some(x) = guard.as_mut() {
+                    if x.buf.len() as u64 + m.data.len() as u64 > x.limit + 65_536 {
+                        x.aborted = true;
+                    } else {
+                        x.buf.extend_from_slice(&m.data[..]);
+                    }
+                }
+            }
+        })
+    }));
 }

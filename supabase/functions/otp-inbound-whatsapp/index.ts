@@ -45,9 +45,17 @@ Deno.serve(async (req) => {
 
   // Optional signature verification — Meta sends `X-Hub-Signature-256:
   // sha256=<hex>` computed over the raw body with the app-secret.
+  // SECURITY (audit H7): when the app secret is configured, the signature is
+  // MANDATORY. The former `appSecret && sigHeader.startsWith(...)` meant an
+  // attacker who simply OMITTED the header skipped verification entirely and
+  // could forge inbound messages that fulfil a pending OTP. Now a missing or
+  // malformed signature is rejected whenever a secret is set.
   const appSecret = await getIntegration("WHATSAPP_APP_SECRET").catch(() => "");
   const sigHeader = req.headers.get("x-hub-signature-256") ?? "";
-  if (appSecret && sigHeader.startsWith("sha256=")) {
+  if (appSecret) {
+    if (!sigHeader.startsWith("sha256=")) {
+      return json({ error: "missing signature" }, 401);
+    }
     const expected = `sha256=${await hmacSha256Hex(appSecret, raw)}`;
     if (!constantTimeEq(expected, sigHeader)) {
       return json({ error: "bad signature" }, 401);

@@ -23,37 +23,27 @@ Deno.serve(async (req) => {
 
   const url = new URL(req.url);
   const state = (url.searchParams.get("state") ?? "").trim();
-  const latest = url.searchParams.get("latest") === "true";
 
-  if (!state && !latest) {
-    return json({ error: "state OR latest=true required" }, 400);
+  // SECURITY FIX (audit C3): the former `latest=true` mode returned the most
+  // recent handoff row to ANY caller with no secret — during any user's login
+  // an attacker could poll and grab their one-time OAuth code, taking over the
+  // account. It has been removed. Retrieval now REQUIRES the caller's own PKCE
+  // `state` (a ~128-bit secret generated client-side and known only to the
+  // originating app), so only the app that started the flow can collect its
+  // code. The mobile client must use the PKCE (state-keyed) flow; an
+  // implicit-flow client that relied on `latest=true` must be updated to pass
+  // its state.
+  if (!state) {
+    return json({ error: "state required" }, 400);
+  }
+  // Reject absurd values early — state is a fixed-size random string.
+  if (state.length > 512) {
+    return json({ error: "invalid state" }, 400);
   }
 
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
-
-  // Two modes:
-  //   - state-keyed: PKCE flow where the app knows the state value
-  //     because supabase-js generated it client-side.
-  //   - latest=true: implicit flow where the state in the hash is
-  //     server-generated and the app doesn't know it. The app polls
-  //     for ANY entry deposited in the last 60 sec — fine for single-
-  //     device single-flow which is always the case on a phone.
-  if (latest) {
-    const { data, error } = await admin
-      .from("oauth_mobile_handoff")
-      .select("state, code")
-      .gte("created_at", new Date(Date.now() - 60_000).toISOString())
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (error) return json({ error: error.message }, 500);
-    if (!data?.code) return json({ ready: false }, 404);
-    // Delete by primary key (state) so the code isn't replayed.
-    await admin.from("oauth_mobile_handoff").delete().eq("state", data.state);
-    return json({ ready: true, code: data.code });
-  }
 
   // Atomic read-and-delete via DELETE ... RETURNING. PostgREST exposes
   // DELETE with `select` to get the deleted row back.

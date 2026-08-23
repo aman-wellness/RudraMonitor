@@ -299,7 +299,11 @@ async fn poll_get_id(bin: &PathBuf, total: Duration) -> Result<String> {
 fn derive_pass(token: &str) -> String {
     use sha2::{Digest, Sha256};
     let h = Sha256::digest(token.as_bytes());
-    hex::encode(&h[..4]) // 8 hex chars
+    // 16 bytes → 32 hex chars ≈ 128-bit search space (audit M16). The previous
+    // 4 bytes (8 hex / 32-bit) was brute-forceable for anyone who could reach
+    // the agent's RustDesk ID. The agent reports this value up to the dashboard,
+    // so lengthening it stays consistent end to end.
+    hex::encode(&h[..16])
 }
 
 async fn run_cli_with_timeout(bin: &PathBuf, args: &[&str], t: Duration) -> Result<std::process::Output> {

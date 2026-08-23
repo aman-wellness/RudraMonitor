@@ -45,6 +45,15 @@ Deno.serve(async (req) => {
     .eq("id", empId).maybeSingle();
   if (!emp) return json({ error: "employee not found" }, 404);
   const e = emp as { org_id: string; full_name: string; m365_user_id: string | null };
+
+  // SECURITY (audit H8): bind the caller to the employee's org. Without this,
+  // any authenticated user of any org could pass another org's employee_id and
+  // read that org's live M365 directory/manager data (the function uses the
+  // service role, bypassing RLS).
+  const { data: mem } = await admin.from("org_members")
+    .select("org_id").eq("user_id", u.user.id).eq("org_id", e.org_id).maybeSingle();
+  if (!mem) return json({ error: "not authorised for this org" }, 403);
+
   if (!e.m365_user_id) return json({ error: "employee has no m365_user_id (not linked to M365)" }, 400);
 
   const { accessToken } = await graphTokenFor(e.org_id);
