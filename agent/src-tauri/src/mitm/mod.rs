@@ -25,6 +25,7 @@ use tokio::sync::Notify;
 
 mod cert_authority;
 mod interceptor;
+mod multipart;
 mod providers;
 mod proxy;
 mod system_proxy;

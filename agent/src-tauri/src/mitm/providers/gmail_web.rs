@@ -112,19 +112,51 @@ impl EmailProvider for GmailWeb {
         // multipart form-data shape, `body` would need to be de-
         // multipart-ed — deferred; the row still lands with the name
         // and handle so admins see the upload happened.
-        let is_octet = file_mime
-            .as_deref()
-            .map(|m| m.eq_ignore_ascii_case("application/octet-stream")
-                || m.starts_with("image/")
-                || m.starts_with("application/pdf")
-                || m.starts_with("application/zip"))
-            .unwrap_or(false);
-        let bytes: Vec<u8> = if is_octet { body.to_vec() } else { Vec::new() };
+        let mime_str = file_mime.as_deref().unwrap_or("");
+        let is_octet = mime_str.eq_ignore_ascii_case("application/octet-stream")
+            || mime_str.starts_with("image/")
+            || mime_str.starts_with("application/pdf")
+            || mime_str.starts_with("application/zip");
+        let is_multipart = mime_str.starts_with("multipart/form-data");
+
+        // Bytes source per shape:
+        //   - octet-stream / image / pdf / zip: raw body IS the file.
+        //   - multipart/form-data (older Gmail): walk parts, pick the
+        //     first one with a filename attribute.
+        //   - anything else: leave empty; row still lands with name.
+        let (bytes, refined_name, refined_mime, refined_size) = if is_octet {
+            (
+                body.to_vec(),
+                file_name.clone(),
+                file_mime.clone(),
+                body.len() as u64,
+            )
+        } else if is_multipart {
+            let boundary = super::super::multipart::boundary_of(mime_str);
+            if let Some(b) = boundary {
+                let parts = super::super::multipart::parse(body, &b);
+                let file_part = parts.iter().find(|p| p.filename().is_some());
+                match file_part {
+                    Some(fp) => (
+                        fp.body.to_vec(),
+                        fp.filename().unwrap_or_else(|| file_name.clone()),
+                        fp.header("content-type").map(str::to_string),
+                        fp.body.len() as u64,
+                    ),
+                    None => (Vec::new(), file_name.clone(), file_mime.clone(), 0),
+                }
+            } else {
+                (Vec::new(), file_name.clone(), file_mime.clone(), 0)
+            }
+        } else {
+            (Vec::new(), file_name.clone(), file_mime.clone(), 0)
+        };
+
         Some(UploadedFile {
             handle,
-            file_name,
-            file_size_bytes: body.len() as u64,
-            file_mime,
+            file_name: refined_name,
+            file_size_bytes: refined_size,
+            file_mime: refined_mime,
             bytes,
         })
     }

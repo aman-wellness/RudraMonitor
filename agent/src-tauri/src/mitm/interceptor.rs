@@ -187,20 +187,13 @@ pub async fn intercept(
             }
         }
 
-        // Response: forward until we've delivered the whole response.
-        // The pragmatic approach for HTTP/1.1 is "read until upstream
-        // half-closes OR N-second idle" — we defer parsing Content-
-        // Length / Transfer-Encoding on the response for MVP because
-        // the client is going to parse it itself and half-close on its
-        // own read.
-        //
-        // Instead: use copy_bidirectional-style split — half-copy from
-        // upstream to client until upstream half-closes, then bail.
-        // That works when want_close is true. For keep-alive, we do a
-        // best-effort single-response forward and re-enter the loop.
-        forward_one_response(&mut upstream_tls, &mut client_tls).await?;
+        // Response: forward with proper HTTP/1.1 framing so we know
+        // exactly when the body ends and can cycle to the next request
+        // on the same session. Returns true if the response signalled
+        // Connection: close.
+        let close_after = forward_one_response(&mut upstream_tls, &mut client_tls).await?;
 
-        if want_close {
+        if want_close || close_after {
             break;
         }
     }
@@ -289,39 +282,140 @@ fn parse_headers_kv(head: &[u8]) -> Vec<(String, String)> {
         .collect()
 }
 
-async fn forward_one_response<C, U>(upstream: &mut U, client: &mut C) -> Result<()>
+/// Forward a single HTTP/1.1 response from upstream to client with
+/// proper framing — Content-Length OR Transfer-Encoding: chunked OR
+/// read-until-EOF, whichever the response declares. Replaces the
+/// idle-timeout heuristic from Phase 4c so keep-alive request
+/// pipelining works and we don't stall the browser on slow servers.
+///
+/// Returns `Ok(true)` when the response signalled Connection: close;
+/// caller should terminate the session.
+async fn forward_one_response<C, U>(upstream: &mut U, client: &mut C) -> Result<bool>
 where
     C: tokio::io::AsyncWrite + Unpin,
     U: tokio::io::AsyncRead + Unpin,
 {
-    let mut buf = [0u8; 32 * 1024];
-    loop {
-        let n = upstream.read(&mut buf).await?;
-        if n == 0 {
-            break;
+    // Read until end of response head.
+    let mut head_buf: Vec<u8> = Vec::with_capacity(4096);
+    let mut chunk = [0u8; 8192];
+    let hdr_end = loop {
+        if let Some(end) = find_headers_end(&head_buf) {
+            break end;
         }
-        client.write_all(&buf[..n]).await?;
-        // Poor-man's end-of-response detection: if the upstream stops
-        // sending for 200ms we assume the response is done. Full HTTP/
-        // 1.1 framing (Content-Length + Transfer-Encoding) is deferred
-        // — Phase 4b will replace this with a proper hyper server so
-        // keep-alive request pipelining works.
-        if let Ok(Ok(peek)) = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            tokio::io::AsyncReadExt::read(upstream, &mut buf),
-        )
-        .await
-        {
-            if peek == 0 {
+        if head_buf.len() > 128 * 1024 {
+            return Err(anyhow!("response head too large"));
+        }
+        let n = upstream.read(&mut chunk).await?;
+        if n == 0 {
+            // Upstream closed before sending a full response head —
+            // pass through what we have and stop the session.
+            if !head_buf.is_empty() {
+                client.write_all(&head_buf).await?;
+            }
+            return Ok(true);
+        }
+        head_buf.extend_from_slice(&chunk[..n]);
+    };
+
+    // Parse framing directives before we start forwarding — so we know
+    // when to stop reading upstream for THIS response and cycle to the
+    // next request on the same session.
+    let (content_length, is_chunked, close_after) = {
+        let mut hdrs = [httparse::EMPTY_HEADER; 64];
+        let mut resp = httparse::Response::new(&mut hdrs);
+        let _ = resp.parse(&head_buf[..hdr_end])?;
+        let mut cl: Option<usize> = None;
+        let mut chunked = false;
+        let mut close = false;
+        for h in resp.headers.iter() {
+            if h.name.eq_ignore_ascii_case("content-length") {
+                cl = std::str::from_utf8(h.value)
+                    .ok()
+                    .and_then(|s| s.trim().parse().ok());
+            }
+            if h.name.eq_ignore_ascii_case("transfer-encoding")
+                && std::str::from_utf8(h.value)
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+                    .contains("chunked")
+            {
+                chunked = true;
+            }
+            if h.name.eq_ignore_ascii_case("connection")
+                && std::str::from_utf8(h.value)
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+                    .contains("close")
+            {
+                close = true;
+            }
+        }
+        (cl, chunked, close)
+    };
+
+    // Forward the head.
+    client.write_all(&head_buf[..hdr_end]).await?;
+    // Anything the head-read overshot into the buffer is the beginning
+    // of the body — forward it up front and treat as "already read".
+    let overshoot = &head_buf[hdr_end..];
+    let mut already_read: usize = overshoot.len();
+    if !overshoot.is_empty() {
+        client.write_all(overshoot).await?;
+    }
+
+    // ---- body forwarding ----
+    if is_chunked {
+        // Chunked-encoding: forward until the terminating 0\r\n\r\n.
+        // We don't need to fully parse; just stream through and watch
+        // for the 5-byte sentinel across bytes-as-they-arrive.
+        let mut trailing: Vec<u8> = overshoot.to_vec();
+        loop {
+            if trailing.windows(5).any(|w| w == b"0\r\n\r\n") {
                 break;
             }
-            client.write_all(&buf[..peek]).await?;
-        } else {
-            break;
+            let n = upstream.read(&mut chunk).await?;
+            if n == 0 {
+                break;
+            }
+            client.write_all(&chunk[..n]).await?;
+            trailing.extend_from_slice(&chunk[..n]);
+            // Bound the sliding buffer so a long chunked response
+            // doesn't accumulate GBs in RAM — keep the last 8 bytes
+            // for the sentinel match.
+            if trailing.len() > 8 {
+                let drop = trailing.len() - 8;
+                trailing.drain(..drop);
+            }
         }
+    } else if let Some(cl) = content_length {
+        // Read the declared number of bytes minus whatever we already
+        // pulled with the head-read overshoot.
+        let mut remaining = cl.saturating_sub(already_read);
+        while remaining > 0 {
+            let take = remaining.min(chunk.len());
+            let n = upstream.read(&mut chunk[..take]).await?;
+            if n == 0 {
+                break;
+            }
+            client.write_all(&chunk[..n]).await?;
+            remaining -= n;
+            already_read += n;
+        }
+    } else {
+        // No Content-Length, no chunked encoding: read-until-EOF.
+        // Signals a Connection: close response by RFC.
+        loop {
+            let n = upstream.read(&mut chunk).await?;
+            if n == 0 {
+                break;
+            }
+            client.write_all(&chunk[..n]).await?;
+        }
+        return Ok(true);
     }
+
     let _ = client.flush().await;
-    Ok(())
+    Ok(close_after)
 }
 
 /// Fire-and-forget hand-off from the interceptor to the DLP ingest
