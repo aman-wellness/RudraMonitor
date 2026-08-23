@@ -47,6 +47,32 @@ import { corsHeaders } from "../_shared/cors.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+// Signed URLs come out of the Storage API pointing at whatever host was
+// used to mint them (SUPABASE_URL). On self-hosted this is
+// `http://kong:8000` — reachable only inside the docker network. Rewrite
+// each URL to the public origin the agent can actually PUT to. Same
+// pattern the M365 realtime bridge uses to normalise Kong-internal URLs.
+const PUBLIC_API_URL =
+  Deno.env.get("API_EXTERNAL_URL") ??
+  Deno.env.get("SUPABASE_PUBLIC_URL") ??
+  "https://api-ems.wellnessextract.com";
+
+function publicise(url: string): string {
+  try {
+    const u = new URL(url);
+    const pub = new URL(PUBLIC_API_URL);
+    u.protocol = pub.protocol;
+    u.hostname = pub.hostname;
+    // Explicitly clear the source port (`:8000` from kong) before applying
+    // the public port. Setting hostname alone leaves the source URL's port
+    // in place, which produces api-ems.wellnessextract.com:8000 — nginx
+    // won't answer there.
+    u.port = pub.port;
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
 const ATTACHMENT_BUCKET = "dlp-email-attachments";
 const SCREENSHOT_BUCKET = "screenshots";
 // Matches the bucket file_size_limit set at creation time (25 MB).
@@ -237,7 +263,7 @@ async function handleOpen(
     upload_urls.push({
       attachment_id: att.id,
       file_name: a.file_name,
-      signed_url: signed.signedUrl,
+      signed_url: publicise(signed.signedUrl),
       storage_path,
     });
   }
