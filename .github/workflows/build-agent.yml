@@ -163,6 +163,14 @@ jobs:
           curl -fL --retry 3 "$URL" -o "$OUT"
           chmod +x "$OUT" || true
           ls -lh "$OUT"
+          # Sanity check — real ffmpeg is 25MB+, anything smaller means the
+          # bucket has a placeholder stub and we'd ship a broken agent
+          # (v0.6.26 shipped this way on macOS; screen video + Live died).
+          size=$(stat -c%s "$OUT" 2>/dev/null || stat -f%z "$OUT")
+          if [ "$size" -lt 5000000 ]; then
+            echo "::error::ffmpeg fetched from $URL is only $size bytes — bucket has a stub, refusing to ship"
+            exit 1
+          fi
 
       # Pull the per-platform RustDesk runtime tree from Supabase Storage's
       # `rustdesk` bucket (packaged by scripts/package-rustdesk.sh from the
