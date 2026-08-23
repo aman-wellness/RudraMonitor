@@ -175,14 +175,77 @@ pub const PUBLIC_WEBMAIL_HOSTS: &[&str] = &[
     "mail.yandex.com",
 ];
 
+/// Hosts we NEVER intercept even if they match `PUBLIC_WEBMAIL_HOSTS`
+/// or the interception check would otherwise say yes. Banking /
+/// payments / healthcare — TLS termination on these is both morally
+/// wrong and mostly futile because their mobile apps ship pinned
+/// certs that reject our leaves anyway. Desktop browsers to these
+/// hosts stay on the raw passthrough tunnel so a bank login still
+/// verifies against the real cert chain.
+///
+/// Not exhaustive — this is a floor, not a ceiling. Admins can extend
+/// via `dlp_settings.authorized_domains` (already used by the ingest
+/// side to whitelist trusted destinations).
+pub const PASSTHROUGH_BYPASS_HOSTS: &[&str] = &[
+    // Indian banks
+    "hdfcbank.com",
+    "sbi.co.in",
+    "icicibank.com",
+    "axisbank.com",
+    "kotak.com",
+    "yesbank.in",
+    "pnbindia.in",
+    "unionbankofindia.co.in",
+    "bankofbaroda.in",
+    "hdfcergo.com",
+    "iciciprulife.com",
+    // Payments
+    "razorpay.com",
+    "paytm.com",
+    "phonepe.com",
+    "googlepay.com",
+    "pay.google.com",
+    "stripe.com",
+    "paypal.com",
+    // Healthcare
+    "practo.com",
+    "apollo247.com",
+    "cowin.gov.in",
+    "abdm.gov.in",
+    // Government portals
+    "incometax.gov.in",
+    "gst.gov.in",
+    "irctc.co.in",
+    "digilocker.gov.in",
+    "uidai.gov.in",
+    // Our own backend — self-loop safety.
+    "wellnessextract.com",
+    "rudrans.com",
+];
+
+fn is_bypass_host(host: &str) -> bool {
+    let h = host.to_ascii_lowercase();
+    for banned in PASSTHROUGH_BYPASS_HOSTS {
+        if h == *banned || h.ends_with(&format!(".{banned}")) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Is the current CONNECT target a public webmail host we should
 /// terminate TLS on? Exact host or `.suffix` match — `foo.mail.google.com`
 /// matches `mail.google.com` so Gmail's assorted subdomains (which do
 /// exist for uploads / apis) all flow through the same interceptor.
 ///
 /// `outlook.office.com` is intentionally NOT on this list — corporate
-/// M365 stays out of the DLP scope.
+/// M365 stays out of the DLP scope. Banking / payments / healthcare in
+/// `PASSTHROUGH_BYPASS_HOSTS` are also filtered out even if they'd
+/// otherwise match (defensive; none currently overlap).
 pub fn is_public_webmail(host: &str) -> bool {
+    if is_bypass_host(host) {
+        return false;
+    }
     let h = host.to_ascii_lowercase();
     for known in PUBLIC_WEBMAIL_HOSTS {
         if h == *known || h.ends_with(&format!(".{known}")) {

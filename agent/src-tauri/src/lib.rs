@@ -119,6 +119,11 @@ const DEFAULT_SETTINGS: api::AgentSettings = api::AgentSettings {
     wallpaper_updated_at: None,
     tracking_schedule_enabled: false,
     tracking_schedule_json: None,
+    // Email DLP MITM defaults: OFF. Server side has to flip
+    // `email_intercept_public_only` true on the org's dlp_settings row
+    // AND the local consent has to be recorded before the proxy starts.
+    email_intercept_public_only: false,
+    email_body_capture: true,
 };
 
 // Threshold-based alerts: only fired once when crossing into elevated state, cleared when metric drops.
@@ -1405,6 +1410,17 @@ pub fn run() {
             // DLP watcher always starts but loops short-circuit when
             // settings.dlp_enabled is false — admin toggles from the dashboard.
             spawn_dlp_loop(state.clone());
+            // Email DLP MITM proxy — the full HTTPS-interception path.
+            // Multi-gated:
+            //   1. agent is enrolled
+            //   2. settings.dlp_enabled AND settings.email_intercept_public_only
+            //      (server-side flags — org must opt in via dashboard AND
+            //       have DLP in their plan)
+            //   3. local first-run consent has been recorded on this
+            //      endpoint (config::mitm_consent()). Absent = no proxy.
+            // Any failure below just SKIPS silently — the proxy staying
+            // off is always safer than starting it in a broken state.
+            spawn_mitm_gate(state.clone());
             // USB-block loop: enumerates removable volumes every 5s and unmounts
             // any new ones unless the agent is allowlisted. Always starts; the
             // loop itself reads settings.removable_disks_blocked each iteration.
@@ -1546,6 +1562,54 @@ fn spawn_dlp_loop(state: AppState) {
 }
 
 /// USB-block enforcement loop. Independent of DLP — DLP watches files
+/// Email DLP MITM gate.
+///
+/// Runs a short-poll loop that waits for all three enable conditions
+/// (enrollment + org opt-in + local consent) and then calls
+/// `mitm::start()` ONCE. After the proxy is up, this loop can exit —
+/// mitm has its own stop signal. If the org later flips
+/// `email_intercept_public_only` off, `mitm::stop()` will be called
+/// from the settings watcher (Phase 5b — for now the running proxy
+/// keeps going until the agent restarts).
+///
+/// Every failure path is a silent skip: setting the system proxy
+/// wrongly is a lot worse than not setting it at all.
+fn spawn_mitm_gate(state: AppState) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            // Preconditions in cheapest-first order.
+            let cfg = state.config.lock().await.clone();
+            let settings = state.settings.lock().await.clone();
+
+            let enrolled = cfg.enrollment.is_some();
+            let opted_in = settings.dlp_enabled && settings.email_intercept_public_only;
+            let consented = config::mitm_consent(&cfg);
+
+            if enrolled && opted_in && consented {
+                if let (Some(url), Some(anon), Some(enr)) = (
+                    config::supabase_url(&cfg),
+                    config::supabase_anon_key(&cfg),
+                    cfg.enrollment.as_ref().map(|e| e.enroll_token.clone()),
+                ) {
+                    let mcfg = mitm::MitmConfig {
+                        supabase_url: url,
+                        anon_key: anon,
+                        enroll_token: enr,
+                    };
+                    log::info!("mitm: gate satisfied — starting Email DLP proxy");
+                    if let Err(e) = mitm::start(mcfg).await {
+                        log::warn!("mitm: start() failed: {e}");
+                    }
+                    return; // start() is fire-and-forget internally
+                }
+            }
+            // Poll again once a minute — cheap; every check is a
+            // couple of mutex reads.
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        }
+    });
+}
+
 /// being copied; usb_block prevents the disk from being usable at all.
 /// Per-agent allowlist via `settings.removable_disks_blocked = false`,
 /// which also triggers auto-remount of anything we previously ejected.

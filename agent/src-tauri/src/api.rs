@@ -88,6 +88,18 @@ pub struct AgentSettings {
     /// hours (agent pauses all day).
     #[serde(default)]
     pub tracking_schedule_json: Option<String>,
+    /// Email DLP MITM proxy master switch. Only true when the org has
+    /// explicitly opted in AND the plan includes DLP — both checks
+    /// happen server-side in agent-settings so an expired subscription
+    /// silently disables interception without touching the row. Agent
+    /// gates `mitm::start()` on this + local consent.
+    #[serde(default)]
+    pub email_intercept_public_only: bool,
+    /// Jurisdictional toggle: when false the ingest edge fn strips
+    /// body_text / body_html before writing the row. Metadata (subject,
+    /// recipients, attachments) still lands.
+    #[serde(default = "default_true")]
+    pub email_body_capture: bool,
 }
 
 fn default_true() -> bool { true }
