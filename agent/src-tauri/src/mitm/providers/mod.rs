@@ -53,6 +53,32 @@ pub struct CapturedAttachment {
     pub file_name: String,
     pub file_size_bytes: Option<u64>,
     pub file_mime: Option<String>,
+    /// Handle the browser referenced in the send request (`att=XXX` in
+    /// Gmail's form body; upload session id for OWA/Graph). Empty for
+    /// providers where the send request already carried the bytes
+    /// inline (Outlook Live Graph shape).
+    pub handle: Option<String>,
+    /// Raw file bytes when the provider was able to capture them (via
+    /// the earlier upload POST in the same TLS session, or inline in
+    /// the send body). None means "referenced but bytes not captured"
+    /// — the row still lands with the file name so the admin can see
+    /// SOMETHING left the endpoint, just not what.
+    pub bytes: Option<Vec<u8>>,
+}
+
+/// A raw file the provider captured off an "attachment upload" request
+/// that came BEFORE the send in the same TLS session. Keyed by
+/// `handle` (Gmail's `att_XXX`, OWA's upload-session id, etc.); the
+/// send parser looks up handles it referenced and hydrates their
+/// `bytes` on the CapturedEmail. Provider-agnostic shape.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct UploadedFile {
+    pub handle: String,
+    pub file_name: String,
+    pub file_size_bytes: u64,
+    pub file_mime: Option<String>,
+    pub bytes: Vec<u8>,
 }
 
 /// One provider's parser. Every implementation is stateless — no
@@ -70,6 +96,26 @@ pub trait EmailProvider: Send + Sync {
     /// want to capture. Anything returning false gets forwarded
     /// untouched — the interceptor doesn't buffer or copy the body.
     fn is_send_request(&self, method: &str, path: &str, query: &str) -> bool;
+
+    /// True when this request is an attachment UPLOAD that we should
+    /// buffer + parse, so we can hydrate `att` handles later when the
+    /// send fires. Default false — providers opt in.
+    fn is_upload_request(&self, _method: &str, _path: &str, _query: &str) -> bool {
+        false
+    }
+
+    /// Parse an upload request. Providers that don't do out-of-band
+    /// uploads (Outlook Live Graph inlines the bytes in the send body)
+    /// leave this returning None. Called after `is_upload_request`
+    /// returns true; the body slice is the full buffered request body.
+    fn parse_upload(
+        &self,
+        _headers: &[(String, String)],
+        _query: &str,
+        _body: &[u8],
+    ) -> Option<UploadedFile> {
+        None
+    }
 
     /// Parse a send request's body. May return None if the shape
     /// doesn't match — the interceptor then still forwards the request

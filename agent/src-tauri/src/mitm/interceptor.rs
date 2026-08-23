@@ -19,6 +19,7 @@
 //! deliberately kept off the fast forward path (spawned as a detached
 //! task) so a slow ingest never stalls the user's browsing.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
@@ -27,7 +28,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
 
 use super::cert_authority::Authority;
-use super::providers::{self, CapturedEmail};
+use super::providers::{self, CapturedEmail, UploadedFile};
 
 /// Maximum size of any single request we buffer while parsing. Bodies
 /// larger than this get forwarded without a capture attempt — Gmail's
@@ -63,6 +64,13 @@ pub async fn intercept(
 
     let provider = providers::for_host(&host);
 
+    // Per-session state — attachment uploads observed BEFORE the send
+    // fires. Keyed by the provider's handle string (Gmail `attid`,
+    // OWA upload-session id, etc.). Bytes stay in memory only until
+    // the send correlates them; a Content-Length cap on uploads keeps
+    // this bounded.
+    let mut pending_uploads: HashMap<String, UploadedFile> = HashMap::new();
+
     // Simple HTTP/1.1 request loop. Keep-alive supported by re-entering
     // after each response; connection: close or a read of 0 bytes ends
     // the session.
@@ -81,10 +89,14 @@ pub async fn intercept(
             .as_ref()
             .map(|p| p.is_send_request(method.as_str(), path.as_str(), query.as_str()))
             .unwrap_or(false);
+        let want_upload_capture = provider
+            .as_ref()
+            .map(|p| p.is_upload_request(method.as_str(), path.as_str(), query.as_str()))
+            .unwrap_or(false);
 
-        // Read the body inline if we plan to capture, otherwise stream
-        // it straight upstream without buffering.
-        if want_capture && content_length <= MAX_CAPTURE_BODY_BYTES {
+        // Read the body inline if we plan to capture (either a send or
+        // an upload). Non-capture requests stream straight upstream.
+        if (want_capture || want_upload_capture) && content_length <= MAX_CAPTURE_BODY_BYTES {
             // Ensure the buffer already has at least the full body.
             let needed = headers_end + content_length;
             while client_buf.len() < needed {
@@ -97,14 +109,52 @@ pub async fn intercept(
             }
             let body = &client_buf[headers_end..headers_end + content_length];
 
-            // Parse + fire off the capture emit in the background.
-            if let Some(p) = provider.clone() {
-                let headers_vec = parse_headers_kv(&request_head);
-                if let Some(mut captured) = p.parse(&headers_vec, body) {
-                    // Backfill the URL from what we know.
-                    captured.mail_url =
-                        Some(format!("https://{host}{path}?{query}"));
-                    tokio::spawn(emit_capture(captured));
+            if want_upload_capture {
+                if let Some(p) = provider.clone() {
+                    let headers_vec = parse_headers_kv(&request_head);
+                    if let Some(upload) = p.parse_upload(&headers_vec, &query, body) {
+                        log::info!(
+                            "mitm: attachment upload captured — handle={} name={} size={} mime={:?}",
+                            upload.handle,
+                            upload.file_name,
+                            upload.file_size_bytes,
+                            upload.file_mime,
+                        );
+                        pending_uploads.insert(upload.handle.clone(), upload);
+                    }
+                }
+            }
+
+            if want_capture {
+                if let Some(p) = provider.clone() {
+                    let headers_vec = parse_headers_kv(&request_head);
+                    if let Some(mut captured) = p.parse(&headers_vec, body) {
+                        // Backfill the URL from what we know.
+                        captured.mail_url =
+                            Some(format!("https://{host}{path}?{query}"));
+                        // Hydrate attachments from the session's
+                        // pending uploads.
+                        for att in captured.attachments.iter_mut() {
+                            if let Some(handle) = &att.handle {
+                                if let Some(up) = pending_uploads.get(handle) {
+                                    att.file_name = up.file_name.clone();
+                                    att.file_size_bytes = Some(up.file_size_bytes);
+                                    att.file_mime = up.file_mime.clone();
+                                    if !up.bytes.is_empty() {
+                                        att.bytes = Some(up.bytes.clone());
+                                    }
+                                }
+                            }
+                        }
+                        // Drop the uploads we consumed so a follow-up
+                        // send in the same session doesn't double-count.
+                        for att in captured.attachments.iter() {
+                            if let Some(h) = &att.handle {
+                                pending_uploads.remove(h);
+                            }
+                        }
+                        tokio::spawn(emit_capture(captured));
+                    }
                 }
             }
 
@@ -367,22 +417,49 @@ async fn emit_capture(captured: CapturedEmail) {
 
     // ---- Phase 2: attachments ----
     //
-    // Attachment BYTES aren't captured by the Gmail parser yet — the
-    // /_/upload correlation lives in Phase 4c. When it lands, the
-    // bytes for each attachment will be attached to the CapturedEmail
-    // before this point; today the send row is created with the right
-    // count but the bucket has nothing yet. Finalize still runs so the
-    // event isn't stuck at ingest_state='pending'.
+    // The server minted a signed upload URL per attachment we declared
+    // in the manifest. PUT the captured bytes for each; skip
+    // attachments where the provider couldn't capture bytes (e.g.
+    // Gmail multipart shape that we haven't parsed yet) — the row
+    // still lands with the right file_name / count.
     let finalize_required = open_resp
         .get("finalize_required")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
+    if finalize_required {
+        if let Some(urls) = open_resp.get("upload_urls").and_then(|v| v.as_array()) {
+            for (i, u) in urls.iter().enumerate() {
+                let signed = match u.get("signed_url").and_then(|s| s.as_str()) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                let file_name = u
+                    .get("file_name")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("attachment");
+
+                // Match by index into the captured attachments — the
+                // manifest we sent up preserves order.
+                let att = match captured.attachments.get(i) {
+                    Some(a) => a,
+                    None => continue,
+                };
+                let bytes = match &att.bytes {
+                    Some(b) => b.clone(),
+                    None => continue, // parser couldn't grab bytes
+                };
+                let mime = att.file_mime.clone().unwrap_or_else(|| "application/octet-stream".to_string());
+                if let Err(e) = crate::api::dlp_email_upload(&client, signed, &mime, bytes).await {
+                    log::warn!("mitm: attachment PUT for {file_name} failed: {e}");
+                }
+            }
+        }
+    }
+
     if !finalize_required {
         return; // no attachments, event auto-ingested by open()
     }
-
-    // TODO(phase4c): iterate open_resp["upload_urls"] and PUT bytes.
 
     // ---- Phase 3: finalize ----
     if let Err(e) = crate::api::dlp_email_finalize(

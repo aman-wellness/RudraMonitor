@@ -148,10 +148,24 @@ impl EmailProvider for OutlookLive {
                             .or_else(|| a.get("contentType"))
                             .and_then(|c| c.as_str())
                             .map(str::to_string);
+                        // Outlook Live inlines the file bytes as
+                        // base64 inside the send body — decode here so
+                        // the interceptor can PUT them without a
+                        // separate correlation pass.
+                        let bytes = a
+                            .get("ContentBytes")
+                            .or_else(|| a.get("contentBytes"))
+                            .and_then(|c| c.as_str())
+                            .and_then(|b64| {
+                                use base64::Engine;
+                                base64::engine::general_purpose::STANDARD.decode(b64).ok()
+                            });
                         Some(CapturedAttachment {
                             file_name: name.to_string(),
                             file_size_bytes: size,
                             file_mime: mime,
+                            handle: None,
+                            bytes,
                         })
                     })
                     .collect::<Vec<_>>()

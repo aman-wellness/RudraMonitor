@@ -26,7 +26,7 @@
 //!   IDs as `file_name` placeholders so admins at least see "1
 //!   attachment sent, correlation pending".
 
-use super::{CapturedAttachment, CapturedEmail, EmailProvider};
+use super::{CapturedAttachment, CapturedEmail, EmailProvider, UploadedFile};
 
 pub struct GmailWeb;
 
@@ -55,6 +55,78 @@ impl EmailProvider for GmailWeb {
         // `act=sm` = send-message. Save-drafts (`sd`) and other
         // reactions (`del`, `star`, ...) all pass through untouched.
         query.split('&').any(|kv| kv == "act=sm")
+    }
+
+    fn is_upload_request(&self, method: &str, path: &str, _query: &str) -> bool {
+        // Gmail Web uploads attachments via a separate POST that lives
+        // under one of two paths depending on client generation:
+        //   /mail/u/{N}/uploads
+        //   /mail/u/{N}/?ui=2&...&view=att&...   (older)
+        //   /_/upload?...                        (newer chunked)
+        // We conservatively match anything containing `/upload` under
+        // /mail/ or the flat /_/upload prefix.
+        method == "POST"
+            && (path.contains("/upload") || path.starts_with("/_/upload"))
+    }
+
+    fn parse_upload(
+        &self,
+        headers: &[(String, String)],
+        query: &str,
+        body: &[u8],
+    ) -> Option<UploadedFile> {
+        // Handle to correlate with the eventual send request. Two known
+        // sources depending on Gmail's client build:
+        //   1. `attid` in the query string (older UI).
+        //   2. `X-Goog-Upload-File-Name` header + `upload-id` header
+        //      (newer chunked-upload API).
+        // We pick whichever exists.
+        let mut handle = query
+            .split('&')
+            .find_map(|kv| kv.strip_prefix("attid="))
+            .map(|s| s.to_string());
+
+        let mut file_name = query
+            .split('&')
+            .find_map(|kv| kv.strip_prefix("filename="))
+            .map(url_decode);
+
+        let mut file_mime: Option<String> = None;
+        for (k, v) in headers {
+            let lk = k.to_ascii_lowercase();
+            if lk == "content-type" {
+                file_mime = Some(v.trim().to_string());
+            }
+            if lk == "x-goog-upload-file-name" && file_name.is_none() {
+                file_name = Some(v.trim().to_string());
+            }
+            if (lk == "upload-id" || lk == "x-guploader-uploadid") && handle.is_none() {
+                handle = Some(v.trim().to_string());
+            }
+        }
+
+        let handle = handle?;
+        let file_name = file_name.unwrap_or_else(|| format!("upload-{handle}"));
+        // Bytes are the raw request body for the common
+        // `application/octet-stream` upload shape. For the older
+        // multipart form-data shape, `body` would need to be de-
+        // multipart-ed — deferred; the row still lands with the name
+        // and handle so admins see the upload happened.
+        let is_octet = file_mime
+            .as_deref()
+            .map(|m| m.eq_ignore_ascii_case("application/octet-stream")
+                || m.starts_with("image/")
+                || m.starts_with("application/pdf")
+                || m.starts_with("application/zip"))
+            .unwrap_or(false);
+        let bytes: Vec<u8> = if is_octet { body.to_vec() } else { Vec::new() };
+        Some(UploadedFile {
+            handle,
+            file_name,
+            file_size_bytes: body.len() as u64,
+            file_mime,
+            bytes,
+        })
     }
 
     fn parse(&self, headers: &[(String, String)], body: &[u8]) -> Option<CapturedEmail> {
@@ -150,6 +222,8 @@ impl EmailProvider for GmailWeb {
                 file_name: format!("attachment-{h}"),
                 file_size_bytes: None,
                 file_mime: None,
+                handle: Some(h),
+                bytes: None,
             })
             .collect();
 
