@@ -6,13 +6,16 @@ import {
   useLatestSystemMetrics,
   useProductivityPerAgent,
   useOrgProductivityDaily,
+  useDlpReport,
+  type DlpReportRow,
 } from '@/lib/dataHooks';
+import { formatBytes } from '@/pages/dlp/useDlp';
 
 // Departments rollup lives in Admin Portal → Departments tab.
 // System Health has its own sidebar entry (Insights → System Health).
 // Reports stays focused on the three report types managers actually
 // export: productivity, activity volume, and time tracking.
-type ReportTab = 'productivity' | 'activity' | 'time';
+type ReportTab = 'productivity' | 'activity' | 'time' | 'dlp';
 type ExportFormat = 'csv' | 'excel' | 'pdf';
 
 /* Tallest a trend bar can draw. The strip is h-32 (128px) and the labels above
@@ -24,12 +27,39 @@ const tabs: { id: ReportTab; label: string; icon: string; help: string }[] = [
   { id: 'productivity', label: 'Productivity', icon: 'ri-bar-chart-grouped-line', help: 'Per-agent productivity %, active hours, idle time. Top performers shown above.' },
   { id: 'activity',     label: 'Activity',     icon: 'ri-pulse-line',             help: 'How busy each agent has been — app switches, browser hits, screenshots captured.' },
   { id: 'time',         label: 'Time Tracking',icon: 'ri-time-line',              help: 'Session totals + idle breakdowns per agent. Use for billable-hour reports.' },
+  { id: 'dlp',          label: 'DLP',          icon: 'ri-shield-keyhole-line',    help: 'Data-loss events in the selected window — USB file transfers and email attachments, newest first.' },
 ];
 
 const formatHours = (sec: number) => {
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
   return `${h}h ${m.toString().padStart(2, '0')}m`;
+};
+
+// ─── DLP log helpers (shared by the table + the export) ───
+const dlpTypeLabel = (t: DlpReportRow['event_type']) =>
+  t === 'usb_transfer' ? 'USB' : 'Email';
+
+/** One-line "what moved where" for a DLP row. USB → device; email → from→to. */
+const dlpDetail = (r: DlpReportRow): string => {
+  if (r.event_type === 'usb_transfer') {
+    const dev = [r.device_name, r.device_type].filter(Boolean).join(' · ');
+    return r.device_serial ? `${dev || 'USB device'} (${r.device_serial})` : (dev || 'USB device');
+  }
+  const from = r.sender_email || '—';
+  const to = r.recipient_email || '—';
+  const via = r.mail_provider ? ` · ${r.mail_provider}` : '';
+  return `${from} → ${to}${via}`;
+};
+
+const dlpAuthLabel = (a: boolean | null) =>
+  a === false ? 'Unauthorized' : a === true ? 'Authorized' : '—';
+
+const SEV_TONE: Record<string, { bg: string; text: string }> = {
+  critical: { bg: 'bg-red-500/15', text: 'text-red-400' },
+  high: { bg: 'bg-orange-500/15', text: 'text-orange-400' },
+  medium: { bg: 'bg-amber-500/15', text: 'text-amber-400' },
+  low: { bg: 'bg-emerald-500/15', text: 'text-emerald-400' },
 };
 
 // Header "select all" checkbox. `indeterminate` can only be set via the
@@ -116,6 +146,8 @@ export default function ReportsPage() {
   // to, so it's a constant window now.
   const TREND_DAYS = 30;
   const { rows: dailyRows } = useOrgProductivityDaily(TREND_DAYS, 0);
+  // DLP log (USB + email) for the SAME window the tables use.
+  const { rows: dlpRows } = useDlpReport(rangeHours, rangeUntilHours);
 
   // All per-agent aggregates come from a single RPC call; each table just maps over them.
   const { agents, systemData, timeData, activityCounts, weeklyProductivity } = useMemo(() => {
@@ -204,6 +236,32 @@ export default function ReportsPage() {
       return matchesDept && matchesStatus && matchesSearch;
     });
   }, [agents, deptFilter, statusFilter, search]);
+
+  // agent → department, so DLP rows (which only carry agent_id) can honour the
+  // department filter and be labelled in the table/export.
+  const agentDeptById = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const a of dbAgents) m[a.id] = a.department?.trim() ? a.department : 'Unassigned';
+    return m;
+  }, [dbAgents]);
+
+  // DLP rows honour the search + department filters (status is agent-only and
+  // doesn't apply to an event log). Already time-scoped by the hook's window.
+  const filteredDlp = useMemo(() => {
+    const q = search.toLowerCase();
+    return dlpRows.filter((r) => {
+      const dept = agentDeptById[r.agent_id] ?? 'Unassigned';
+      const matchesDept = deptFilter === 'All' || dept === deptFilter;
+      const matchesSearch =
+        q === '' ||
+        r.agent_name.toLowerCase().includes(q) ||
+        (r.file_name ?? '').toLowerCase().includes(q) ||
+        (r.device_name ?? '').toLowerCase().includes(q) ||
+        (r.sender_email ?? '').toLowerCase().includes(q) ||
+        (r.recipient_email ?? '').toLowerCase().includes(q);
+      return matchesDept && matchesSearch;
+    });
+  }, [dlpRows, agentDeptById, deptFilter, search]);
 
   // Row selection. A set of agent ids the user has ticked in the table.
   // The selection persists across tab switches (it's keyed on agent, not
@@ -339,12 +397,35 @@ export default function ReportsPage() {
             ];
           }),
         };
+      case 'dlp':
+        // Event log, not per-agent — sourced from filteredDlp (the `data`
+        // arg is agent rows and is intentionally ignored here).
+        return {
+          headers: ['Time', 'Agent', 'Department', 'Type', 'Direction', 'Detail', 'File', 'Size', 'Severity', 'Authorized', 'AI Reason'],
+          rows: filteredDlp.map((r) => [
+            new Date(r.occurred_at).toLocaleString(),
+            r.agent_name,
+            agentDeptById[r.agent_id] ?? 'Unassigned',
+            dlpTypeLabel(r.event_type),
+            r.direction ?? '',
+            dlpDetail(r),
+            r.file_name ?? '',
+            r.file_size_bytes != null ? formatBytes(r.file_size_bytes) : '',
+            r.ai_severity ?? '',
+            dlpAuthLabel(r.ai_authorized),
+            r.ai_reason ?? '',
+          ]),
+        };
     }
   };
 
   const buildCSV = (tab: ReportTab, data: typeof agents) => {
     const { headers, rows } = buildTabRows(tab, data);
-    return [headers.join(','), ...rows.map((r) => r.map((cell) => `"${cell}"`).join(','))].join('\n');
+    // Proper RFC-4180 quoting: double any embedded quote. DLP rows carry
+    // free-text (AI reason, from→to detail) that can contain commas and
+    // quotes, which would otherwise break the row.
+    const esc = (cell: string) => `"${String(cell).replace(/"/g, '""')}"`;
+    return [headers.join(','), ...rows.map((r) => r.map(esc).join(','))].join('\n');
   };
 
   const downloadFile = (content: string, filename: string, mime: string) => {
@@ -371,14 +452,24 @@ export default function ReportsPage() {
 
     const dataForExport = selectedFiltered.length > 0 ? selectedFiltered : filteredAgents;
     const now = new Date().toLocaleString();
-    const label = activeTab === 'productivity' ? 'Productivity' : activeTab === 'activity' ? 'Activity' : 'Time Tracking';
+    const label =
+      activeTab === 'productivity' ? 'Productivity'
+      : activeTab === 'activity' ? 'Activity'
+      : activeTab === 'dlp' ? 'DLP'
+      : 'Time Tracking';
+
+    // The DLP tab is an event log, not a per-agent sheet — count events.
+    const scopeCount = activeTab === 'dlp' ? filteredDlp.length : dataForExport.length;
+    const scopeNoun = activeTab === 'dlp'
+      ? `event${scopeCount === 1 ? '' : 's'}`
+      : `agent${scopeCount === 1 ? '' : 's'}`;
 
     doc.setFontSize(16);
     doc.setTextColor(20, 20, 20);
     doc.text(`Reports - ${label}`, 40, 40);
     doc.setFontSize(9);
     doc.setTextColor(90, 90, 90);
-    doc.text(`${dataForExport.length} agent${dataForExport.length === 1 ? '' : 's'}    Window: ${rangeLabel}    Generated: ${now}`, 40, 60);
+    doc.text(`${scopeCount} ${scopeNoun}    Window: ${rangeLabel}    Generated: ${now}`, 40, 60);
 
     const { headers, rows } = buildTabRows(activeTab, dataForExport);
     autoTable(doc, {
@@ -462,8 +553,15 @@ export default function ReportsPage() {
           }, 0)}m`, icon: 'ri-pause-line', color: 'amber' },
           { label: 'Active Today', value: String(filteredAgents.filter((a) => a.status !== 'offline').length), icon: 'ri-user-follow-line', color: 'violet' },
         ];
+      case 'dlp':
+        return [
+          { label: 'DLP Events', value: String(filteredDlp.length), icon: 'ri-shield-keyhole-line', color: 'emerald' },
+          { label: 'USB Transfers', value: String(filteredDlp.filter((r) => r.event_type === 'usb_transfer').length), icon: 'ri-usb-line', color: 'teal' },
+          { label: 'Email Attachments', value: String(filteredDlp.filter((r) => r.event_type === 'email_attachment').length), icon: 'ri-mail-send-line', color: 'amber' },
+          { label: 'Unauthorized', value: String(filteredDlp.filter((r) => r.ai_authorized === false).length), icon: 'ri-alert-line', color: 'red' },
+        ];
     }
-  }, [activeTab, filteredAgents, timeData, activityCounts]);
+  }, [activeTab, filteredAgents, filteredDlp, timeData, activityCounts]);
 
   const getColorClasses = (color: string) => {
     const map: Record<string, { bg: string; text: string }> = {
@@ -958,6 +1056,82 @@ export default function ReportsPage() {
                   <i className="ri-search-2-line text-3xl" />
                 </span>
                 <p className="text-sm text-gray-500">No agents match your filters</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ─── DLP LOG TABLE (USB + email) ─── */}
+        {activeTab === 'dlp' && (
+          <div className="bg-dark-800 border border-dark-700 rounded-xl overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[980px]">
+                <thead>
+                  <tr className="border-b border-dark-700">
+                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Time</th>
+                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Agent</th>
+                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Type</th>
+                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Detail</th>
+                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">File</th>
+                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Severity</th>
+                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Authorized</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredDlp.map((r) => (
+                    <tr key={r.id} className="border-b border-dark-700/50 hover:bg-dark-700/30 transition-colors">
+                      <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">{new Date(r.occurred_at).toLocaleString()}</td>
+                      <td className="px-4 py-3">
+                        <p className="text-sm text-white font-medium">{r.agent_name}</p>
+                        <p className="text-[11px] text-gray-500">{agentDeptById[r.agent_id] ?? 'Unassigned'}</p>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium border ${
+                          r.event_type === 'usb_transfer'
+                            ? 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+                            : 'bg-violet-500/10 text-violet-400 border-violet-500/20'
+                        }`}>
+                          <i className={r.event_type === 'usb_transfer' ? 'ri-usb-line' : 'ri-mail-send-line'} />
+                          {dlpTypeLabel(r.event_type)}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-300 max-w-[320px] truncate" title={dlpDetail(r)}>{dlpDetail(r)}</td>
+                      <td className="px-4 py-3 text-sm text-gray-300">
+                        <span className="truncate inline-block max-w-[180px] align-bottom" title={r.file_name ?? ''}>{r.file_name ?? '—'}</span>
+                        {r.file_size_bytes != null && (
+                          <span className="text-[11px] text-gray-500 ml-1.5">{formatBytes(r.file_size_bytes)}</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {r.ai_severity ? (
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium capitalize ${
+                            (SEV_TONE[r.ai_severity] ?? SEV_TONE.low).bg} ${(SEV_TONE[r.ai_severity] ?? SEV_TONE.low).text}`}>
+                            {r.ai_severity}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-gray-600">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`text-sm font-medium ${
+                          r.ai_authorized === false ? 'text-red-400'
+                          : r.ai_authorized === true ? 'text-emerald-400'
+                          : 'text-gray-500'
+                        }`}>
+                          {dlpAuthLabel(r.ai_authorized)}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {filteredDlp.length === 0 && (
+              <div className="p-12 text-center">
+                <span className="w-12 h-12 flex items-center justify-center mx-auto mb-3 text-gray-600">
+                  <i className="ri-shield-check-line text-3xl" />
+                </span>
+                <p className="text-sm text-gray-500">No USB or email DLP events in this window</p>
               </div>
             )}
           </div>

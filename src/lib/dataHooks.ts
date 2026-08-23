@@ -1253,6 +1253,94 @@ export function useProductivityPerAgent(sinceHours: number, untilHours = 0) {
   return { byAgent, loading, refresh };
 }
 
+// =============== DLP logs for Reports (USB + email) ===============
+
+export type DlpReportRow = {
+  id: string;
+  occurred_at: string;
+  agent_id: string;
+  agent_name: string;
+  event_type: 'usb_transfer' | 'email_attachment';
+  direction: string | null;
+  device_name: string | null;
+  device_serial: string | null;
+  device_type: string | null;
+  mail_provider: string | null;
+  sender_email: string | null;
+  recipient_email: string | null;
+  file_name: string | null;
+  file_size_bytes: number | null;
+  ai_severity: 'low' | 'medium' | 'high' | 'critical' | null;
+  ai_authorized: boolean | null;
+  ai_reason: string | null;
+};
+
+/**
+ * DLP event log (USB transfers + email attachments) for the current org within
+ * a rolling window, newest first. Windowed exactly like useProductivityPerAgent
+ * (since = now - sinceHours, until = now - untilHours) so the Reports date-range
+ * selector drives it too. Reads dlp_events directly — RLS scopes it to the
+ * caller's org, same as the DLP page.
+ */
+export function useDlpReport(sinceHours: number, untilHours = 0) {
+  const { organization } = useAuth();
+  const [rows, setRows] = useState<DlpReportRow[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    if (!organization) {
+      setRows([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    const since = new Date(Date.now() - sinceHours * 3600 * 1000).toISOString();
+    const until = new Date(Date.now() - untilHours * 3600 * 1000).toISOString();
+    const { data, error } = await supabase
+      .from('dlp_events')
+      .select(
+        'id, occurred_at, agent_id, event_type, direction, device_name, device_serial, device_type, mail_provider, sender_email, recipient_email, file_name, file_size_bytes, ai_severity, ai_authorized, ai_reason, agents(agent_name)',
+      )
+      .eq('org_id', organization.id)
+      .in('event_type', ['usb_transfer', 'email_attachment'])
+      .gte('occurred_at', since)
+      .lte('occurred_at', until)
+      .order('occurred_at', { ascending: false })
+      .limit(1000);
+    if (!error && data) {
+      type Raw = Omit<DlpReportRow, 'agent_name'> & { agents?: { agent_name: string } | null };
+      setRows(
+        (data as unknown as Raw[]).map((r) => ({
+          id: r.id,
+          occurred_at: r.occurred_at,
+          agent_id: r.agent_id,
+          agent_name: r.agents?.agent_name ?? '—',
+          event_type: r.event_type,
+          direction: r.direction,
+          device_name: r.device_name,
+          device_serial: r.device_serial,
+          device_type: r.device_type,
+          mail_provider: r.mail_provider,
+          sender_email: r.sender_email,
+          recipient_email: r.recipient_email,
+          file_name: r.file_name,
+          file_size_bytes: r.file_size_bytes,
+          ai_severity: r.ai_severity,
+          ai_authorized: r.ai_authorized,
+          ai_reason: r.ai_reason,
+        })),
+      );
+    }
+    setLoading(false);
+  }, [organization, sinceHours, untilHours]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  return { rows, loading, refresh };
+}
+
 // =============== Dashboard aggregates (migration 0125) ===============
 //
 // Both hooks prefer the server-side RPC and fall back to client-side
