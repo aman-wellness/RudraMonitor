@@ -210,20 +210,24 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
   // of fetched rows — that's why it can show the true total instead of being
   // capped by a fetch `limit` (the old `limit: 5` was why it was stuck at "5").
   const { rows: alertRows, resolveAlerts } = useAlerts({ sinceHours: 24 * 7, limit: 50 });
+  const { count: unresolvedAlertCount, refresh: refreshUnresolvedCount } = useUnresolvedAlertCount();
   const [clearingAlerts, setClearingAlerts] = useState(false);
+  const openAlertRows = alertRows.filter((a) => !a.ai_resolved);
   const clearAllNotifications = async () => {
-    const openIds = alertRows.filter((a) => !a.ai_resolved).map((a) => a.id);
+    const openIds = openAlertRows.map((a) => a.id);
     if (openIds.length === 0) return;
     setClearingAlerts(true);
     try {
       await resolveAlerts(openIds, 'cleared from notification tray');
+      // The bell badge polls every 60s; drop it to 0 immediately so the tray
+      // and the badge stay in sync the moment the user clicks Clear all.
+      void refreshUnresolvedCount();
     } catch (e) {
       console.error('clear notifications failed', e);
     } finally {
       setClearingAlerts(false);
     }
   };
-  const { count: unresolvedAlertCount } = useUnresolvedAlertCount();
   const { role: appRole } = useAppRole();
   const features = useFeatures();
   const appAccess = useAppAccess();
@@ -630,7 +634,7 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
                 <div className="s-pop w-72">
                   <div className="px-3.5 py-2.5 s-pop-head flex items-center justify-between">
                     <span className="text-[11.5px] font-medium t1">Notifications</span>
-                    {alertRows.some((a) => !a.ai_resolved) && (
+                    {openAlertRows.length > 0 && (
                       <button
                         onClick={clearAllNotifications}
                         disabled={clearingAlerts}
@@ -642,12 +646,12 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
                     )}
                   </div>
                   <div className="max-h-64 overflow-y-auto">
-                    {alertRows.length === 0 ? (
+                    {openAlertRows.length === 0 ? (
                       <div className="px-4 py-6 text-center text-[11px] t3">
                         No recent alerts.
                       </div>
                     ) : (
-                      alertRows.map((a) => (
+                      openAlertRows.map((a) => (
                         <div key={a.id} className="px-3.5 py-2.5 cell cursor-pointer">
                           <div className="flex items-start gap-2.5">
                             <span
