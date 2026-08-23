@@ -83,6 +83,9 @@ async-trait = "0.1"
 # the TLS termination server-side; tokio-rustls binds it to the async
 # stack we already use.
 rcgen = { version = "0.13", features = ["pem"] }
+# rcgen surfaces `time::OffsetDateTime` on the CertificateParams API;
+# we need it directly to set not_before / not_after on minted leaves.
+time = "0.3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 rustls-pemfile = "2"
@@ -90,6 +93,17 @@ rustls-pemfile = "2"
 # the features above and is the smaller of the two options (aws-lc-rs
 # doubles bundle size on musl builds).
 ring = "0.17"
+# Outbound TLS client trust: the MITM proxy connects to the REAL upstream
+# (mail.google.com, outlook.live.com, ...) with normal trust — pinning
+# Mozilla's baked-in CA bundle avoids relying on the endpoint OS trust
+# store (which contains our own MITM anchor and would otherwise short-
+# circuit into a loop).
+webpki-roots = "0.26"
+# HTTP/1 request parsing for what the terminated client sends us. Full
+# hyper::server::conn would work but is heavy for a one-shot request/
+# response cycle; httparse is the httpx-of-Rust and is what hyper uses
+# internally.
+httparse = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

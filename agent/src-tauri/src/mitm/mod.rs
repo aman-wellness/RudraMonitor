@@ -24,8 +24,12 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 
 mod cert_authority;
+mod interceptor;
+mod providers;
 mod proxy;
 mod system_proxy;
+
+pub use cert_authority::Authority;
 
 /// Loopback bind address for the local proxy. The port is chosen high
 /// enough to avoid collision with common dev tools (Vite 5173, Next.js
@@ -52,19 +56,27 @@ pub async fn start() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Load the bundled CA + key. On Phase 3 the key is only wired up so
-    // we can fail-fast if the build lost the secret; the proxy itself
-    // doesn't yet mint leaves. `load_bundled` is Ok(None) when the key
-    // is deliberately absent (dev builds, pre-v0.7.0 tagged builds).
-    match cert_authority::load_bundled() {
-        Ok(Some(_ca)) => log::info!("mitm: bundled CA loaded — ready for interception"),
-        Ok(None) => log::warn!(
-            "mitm: no CA key in this build; proxy runs in passthrough-only mode"
-        ),
-        Err(e) => {
-            log::error!("mitm: CA load failed ({e}); running passthrough-only");
+    // Install the ring crypto provider before touching rustls anywhere
+    // — rustls 0.23 requires an explicit CryptoProvider install once
+    // per process. Second call is a no-op.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    // Load the bundled CA + key. `Ok(None)` = the key wasn't embedded
+    // (dev build); we still start the proxy in passthrough-only mode.
+    let ca = match Authority::load_bundled() {
+        Ok(Some(ca)) => {
+            log::info!("mitm: bundled CA loaded — TLS interception enabled");
+            Some(ca)
         }
-    }
+        Ok(None) => {
+            log::warn!("mitm: no CA key in this build; proxy runs in passthrough-only mode");
+            None
+        }
+        Err(e) => {
+            log::error!("mitm: CA load failed ({e}); passthrough-only");
+            None
+        }
+    };
 
     // Best-effort system-proxy set. On failure we still bring the
     // listener up so trace / debug users can point a manual proxy at it.
@@ -74,7 +86,7 @@ pub async fn start() -> anyhow::Result<()> {
 
     let stop = STOP.clone();
     tokio::spawn(async move {
-        if let Err(e) = proxy::run(PROXY_BIND_ADDR, stop).await {
+        if let Err(e) = proxy::run(PROXY_BIND_ADDR, ca, stop).await {
             log::error!("mitm: proxy exited with error: {e}");
         }
         // Whatever caused the exit, revert system proxy so browsing

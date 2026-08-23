@@ -15,9 +15,16 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
 
-pub async fn run(bind: &str, stop: Arc<Notify>) -> anyhow::Result<()> {
+use super::cert_authority::Authority;
+use super::interceptor;
+use super::providers;
+
+pub async fn run(bind: &str, ca: Option<Arc<Authority>>, stop: Arc<Notify>) -> anyhow::Result<()> {
     let listener = TcpListener::bind(bind).await?;
-    log::info!("mitm: passthrough proxy listening on {bind}");
+    log::info!(
+        "mitm: proxy listening on {bind} ({} interception)",
+        if ca.is_some() { "with" } else { "without" }
+    );
     loop {
         tokio::select! {
             _ = stop.notified() => {
@@ -28,8 +35,9 @@ pub async fn run(bind: &str, stop: Arc<Notify>) -> anyhow::Result<()> {
                 match accept {
                     Ok((stream, peer)) => {
                         log::trace!("mitm: accepted connection from {peer}");
+                        let ca_clone = ca.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle(stream).await {
+                            if let Err(e) = handle(stream, ca_clone).await {
                                 log::debug!("mitm: session ended with error: {e}");
                             }
                         });
@@ -46,7 +54,7 @@ pub async fn run(bind: &str, stop: Arc<Notify>) -> anyhow::Result<()> {
     }
 }
 
-async fn handle(mut client: TcpStream) -> anyhow::Result<()> {
+async fn handle(mut client: TcpStream, ca: Option<Arc<Authority>>) -> anyhow::Result<()> {
     // Read the first request. CONNECT is the only method we care about
     // for the HTTPS path; a plain GET/POST to us as a proxy means the
     // browser was misconfigured (or a curl -x smoke test) — respond 400.
@@ -79,8 +87,20 @@ async fn handle(mut client: TcpStream) -> anyhow::Result<()> {
         None => (target.to_string(), 443),
     };
 
-    // Phase 3: everyone gets the raw tunnel. Phase 4 will branch here on
-    // `is_public_webmail(&host)` and terminate TLS for those instead.
+    // Public-webmail hosts + we have a CA loaded = TLS termination path.
+    // Everyone else (banking, corporate mail, general browsing) stays
+    // on the raw passthrough tunnel below.
+    if let Some(ca) = ca.as_ref() {
+        if providers::is_public_webmail(&host) {
+            // Tell the browser we've CONNECTed, then hand the socket
+            // over to the interceptor for TLS accept + parse + forward.
+            client
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await?;
+            return interceptor::intercept(client, ca.clone(), host, port).await;
+        }
+    }
+
     let upstream = match TcpStream::connect((host.as_str(), port)).await {
         Ok(s) => s,
         Err(e) => {
