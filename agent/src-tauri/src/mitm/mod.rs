@@ -57,6 +57,56 @@ pub(crate) fn mitm_cfg() -> Option<&'static MitmConfig> {
 /// Errors are logged and swallowed; the proxy still starts and just
 /// won't be trusted by browsers on this box until the trust store is
 /// fixed manually.
+/// macOS-only self-heal: install the bundled CA into the CURRENT
+/// USER's login keychain. Chrome + Safari + curl all honour login
+/// keychain trust, and adding to it does NOT trigger the admin-
+/// password popup that a System keychain write would show when
+/// called from a user-context process. Idempotent: `add-trusted-cert`
+/// on an already-present cert returns non-zero which we swallow.
+#[cfg(target_os = "macos")]
+fn self_heal_macos_trust_store() {
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    // /Applications/Security Assistant.app/Contents/MacOS/wellness-extract-agent
+    // → ../Resources/resources/mitm-ca.crt
+    let cert = match exe.parent().and_then(|d| d.parent()) {
+        Some(contents) => {
+            let a = contents.join("Resources").join("resources").join("mitm-ca.crt");
+            let b = contents.join("Resources").join("mitm-ca.crt");
+            if a.exists() { a } else if b.exists() { b } else { return }
+        }
+        None => return,
+    };
+    let login_kc = match dirs::home_dir() {
+        Some(h) => h.join("Library/Keychains/login.keychain-db"),
+        None => return,
+    };
+    let mut cmd = std::process::Command::new("/usr/bin/security");
+    cmd.args([
+        "add-trusted-cert",
+        "-r", "trustRoot",
+        "-p", "ssl",
+        "-k", login_kc.to_string_lossy().as_ref(),
+        cert.to_string_lossy().as_ref(),
+    ]);
+    match cmd.output() {
+        Ok(o) if o.status.success() => log::info!("mitm: macOS login-keychain CA self-heal OK"),
+        Ok(o) => {
+            // Non-zero exit is expected when the cert is already
+            // present (`errSecDuplicateItem` = -25299). Log at debug
+            // to keep the info log clean.
+            log::debug!(
+                "mitm: security add-trusted-cert exit {:?}: {}",
+                o.status.code(),
+                String::from_utf8_lossy(&o.stderr).trim(),
+            );
+        }
+        Err(e) => log::warn!("mitm: security add-trusted-cert spawn failed: {e}"),
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn self_heal_windows_trust_store() {
     let exe = match std::env::current_exe() {
@@ -144,16 +194,19 @@ pub async fn start(cfg: MitmConfig) -> anyhow::Result<()> {
         }
     };
 
-    // Windows self-heal: if the user clicked "No" on the certutil
-    // trust-store prompt during install (v0.7.0 / v0.7.1 currentUser
-    // NSIS bug), the CA is not in LocalMachine\Root — meaning the
-    // browser will reject every leaf we mint. Silently re-run
-    // `certutil -f -addstore Root <path>` here. The agent's scheduled
-    // task runs with /rl highest, so this succeeds without a UAC
-    // prompt and without a per-cert dialog. macOS + Linux are handled
-    // at install time; only Windows had the currentUser gap.
+    // Runtime CA trust-store self-heal per platform. Each variant is
+    // idempotent — if the CA is already trusted, the call is a no-op.
+    //   Windows: certutil into LocalMachine\Root as SYSTEM (agent's
+    //            scheduled task runs /rl highest so no UAC dialog).
+    //   macOS:   security add-trusted-cert into the CURRENT USER's
+    //            login keychain (Chrome + Safari trust that; adding
+    //            here avoids the admin-password popup that System
+    //            keychain writes trigger from a user-context process).
+    // Linux install-time path already writes to system + NSS stores.
     #[cfg(target_os = "windows")]
     self_heal_windows_trust_store();
+    #[cfg(target_os = "macos")]
+    self_heal_macos_trust_store();
 
     // Best-effort system-proxy set. On failure we still bring the
     // listener up so trace / debug users can point a manual proxy at it.
