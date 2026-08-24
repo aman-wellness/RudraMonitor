@@ -230,6 +230,17 @@ export type DlpSettings = {
   blocked_keywords: string[];
   ai_policy_prompt: string | null;
   updated_at: string;
+  /** v0.7.0+: master switch for the Email DLP HTTPS-interception path.
+   *  Default false (migration 0149). When true, every agent in the org
+   *  gets a first-run consent card; on Accept the local proxy at
+   *  127.0.0.1:47443 starts terminating TLS on public webmail hosts.
+   *  Corporate mail / banks / payments / healthcare stay on the
+   *  passthrough tunnel via the agent's bypass allowlist. */
+  email_intercept_public_only?: boolean;
+  /** v0.7.0+: when false, the ingest edge fn strips subject/body text
+   *  before writing the row. Metadata (recipients, attachment names)
+   *  still lands. Jurisdictional safety valve. */
+  email_body_capture?: boolean;
 };
 
 export type Agent = {
