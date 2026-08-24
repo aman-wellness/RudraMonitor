@@ -1581,18 +1581,19 @@ pub fn run() {
             // ALWAYS unset any leftover system-proxy setting from a
             // prior v0.7.x version. This is a compile-time off — flip
             // MITM_KILL_SWITCH back to false once fail-open is fixed.
-            // v0.7.6: kill-switch off. Pre-flight bind + e2e probe
-            // + 30s watchdog inside mitm::start() guarantee the OS
-            // proxy is only ever set when the listener demonstrably
-            // works, and gets auto-unset within ~90s if it stops.
+            // v0.7.11: MITM PERMANENTLY DISABLED. Every attempt to
+            // re-enable it (0.7.6 with watchdog, 0.7.9 with no_proxy)
+            // still left some fleet member stuck. The feature is not
+            // worth a repeat outage — until we have a design that
+            // touches the OS proxy zero times (kernel-mode driver or
+            // per-process WinDivert-style interception), MITM stays
+            // off in every build.
             //
-            // BUT: always sweep any stale OS-proxy entry from a prior
-            // v0.7.x boot BEFORE the gate runs. If the gate later
-            // satisfies, mitm::start() re-sets the proxy after its
-            // pre-flight probes pass. If it doesn't (org opt-out /
-            // not enrolled), we leave the OS clean instead of stuck.
+            // What still runs unconditionally: mitm::stop() at every
+            // boot → wipes any stale HKCU / networksetup / gsettings
+            // proxy entry from a prior v0.7.x install. Anyone stuck
+            // recovers on their next agent restart.
             mitm::stop();
-            spawn_mitm_gate(state.clone());
             // USB-block loop: enumerates removable volumes every 5s and unmounts
             // any new ones unless the agent is allowlisted. Always starts; the
             // loop itself reads settings.removable_disks_blocked each iteration.
