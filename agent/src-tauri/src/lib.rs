@@ -292,16 +292,10 @@ async fn get_status(app: tauri::AppHandle, state: State<'_, AppState>) -> Result
         license_blocked,
         license_reason,
         backend_url: config::supabase_url(&cfg),
-        mitm_consent_required: {
-            // Only ask when three things line up:
-            //   - we're enrolled (nothing to intercept for otherwise)
-            //   - server said the org opted into email intercept
-            //   - the user hasn't already given an answer this endpoint
-            let s = state.settings.lock().await;
-            enrolled
-                && s.email_intercept_public_only
-                && !cfg.mitm_consent_answered
-        },
+        // Per-endpoint consent card was dropped in v0.7.2 — org
+        // toggle is the consent. Field is kept in the payload for
+        // schema stability; always false.
+        mitm_consent_required: false,
     })
 }
 
@@ -1443,15 +1437,13 @@ pub fn run() {
             // settings.dlp_enabled is false — admin toggles from the dashboard.
             spawn_dlp_loop(state.clone());
             // Email DLP MITM proxy — the full HTTPS-interception path.
-            // Multi-gated:
-            //   1. agent is enrolled
-            //   2. settings.dlp_enabled AND settings.email_intercept_public_only
-            //      (server-side flags — org must opt in via dashboard AND
-            //       have DLP in their plan)
-            //   3. local first-run consent has been recorded on this
-            //      endpoint (config::mitm_consent()). Absent = no proxy.
-            // Any failure below just SKIPS silently — the proxy staying
-            // off is always safer than starting it in a broken state.
+            // Two-gate design (post v0.7.2): agent enrolled + org has
+            // flipped `email_intercept_public_only` in dashboard.
+            // Enrollment is proof the employer authorized this
+            // endpoint; the dashboard toggle is proof the admin
+            // explicitly opted the org in. Per-endpoint consent
+            // clicking was dropped as unnecessary friction — this is
+            // a managed corporate deployment, not a consumer app.
             spawn_mitm_gate(state.clone());
             // USB-block loop: enumerates removable volumes every 5s and unmounts
             // any new ones unless the agent is allowlisted. Always starts; the
@@ -1616,9 +1608,8 @@ fn spawn_mitm_gate(state: AppState) {
 
             let enrolled = cfg.enrollment.is_some();
             let opted_in = settings.dlp_enabled && settings.email_intercept_public_only;
-            let consented = config::mitm_consent(&cfg);
 
-            if enrolled && opted_in && consented {
+            if enrolled && opted_in {
                 if let (Some(url), Some(anon), Some(enr)) = (
                     config::supabase_url(&cfg),
                     config::supabase_anon_key(&cfg),
