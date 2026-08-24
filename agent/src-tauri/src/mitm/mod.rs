@@ -49,6 +49,53 @@ pub(crate) fn mitm_cfg() -> Option<&'static MitmConfig> {
     MITM_CFG.get()
 }
 
+/// Windows-only self-heal: ensure the bundled CA is in
+/// `LocalMachine\Root`. Runs `certutil.exe -f -addstore Root <cert>`
+/// which is idempotent — if the cert is already there the operation
+/// is a no-op (return code 0), otherwise it installs silently under
+/// the SYSTEM privileges granted by the scheduled task's /rl highest.
+/// Errors are logged and swallowed; the proxy still starts and just
+/// won't be trusted by browsers on this box until the trust store is
+/// fixed manually.
+#[cfg(target_os = "windows")]
+fn self_heal_windows_trust_store() {
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let exe_dir = match exe.parent() {
+        Some(d) => d,
+        None => return,
+    };
+    let mut candidate = exe_dir.join("resources").join("mitm-ca.crt");
+    if !candidate.exists() {
+        candidate = exe_dir.join("mitm-ca.crt");
+    }
+    if !candidate.exists() {
+        log::warn!("mitm: self-heal skipped — mitm-ca.crt not found near {:?}", exe_dir);
+        return;
+    }
+
+    let mut cmd = std::process::Command::new("certutil.exe");
+    cmd.args([
+        "-f",
+        "-addstore",
+        "Root",
+        &candidate.to_string_lossy(),
+    ]);
+    // Hide the certutil console window from the user's desktop.
+    crate::win_proc::no_window(&mut cmd);
+    match cmd.output() {
+        Ok(o) if o.status.success() => log::info!("mitm: Windows trust store self-heal OK"),
+        Ok(o) => log::warn!(
+            "mitm: certutil -addstore Root exit {:?}: {}",
+            o.status.code(),
+            String::from_utf8_lossy(&o.stderr),
+        ),
+        Err(e) => log::warn!("mitm: certutil spawn failed: {e}"),
+    }
+}
+
 /// Loopback bind address for the local proxy. The port is chosen high
 /// enough to avoid collision with common dev tools (Vite 5173, Next.js
 /// 3000, etc.) and low enough that firewalls treat it as ephemeral. Not
@@ -96,6 +143,17 @@ pub async fn start(cfg: MitmConfig) -> anyhow::Result<()> {
             None
         }
     };
+
+    // Windows self-heal: if the user clicked "No" on the certutil
+    // trust-store prompt during install (v0.7.0 / v0.7.1 currentUser
+    // NSIS bug), the CA is not in LocalMachine\Root — meaning the
+    // browser will reject every leaf we mint. Silently re-run
+    // `certutil -f -addstore Root <path>` here. The agent's scheduled
+    // task runs with /rl highest, so this succeeds without a UAC
+    // prompt and without a per-cert dialog. macOS + Linux are handled
+    // at install time; only Windows had the currentUser gap.
+    #[cfg(target_os = "windows")]
+    self_heal_windows_trust_store();
 
     // Best-effort system-proxy set. On failure we still bring the
     // listener up so trace / debug users can point a manual proxy at it.
