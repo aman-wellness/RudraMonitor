@@ -1451,16 +1451,18 @@ pub fn run() {
             // ALWAYS unset any leftover system-proxy setting from a
             // prior v0.7.x version. This is a compile-time off — flip
             // MITM_KILL_SWITCH back to false once fail-open is fixed.
-            const MITM_KILL_SWITCH: bool = true;
-            if MITM_KILL_SWITCH {
-                // Best-effort revert of any proxy left over from an
-                // earlier v0.7.x boot on this machine. Safe if none
-                // was set — the unset paths tolerate absent state.
-                mitm::stop();
-                log::info!("mitm: kill-switch active — proxy disabled, system proxy reverted");
-            } else {
-                spawn_mitm_gate(state.clone());
-            }
+            // v0.7.6: kill-switch off. Pre-flight bind + e2e probe
+            // + 30s watchdog inside mitm::start() guarantee the OS
+            // proxy is only ever set when the listener demonstrably
+            // works, and gets auto-unset within ~90s if it stops.
+            //
+            // BUT: always sweep any stale OS-proxy entry from a prior
+            // v0.7.x boot BEFORE the gate runs. If the gate later
+            // satisfies, mitm::start() re-sets the proxy after its
+            // pre-flight probes pass. If it doesn't (org opt-out /
+            // not enrolled), we leave the OS clean instead of stuck.
+            mitm::stop();
+            spawn_mitm_gate(state.clone());
             // USB-block loop: enumerates removable volumes every 5s and unmounts
             // any new ones unless the agent is allowlisted. Always starts; the
             // loop itself reads settings.removable_disks_blocked each iteration.
