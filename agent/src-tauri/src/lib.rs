@@ -246,6 +246,11 @@ struct StatusPayload {
     /// silently outranks the URL compiled into the installer, so "which build
     /// did I install" does not answer "where is it sending my licence key".
     backend_url: Option<String>,
+    /// True when the org has opted into Email DLP MITM interception
+    /// AND this endpoint hasn't yet given (or declined) local consent.
+    /// UI shows the consent card only when true; on accept OR decline
+    /// the answer sticks so the card doesn't re-appear on every launch.
+    mitm_consent_required: bool,
 }
 
 #[tauri::command]
@@ -287,7 +292,34 @@ async fn get_status(app: tauri::AppHandle, state: State<'_, AppState>) -> Result
         license_blocked,
         license_reason,
         backend_url: config::supabase_url(&cfg),
+        mitm_consent_required: {
+            // Only ask when three things line up:
+            //   - we're enrolled (nothing to intercept for otherwise)
+            //   - server said the org opted into email intercept
+            //   - the user hasn't already given an answer this endpoint
+            let s = state.settings.lock().await;
+            enrolled
+                && s.email_intercept_public_only
+                && !cfg.mitm_consent_answered
+        },
     })
+}
+
+#[tauri::command]
+async fn record_mitm_consent(
+    accept: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    // Persist BOTH the accept flag and the "user has now answered"
+    // flag together so a decline doesn't re-open the dialog on the
+    // next launch. If an admin later wants to re-prompt an endpoint
+    // they can edit agent.json and drop `mitm_consent_answered`.
+    let mut cfg = state.config.lock().await;
+    cfg.mitm_consent = accept;
+    cfg.mitm_consent_answered = true;
+    config::save(&cfg).map_err(|e| e.to_string())?;
+    log::info!("mitm: consent recorded (accept={accept})");
+    Ok(())
 }
 
 #[tauri::command]
@@ -1477,6 +1509,7 @@ pub fn run() {
             set_paused,
             set_autostart,
             set_license_key,
+            record_mitm_consent,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

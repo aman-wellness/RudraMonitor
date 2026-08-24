@@ -30,6 +30,11 @@ pub struct AgentConfig {
     /// field into agent.json before first launch) — never automatically.
     #[serde(default)]
     pub mitm_consent: bool,
+    /// True once the operator has made an explicit choice (accept OR
+    /// decline). Stops the consent screen from re-appearing on every
+    /// launch after a decline. Admins can reset by editing agent.json.
+    #[serde(default)]
+    pub mitm_consent_answered: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
