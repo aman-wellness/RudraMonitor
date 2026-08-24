@@ -232,12 +232,17 @@ pub async fn start(cfg: MitmConfig) -> anyhow::Result<()> {
 }
 
 /// Tear the proxy down: signal the listener, revert the system proxy.
-/// Safe to call from any thread; safe to call when not running (no-op).
+/// Safe to call from any thread; safe to call when not running (no-op
+/// on the listener side, but STILL calls system_proxy::unset so a
+/// leftover proxy setting from a prior boot is always cleaned up).
 pub fn stop() {
-    if !RUNNING.load(Ordering::SeqCst) {
-        return;
+    if RUNNING.load(Ordering::SeqCst) {
+        STOP.notify_waiters();
     }
-    STOP.notify_waiters();
+    // Unconditional unset — this is the v0.7.5 kill-switch recovery
+    // path: browsers on machines with a stale HKCU / networksetup
+    // proxy from v0.7.0-v0.7.4 need this to run every boot until the
+    // registry / plist entry is gone.
     if let Err(e) = system_proxy::unset() {
         log::warn!("mitm: system_proxy::unset failed ({e})");
     }

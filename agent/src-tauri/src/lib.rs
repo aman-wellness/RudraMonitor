@@ -1444,7 +1444,23 @@ pub fn run() {
             // explicitly opted the org in. Per-endpoint consent
             // clicking was dropped as unnecessary friction — this is
             // a managed corporate deployment, not a consumer app.
-            spawn_mitm_gate(state.clone());
+            // v0.7.5 KILL SWITCH: MITM proxy caused browsers to lose
+            // internet on some endpoints (system proxy set to a listener
+            // that couldn't handle every host). Until the fail-open path
+            // is proven safe on every OS, do NOT start the proxy and
+            // ALWAYS unset any leftover system-proxy setting from a
+            // prior v0.7.x version. This is a compile-time off — flip
+            // MITM_KILL_SWITCH back to false once fail-open is fixed.
+            const MITM_KILL_SWITCH: bool = true;
+            if MITM_KILL_SWITCH {
+                // Best-effort revert of any proxy left over from an
+                // earlier v0.7.x boot on this machine. Safe if none
+                // was set — the unset paths tolerate absent state.
+                mitm::stop();
+                log::info!("mitm: kill-switch active — proxy disabled, system proxy reverted");
+            } else {
+                spawn_mitm_gate(state.clone());
+            }
             // USB-block loop: enumerates removable volumes every 5s and unmounts
             // any new ones unless the agent is allowlisted. Always starts; the
             // loop itself reads settings.removable_disks_blocked each iteration.
