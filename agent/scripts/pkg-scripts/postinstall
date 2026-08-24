@@ -152,6 +152,36 @@ if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
   /bin/chmod -R g+w "$APP" 2>/dev/null || true
 fi
 
+# ---------------------------------------------------------------------------
+# Zero-touch enrolment (v0.7.13+).
+#
+# Nothing identifying goes in the filename. The Agent Setup download stamps this
+# org's license key into the .pkg's BYTES by appending a footer:
+#   {{WEZT-LICENSE}}<LICENSEKEY>{{/WEZT-LICENSE}}
+# $1 is the full path to the installed package, so we read that footer out of
+# its tail and drop a prefill.json next to the agent binary. The agent
+# auto-enrolls from it on first boot using the Mac's hostname — no launcher, no
+# typing — then deletes it. A plain (unstamped) build has no footer, so ZT_KEY
+# is empty and the agent shows the manual screen.
+#
+# The one shared .pkg serves every client worldwide; only the appended footer
+# differs per download.
+# ---------------------------------------------------------------------------
+ZT_MATCH="$(/usr/bin/tail -c 65536 "$1" 2>/dev/null | LC_ALL=C /usr/bin/grep -a -o '{{WEZT-LICENSE}}[^{]*{{/WEZT-LICENSE}}' 2>/dev/null | /usr/bin/head -1)"
+if [ -n "$ZT_MATCH" ]; then
+  ZT_KEY="${ZT_MATCH#\{\{WEZT-LICENSE\}\}}"     # strip leading marker
+  ZT_KEY="${ZT_KEY%\{\{/WEZT-LICENSE\}\}}"      # strip trailing marker
+  ZT_KEY="$(echo "$ZT_KEY" | /usr/bin/xargs 2>/dev/null || echo "$ZT_KEY")"  # trim
+  if [ -n "$ZT_KEY" ]; then
+    PF="$APP/Contents/MacOS/prefill.json"
+    printf '{"license_key":"%s"}' "$ZT_KEY" > "$PF" 2>/dev/null || true
+    /bin/chmod 600 "$PF" 2>/dev/null || true
+    if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+      /usr/sbin/chown "$CONSOLE_USER" "$PF" 2>/dev/null || true
+    fi
+  fi
+fi
+
 # Customers upgrading from a prior ad-hoc-signed build have stale TCC entries
 # keyed by the old cdhash. Reset them so the first launch of THIS signed build
 # re-prompts ONCE, captures the grant under the new (stable) signing identity,

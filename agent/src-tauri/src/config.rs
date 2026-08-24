@@ -53,20 +53,25 @@ pub fn config_path() -> Result<PathBuf> {
     Ok(dir.join("agent.json"))
 }
 
-/// Pre-fill file dropped by the setup-page launcher script
-/// (Install-<Name>.command / .bat / .sh) BEFORE the installer runs. It lets an
-/// admin ship a zero-touch install: the launcher embeds the org's license key
-/// (and optionally a name) so the agent enrolls itself on first boot with no
-/// input from the employee.
+/// Pre-fill file that carries the org license key so the agent enrols itself
+/// on first boot with NO input from the employee (zero-touch).
 ///
-/// File location (must match the launcher scripts):
-///   macOS:   ~/Library/Application Support/RudransAgent/prefill.json
-///   Windows: %APPDATA%/RudransAgent/prefill.json
-///   Linux:   ~/.local/share/RudransAgent/prefill.json
-/// All map to `dirs::data_dir()/RudransAgent/prefill.json`.
+/// The key is stamped into the ONE shared installer at download time (from the
+/// Agent Setup page) so nothing identifying ever appears in the filename:
+///   Windows — the download appends a `{{WEZT-LICENSE}}<key>{{/WEZT-LICENSE}}`
+///             footer to the installer's bytes; the NSIS hook copies the whole
+///             installer to `enroll.dat` next to the exe, and we parse the key
+///             out of its tail here (see `read_footer_key`).
+///   macOS   — the download appends the same footer to the .pkg; the postinstall
+///             extracts it and writes `prefill.json` next to the exe.
+/// So we look, in priority order:
+///   0. `<install dir>/enroll.dat`      — the Windows footer copy;
+///   1. `<install dir>/prefill.json`    — macOS (and any MDM-pushed) prefill;
+///   2. `dirs::data_dir()/RudransAgent/prefill.json` — legacy per-user path.
+/// The agent deletes all of these once enrolment succeeds (`consume_prefill`).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Prefill {
-    /// Org license key embedded by the setup page. When present the agent
+    /// Org license key embedded by the installer. When present the agent
     /// enrolls automatically (see `lib.rs` first-boot auto-enroll).
     #[serde(default)]
     pub license_key: Option<String>,
@@ -76,17 +81,95 @@ pub struct Prefill {
     pub agent_name: Option<String>,
 }
 
-fn prefill_path() -> Option<PathBuf> {
-    Some(dirs::data_dir()?.join("RudransAgent").join("prefill.json"))
+/// Markers the download page wraps the license key in when it appends a footer
+/// to the shared installer's bytes. Kept ASCII so the browser, NSIS, Rust and
+/// the macOS shell all agree on them byte-for-byte.
+const ZT_START: &[u8] = b"{{WEZT-LICENSE}}";
+const ZT_END: &[u8] = b"{{/WEZT-LICENSE}}";
+
+/// `<install dir>/enroll.dat` — the copy of the stamped installer the NSIS hook
+/// drops so we can read the license footer after the download is long gone.
+fn enroll_dat_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.join("enroll.dat"))
+}
+
+fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Pull the license key out of an installer's appended footer. Pure over bytes
+/// so it's unit-testable; only the tail is scanned to stay cheap on a ~25 MB
+/// installer copy.
+fn parse_footer_key(data: &[u8]) -> Option<String> {
+    let tail = if data.len() > 65_536 {
+        &data[data.len() - 65_536..]
+    } else {
+        data
+    };
+    let start = find_sub(tail, ZT_START)? + ZT_START.len();
+    let end = find_sub(&tail[start..], ZT_END)?;
+    let key = std::str::from_utf8(&tail[start..start + end])
+        .ok()?
+        .trim()
+        .to_string();
+    if key.is_empty() {
+        None
+    } else {
+        Some(key)
+    }
+}
+
+fn read_footer_key(path: &std::path::Path) -> Option<String> {
+    parse_footer_key(&std::fs::read(path).ok()?)
+}
+
+/// All candidate prefill locations, highest priority first.
+fn prefill_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    // 1. Next to the installed executable (written by the elevated installer).
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            paths.push(dir.join("prefill.json"));
+        }
+    }
+    // 2. Legacy per-user data dir.
+    if let Some(base) = dirs::data_dir() {
+        paths.push(base.join("RudransAgent").join("prefill.json"));
+    }
+    paths
 }
 
 pub fn read_prefill() -> Option<Prefill> {
-    let path = prefill_path()?;
-    if !path.exists() {
-        return None;
+    // 0. Windows zero-touch: license footer in the installer copy (enroll.dat).
+    //    No agent_name → auto-enroll falls back to the machine hostname.
+    if let Some(dat) = enroll_dat_path() {
+        if dat.exists() {
+            if let Some(key) = read_footer_key(&dat) {
+                return Some(Prefill {
+                    license_key: Some(key),
+                    agent_name: None,
+                });
+            }
+        }
     }
-    let raw = std::fs::read_to_string(&path).ok()?;
-    serde_json::from_str::<Prefill>(&raw).ok()
+    for path in prefill_paths() {
+        if !path.exists() {
+            continue;
+        }
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            // Trim a possible UTF-8 BOM some editors prepend, which would
+            // otherwise make serde_json reject the first `{`.
+            let raw = raw.trim_start_matches('\u{feff}');
+            if let Ok(p) = serde_json::from_str::<Prefill>(raw) {
+                return Some(p);
+            }
+        }
+    }
+    None
 }
 
 /// Convenience: the embedded name if any (used by the setup UI to pre-fill the
@@ -98,11 +181,16 @@ pub fn read_prefill_name() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// After successful enrollment the prefill file is no longer needed; remove it
-/// so it isn't confused with a fresh registration on subsequent launches.
+/// After successful enrollment the prefill is no longer needed; remove it from
+/// every candidate location so it isn't re-consumed on a later launch. The
+/// install-dir copy may fail to delete if the agent isn't elevated — harmless,
+/// because first-boot auto-enroll short-circuits once `enrollment` is set.
 pub fn consume_prefill() {
-    if let Some(base) = dirs::data_dir() {
-        let _ = std::fs::remove_file(base.join("RudransAgent").join("prefill.json"));
+    if let Some(dat) = enroll_dat_path() {
+        let _ = std::fs::remove_file(&dat);
+    }
+    for path in prefill_paths() {
+        let _ = std::fs::remove_file(&path);
     }
 }
 
@@ -212,5 +300,22 @@ mod tests {
         let legacy: Prefill = serde_json::from_str(r#"{"agent_name":"Old"}"#).unwrap();
         assert_eq!(legacy.license_key, None);
         assert_eq!(legacy.agent_name.as_deref(), Some("Old"));
+    }
+
+    // The download appends the key footer to the END of the installer's raw
+    // bytes (after arbitrary binary), and we must recover it from the tail.
+    #[test]
+    fn footer_key_extracted_from_installer_tail() {
+        let mut blob = vec![0u8, 1, 2, 255, 0, 13, 10]; // fake binary payload
+        blob.extend_from_slice(b"\n{{WEZT-LICENSE}}WE-ACME-9931{{/WEZT-LICENSE}}\n");
+        assert_eq!(parse_footer_key(&blob).as_deref(), Some("WE-ACME-9931"));
+
+        // Surrounding whitespace inside the markers is trimmed.
+        let padded = b"xx{{WEZT-LICENSE}}  KEY-42  {{/WEZT-LICENSE}}".to_vec();
+        assert_eq!(parse_footer_key(&padded).as_deref(), Some("KEY-42"));
+
+        // No footer (plain/unstamped installer) → no key → manual setup screen.
+        assert_eq!(parse_footer_key(&[0u8; 32]), None);
+        assert_eq!(parse_footer_key(b"{{WEZT-LICENSE}}{{/WEZT-LICENSE}}"), None);
     }
 }

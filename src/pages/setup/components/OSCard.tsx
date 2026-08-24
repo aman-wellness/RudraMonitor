@@ -6,6 +6,10 @@ interface DownloadItem {
   url: string;
   size: string;
   version: string;
+  /** When set, this installer supports zero-touch: it's downloaded via the
+   *  parent's key-embedding handler (fetch + rename so the license key rides in
+   *  the filename) instead of a plain link. .msi / .deb omit this. */
+  keyed?: { os: string; arch?: string };
 }
 
 interface Props {
@@ -18,26 +22,35 @@ interface Props {
   minVersion: string;
   arch: string;
   steps: string[];
+  /** Provided by the setup page: fetches the installer and re-offers it with
+   *  the org license key embedded in the filename (zero-touch enrolment). */
+  onKeyedDownload?: (os: string, arch?: string) => void | Promise<void>;
 }
 
-export default function OSCard({ os, icon, color, borderColor, bgColor, downloads, minVersion, arch, steps }: Props) {
+export default function OSCard({ os, icon, color, borderColor, bgColor, downloads, minVersion, arch, steps, onKeyedDownload }: Props) {
   const [downloading, setDownloading] = useState<string | null>(null);
   const [showCopied, setShowCopied] = useState(false);
 
-  const handleDownload = (dl: DownloadItem) => {
+  const handleDownload = async (dl: DownloadItem) => {
     if (!dl.url) return;
     setDownloading(dl.filename);
-    // Trigger an actual download by clicking a hidden anchor with the `download` attr.
-    // Using `<a>` instead of `window.location` so multi-file downloads stay independent
-    // and the browser uses the suggested filename.
-    const a = document.createElement('a');
-    a.href = dl.url;
-    a.download = dl.filename;
-    a.rel = 'noopener';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => setDownloading(null), 1500);
+    try {
+      if (dl.keyed && onKeyedDownload) {
+        // Zero-touch: fetch + rename so the org key is embedded in the filename.
+        await onKeyedDownload(dl.keyed.os, dl.keyed.arch);
+      } else {
+        // Plain download (.msi / .deb): hidden anchor with the suggested name.
+        const a = document.createElement('a');
+        a.href = dl.url;
+        a.download = dl.filename;
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+    } finally {
+      setTimeout(() => setDownloading(null), 1500);
+    }
   };
 
   const copyCommand = () => {

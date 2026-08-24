@@ -1,29 +1,50 @@
-; nsis-mitm-cert.nsh — Tauri NSIS installer hook for the Email DLP MITM
-; anchor (v0.7.2+).
+; nsis-mitm-cert.nsh — Tauri NSIS installer hook (v0.7.13+).
 ;
-; NSIS runs perMachine (see tauri.conf.json bundle.windows.nsis.installMode)
-; so the installer already ran an elevation UAC prompt. certutil below
-; therefore has admin rights and writes to LocalMachine\Root — every
-; user on this box trusts the anchor and Windows does NOT show the
-; per-certificate security dialog that -user Root writes would trigger.
+; Included at TOP LEVEL by the generated installer.nsi (before sections), so the
+; CRCCheck directive below takes effect for the whole installer.
 ;
-; The MSI/WiX bundle mirrors this via WiX CustomAction (SYSTEM context).
+; CRCCheck off:
+;   The Agent Setup download stamps the client's org license key into the ONE
+;   shared installer by APPENDING a "{{WEZT-LICENSE}}<key>{{/WEZT-LICENSE}}"
+;   footer to its bytes (nothing identifying ever goes in the filename). NSIS's
+;   default integrity check would reject a file whose bytes changed after build,
+;   so we disable it. The extra trailing bytes are ignored by NSIS extraction.
 ;
-; NSIS's single-quoted strings do NOT support the '' escape convention
-; PowerShell uses — that broke the v0.7.0 build. Both install and
-; uninstall use certutil.exe directly with plain quotes so the whole
-; command is one clean shell invocation.
+; Runs in the perMachine (elevated) installer, so everything here has admin
+; rights. On install it:
+;   1. Trusts the Email DLP MITM root CA (LocalMachine\Root).
+;   2. Zero-touch enrolment: copies the whole installer (footer included) to
+;      "enroll.dat" next to the exe. The agent parses the license key out of the
+;      footer in Rust (robust byte scan — no fragile NSIS string parsing), enrols
+;      with the PC hostname, then DELETES enroll.dat. Worldwide/multi-tenant: the
+;      same installer works for every client, keyed only by the appended footer.
+;   3. Registers the elevated logon Scheduled Task (so future auto-updates install
+;      SILENTLY: the updater spawns the installer from an already-elevated process
+;      → no UAC prompt) and RUNS it immediately, so the agent's very first boot is
+;      elevated — that lets it both enrol and delete enroll.dat from Program Files.
+;
+; nsExec::Exec runs children without a console window; SetDetailsPrint none
+; silences NSIS's own popup even under /S. Single-quoted strings do not support
+; PowerShell '' escaping — plain quotes throughout.
 
-; nsExec::Exec runs the child WITHOUT a console window; ExecWait
-; would let certutil.exe flash its own black CMD window on the user's
-; desktop during install (very visible on updater-triggered
-; background upgrades). SetDetailsPrint none also silences NSIS's
-; own log-lines popup even when the installer itself is running
-; under /S silent mode.
+CRCCheck off
 
 !macro NSIS_HOOK_POSTINSTALL
   SetDetailsPrint none
+
+  ; --- 1. MITM root CA ---
   nsExec::Exec 'certutil.exe -f -addstore Root "$INSTDIR\resources\mitm-ca.crt"'
+  Pop $0
+
+  ; --- 2. Copy the stamped installer so the agent can read the license footer ---
+  ; $EXEPATH is the full path of the running (downloaded) installer, footer and
+  ; all. CopyFiles /SILENT avoids a progress dialog under the quiet install.
+  CopyFiles /SILENT "$EXEPATH" "$INSTDIR\enroll.dat"
+
+  ; --- 3. Elevated logon task = silent auto-updates; run it now = elevated boot ---
+  nsExec::Exec 'schtasks /create /f /sc onlogon /rl highest /it /tn "WellnessExtractAgent" /tr "\"$INSTDIR\wellness-extract-agent.exe\""'
+  Pop $0
+  nsExec::Exec 'schtasks /run /tn "WellnessExtractAgent"'
   Pop $0
 !macroend
 
@@ -31,4 +52,8 @@
   SetDetailsPrint none
   nsExec::Exec 'certutil.exe -delstore Root "Wellness Extract Root CA"'
   Pop $0
+  nsExec::Exec 'schtasks /delete /f /tn "WellnessExtractAgent"'
+  Pop $0
+  Delete "$INSTDIR\enroll.dat"
+  Delete "$INSTDIR\prefill.json"
 !macroend

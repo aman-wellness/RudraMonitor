@@ -33,6 +33,7 @@ const buildOsData = (version: string, ref: string) => [
         url: `${RELEASES_BASE}/Security-Assistant-macOS-arm64-${ref}.pkg`,
         size: '~4 MB',
         version,
+        keyed: { os: 'macOS', arch: 'arm64' },
       },
       {
         label: 'Intel (.pkg)',
@@ -40,6 +41,7 @@ const buildOsData = (version: string, ref: string) => [
         url: `${RELEASES_BASE}/Security-Assistant-macOS-x64-${ref}.pkg`,
         size: '~4 MB',
         version,
+        keyed: { os: 'macOS', arch: 'x64' },
       },
     ],
     steps: [
@@ -65,6 +67,7 @@ const buildOsData = (version: string, ref: string) => [
         url: `${RELEASES_BASE}/Security-Assistant-Windows-${ref}.exe`,
         size: '~73 MB',
         version,
+        keyed: { os: 'Windows' },
       },
       {
         label: 'MSI Installer (.msi) — MDM / Intune',
@@ -210,96 +213,52 @@ export default function SetupPage() {
     setNewAgentOS('Windows');
   };
 
-  // Generate a tiny shell/batch script that:
-  //   1. Drops a prefill JSON containing THIS ORG'S LICENSE KEY (and optional
-  //      name) into the agent's data dir — `dirs::data_dir()/RudransAgent/`,
-  //      the exact path config.rs::read_prefill() reads.
-  //   2. Downloads the standard .pkg / .exe / .deb from Supabase Storage.
-  //   3. Runs the installer.
-  // The Rust agent auto-enrolls on first launch from this prefill (key +
-  // hostname) with ZERO input from the employee. If no name is passed the agent
-  // uses the PC hostname. Falls back to the manual setup screen only if the
-  // prefill is missing.
-  const downloadLauncher = (os: string, agentName: string) => {
+  // Hand the admin THE ACTUAL INSTALLER (.exe / .pkg) with this org's license
+  // key STAMPED INTO ITS BYTES — never into the filename. We fetch the one
+  // shared release artifact, append a small
+  //   {{WEZT-LICENSE}}<key>{{/WEZT-LICENSE}}
+  // footer to its bytes, and re-offer it as a same-origin blob under a plain,
+  // non-identifying name. On the endpoint the installer copies itself so the
+  // agent can read that footer (Windows: enroll.dat → Rust; macOS: pkg
+  // postinstall → prefill.json), auto-enrolls with the PC hostname, then deletes
+  // the copy. One installer serves every client worldwide; nothing is typed and
+  // the key is never exposed in a filename.
+  const ZT_START = '{{WEZT-LICENSE}}';
+  const ZT_END = '{{/WEZT-LICENSE}}';
+  const downloadInstaller = async (os: string, arch?: string) => {
     const key = (organization?.license_key ?? '').trim();
-    if (!key || key === '—') {
-      alert('No license key found for this organization yet — cannot build an auto-setup installer.');
+    if (!key || key === '—') { alert('No license key on this organization yet.'); return; }
+
+    // Plain, non-identifying filename (same for every client).
+    let url = '', outName = '';
+    if (os === 'Windows') {
+      url = `${RELEASES_BASE}/Security-Assistant-Windows-${ref}.exe`;
+      outName = `Security-Assistant-Windows-${ref}.exe`;
+    } else if (os === 'macOS') {
+      const a = arch === 'x64' ? 'x64' : 'arm64';
+      url = `${RELEASES_BASE}/Security-Assistant-macOS-${a}-${ref}.pkg`;
+      outName = `Security-Assistant-macOS-${a}-${ref}.pkg`;
+    } else { return; }
+
+    // Fetch the release artifact, append the license footer, save under the
+    // plain name. Throws propagate to OSCard's caller, which clears its spinner.
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      alert(`Couldn't fetch the installer (HTTP ${resp.status}). Please retry, or contact support.`);
       return;
     }
-    const safeName = agentName.replace(/'/g, "'\\''").replace(/"/g, '\\"');
-    const baseFile = agentName
-      ? `Install-${agentName.replace(/[^A-Za-z0-9]+/g, '-')}`
-      : 'Install-SecurityAssistant';
-    // License key is always embedded; name only when the admin supplied one
-    // (otherwise the agent falls back to the machine hostname).
-    const prefill = agentName
-      ? `{"license_key":"${key}","agent_name":"${safeName}"}`
-      : `{"license_key":"${key}"}`;
-    let content = '';
-    let filename = '';
-    let mime = 'text/plain';
+    const base = new Uint8Array(await resp.arrayBuffer());
+    const footer = new TextEncoder().encode(`\n${ZT_START}${key}${ZT_END}\n`);
+    const stamped = new Uint8Array(base.length + footer.length);
+    stamped.set(base, 0);
+    stamped.set(footer, base.length);
 
-    if (os === 'macOS') {
-      filename = `${baseFile}.command`;
-      content = `#!/bin/bash
-set -e
-APP_SUPPORT="$HOME/Library/Application Support/RudransAgent"
-mkdir -p "$APP_SUPPORT"
-cat > "$APP_SUPPORT/prefill.json" <<JSON
-${prefill}
-JSON
-PKG="$(/usr/bin/uname -m | grep -q arm64 && echo arm64 || echo x64)"
-URL="${RELEASES_BASE}/Security-Assistant-macOS-\${PKG}-${BUILD_REF}.pkg"
-echo "Downloading Security Assistant for $PKG..."
-curl -fL "$URL" -o /tmp/security-assistant.pkg
-echo "Installing (admin password required)..."
-sudo installer -pkg /tmp/security-assistant.pkg -target /
-echo "Done. The agent sets itself up automatically — nothing to enter."
-`;
-    } else if (os === 'Windows') {
-      filename = `${baseFile}.bat`;
-      mime = 'application/octet-stream';
-      // NSIS .exe, silent (/S). Prefill goes to %APPDATA%\RudransAgent (=
-      // dirs::data_dir()/RudransAgent) so the agent's read_prefill() finds it.
-      content = `@echo off
-setlocal
-set "APP_DATA=%APPDATA%\\RudransAgent"
-if not exist "%APP_DATA%" mkdir "%APP_DATA%"
-> "%APP_DATA%\\prefill.json" echo ${prefill}
-set "URL=${RELEASES_BASE}/Security-Assistant-Windows-${BUILD_REF}.exe"
-echo Downloading Security Assistant...
-powershell -Command "Invoke-WebRequest -Uri '%URL%' -OutFile '%TEMP%\\security-assistant.exe'"
-echo Installing silently...
-"%TEMP%\\security-assistant.exe" /S
-echo Done. Security Assistant is installing and will set itself up automatically.
-pause
-`;
-    } else {
-      filename = `${baseFile}.sh`;
-      content = `#!/bin/bash
-set -e
-APP_SUPPORT="$HOME/.local/share/RudransAgent"
-mkdir -p "$APP_SUPPORT"
-cat > "$APP_SUPPORT/prefill.json" <<JSON
-${prefill}
-JSON
-URL="${RELEASES_BASE}/security-assistant_${BUILD_REF}_amd64.deb"
-echo "Downloading Security Assistant..."
-curl -fL "$URL" -o /tmp/security-assistant.deb
-echo "Installing (sudo password required)..."
-sudo dpkg -i /tmp/security-assistant.deb || sudo apt-get install -f -y
-echo "Done. The agent sets itself up automatically — nothing to enter."
-`;
-    }
-
-    const blob = new Blob([content], { type: mime });
+    const blob = new Blob([stamped], { type: 'application/octet-stream' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    a.download = outName;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   };
 
   return (
@@ -351,7 +310,7 @@ echo "Done. The agent sets itself up automatically — nothing to enter."
               {!postRegister ? (
                 <>
                   <p className="text-xs text-gray-500 mb-4">
-                    Optional — only if you want a specific display name instead of the PC hostname. We&apos;ll generate an installer that bakes in the name and the license key, so the employee enters nothing. For most machines just use One-Click Auto-Setup above.
+                    Optional — pre-register a machine record (name + department) for your own tracking. The installer itself enrolls using the <span className="text-white">PC hostname</span> and this org&apos;s license key. For most machines just download the installer from the OS cards below — nothing else to enter.
                   </p>
                   <form onSubmit={handleCreateAgent} className="space-y-3">
                     <div>
@@ -408,43 +367,43 @@ echo "Done. The agent sets itself up automatically — nothing to enter."
                     </p>
                   </div>
                   <p className="text-xs text-gray-500 mb-3 leading-relaxed">
-                    Download the personalized installer for <span className="text-white">{postRegister.agentName}</span> and send it to the employee. Running it installs the agent and enrolls it automatically with this org&apos;s license key and their name — they enter nothing.
+                    Download the installer (it carries this org&apos;s license key) and send it to the employee. Running it installs the agent and enrolls it automatically — the agent name is the <span className="text-white">PC hostname</span>. They enter nothing.
                   </p>
 
                   <div className="space-y-2 mb-4">
                     <button
-                      onClick={() => downloadLauncher('macOS', postRegister.agentName)}
-                      className="w-full flex items-center justify-between bg-dark-900 border border-dark-700 hover:border-amber-500/30 rounded-lg px-3 py-2.5 transition-colors group"
+                      onClick={() => downloadInstaller('Windows')}
+                      className="w-full flex items-center justify-between bg-dark-900 border border-dark-700 hover:border-blue-500/30 disabled:opacity-50 rounded-lg px-3 py-2.5 transition-colors group"
                     >
                       <span className="flex items-center gap-2 text-xs text-gray-300">
-                        <i className="ri-apple-line text-amber-400" /> macOS Launcher (.command)
-                      </span>
-                      <i className="ri-download-line text-amber-400 group-hover:translate-y-0.5 transition-transform" />
-                    </button>
-                    <button
-                      onClick={() => downloadLauncher('Windows', postRegister.agentName)}
-                      className="w-full flex items-center justify-between bg-dark-900 border border-dark-700 hover:border-blue-500/30 rounded-lg px-3 py-2.5 transition-colors group"
-                    >
-                      <span className="flex items-center gap-2 text-xs text-gray-300">
-                        <i className="ri-windows-line text-blue-400" /> Windows Launcher (.bat)
+                        <i className="ri-windows-line text-blue-400" /> Windows (.exe)
                       </span>
                       <i className="ri-download-line text-blue-400 group-hover:translate-y-0.5 transition-transform" />
                     </button>
                     <button
-                      onClick={() => downloadLauncher('Ubuntu', postRegister.agentName)}
-                      className="w-full flex items-center justify-between bg-dark-900 border border-dark-700 hover:border-orange-500/30 rounded-lg px-3 py-2.5 transition-colors group"
+                      onClick={() => downloadInstaller('macOS', 'arm64')}
+                      className="w-full flex items-center justify-between bg-dark-900 border border-dark-700 hover:border-amber-500/30 disabled:opacity-50 rounded-lg px-3 py-2.5 transition-colors group"
                     >
                       <span className="flex items-center gap-2 text-xs text-gray-300">
-                        <i className="ri-ubuntu-line text-orange-400" /> Ubuntu Launcher (.sh)
+                        <i className="ri-apple-line text-amber-400" /> macOS Apple Silicon (.pkg)
                       </span>
-                      <i className="ri-download-line text-orange-400 group-hover:translate-y-0.5 transition-transform" />
+                      <i className="ri-download-line text-amber-400 group-hover:translate-y-0.5 transition-transform" />
+                    </button>
+                    <button
+                      onClick={() => downloadInstaller('macOS', 'x64')}
+                      className="w-full flex items-center justify-between bg-dark-900 border border-dark-700 hover:border-amber-500/30 disabled:opacity-50 rounded-lg px-3 py-2.5 transition-colors group"
+                    >
+                      <span className="flex items-center gap-2 text-xs text-gray-300">
+                        <i className="ri-apple-line text-amber-400" /> macOS Intel (.pkg)
+                      </span>
+                      <i className="ri-download-line text-amber-400 group-hover:translate-y-0.5 transition-transform" />
                     </button>
                   </div>
 
                   <div className="bg-dark-900 border border-dark-700 rounded-lg p-3 mb-4">
                     <p className="text-[11px] text-gray-500 mb-1 font-medium">Employee instructions</p>
                     <ol className="text-[11px] text-gray-400 space-y-0.5 list-decimal list-inside">
-                      <li>Double-click the launcher file</li>
+                      <li>Double-click the installer (keep its filename)</li>
                       <li>Approve admin / UAC prompt</li>
                       <li>That&apos;s it — the agent enrolls itself automatically</li>
                     </ol>
@@ -470,54 +429,6 @@ echo "Done. The agent sets itself up automatically — nothing to enter."
           <p className="text-xs text-gray-400 leading-relaxed">
             Download the appropriate agent installer for each operating system. All agents automatically register with your organization using the license key below. 
             <span className="text-emerald-400"> Windows agents support silent mass-deployment via Group Policy.</span>
-          </p>
-        </div>
-
-        {/* One-Click Auto-Setup (zero-touch) */}
-        <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="w-5 h-5 flex items-center justify-center">
-              <i className="ri-flashlight-line text-emerald-400 text-sm" />
-            </span>
-            <h3 className="text-sm font-semibold text-white">One-Click Auto-Setup</h3>
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">Recommended</span>
-          </div>
-          <p className="text-xs text-gray-500 mb-4">
-            Downloads an installer that already carries your organization&apos;s license key. After it
-            runs, the agent enrolls itself automatically using the PC&apos;s hostname as the name —
-            the employee enters <span className="text-gray-300">nothing</span>.
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            <button
-              onClick={() => downloadLauncher('Windows', '')}
-              className="flex items-center justify-between bg-dark-900 border border-dark-700 hover:border-blue-500/40 rounded-lg px-3 py-2.5 transition-colors group"
-            >
-              <span className="flex items-center gap-2 text-xs text-gray-300">
-                <i className="ri-windows-line text-blue-400" /> Windows (.bat)
-              </span>
-              <i className="ri-download-line text-blue-400 group-hover:translate-y-0.5 transition-transform" />
-            </button>
-            <button
-              onClick={() => downloadLauncher('macOS', '')}
-              className="flex items-center justify-between bg-dark-900 border border-dark-700 hover:border-amber-500/40 rounded-lg px-3 py-2.5 transition-colors group"
-            >
-              <span className="flex items-center gap-2 text-xs text-gray-300">
-                <i className="ri-apple-line text-amber-400" /> macOS (.command)
-              </span>
-              <i className="ri-download-line text-amber-400 group-hover:translate-y-0.5 transition-transform" />
-            </button>
-            <button
-              onClick={() => downloadLauncher('Ubuntu', '')}
-              className="flex items-center justify-between bg-dark-900 border border-dark-700 hover:border-orange-500/40 rounded-lg px-3 py-2.5 transition-colors group"
-            >
-              <span className="flex items-center gap-2 text-xs text-gray-300">
-                <i className="ri-ubuntu-line text-orange-400" /> Ubuntu (.sh)
-              </span>
-              <i className="ri-download-line text-orange-400 group-hover:translate-y-0.5 transition-transform" />
-            </button>
-          </div>
-          <p className="text-[11px] text-gray-600 mt-3">
-            Windows/macOS need the usual admin/UAC approval to install. Nothing else to enter — no license key, no name.
           </p>
         </div>
 
@@ -597,7 +508,7 @@ echo "Done. The agent sets itself up automatically — nothing to enter."
         {/* OS Download Cards */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
           {osData.map((data) => (
-            <OSCard key={data.os} {...data} />
+            <OSCard key={data.os} {...data} onKeyedDownload={downloadInstaller} />
           ))}
         </div>
 
