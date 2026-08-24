@@ -956,6 +956,33 @@ export function useUnresolvedAlertCount() {
     if (!error) setCount(c ?? 0);
   }, [organization]);
 
+  /**
+   * Bulk-resolve EVERY unresolved alert in the org — including rows the
+   * notification tray never fetched (the tray caps at 50, but the badge
+   * shows the true count and can be 99+). Runs as two statements: pull the
+   * org's agent ids, then update alerts scoped to those agents where
+   * ai_resolved is still false. Not a single-shot join-filter update because
+   * supabase-js's PostgREST update path can't cross tables — but two round
+   * trips is still O(1) requests for the button click.
+   */
+  const clearAllForOrg = useCallback(async (resolution: string) => {
+    if (!organization) return 0;
+    const { data: ags, error: ae } = await supabase
+      .from('agents')
+      .select('id')
+      .eq('org_id', organization.id);
+    if (ae || !ags || ags.length === 0) return 0;
+    const agentIds = ags.map((a) => a.id as string);
+    const { error, count: c } = await supabase
+      .from('alerts')
+      .update({ ai_resolved: true, resolution }, { count: 'exact' })
+      .in('agent_id', agentIds)
+      .eq('ai_resolved', false);
+    if (error) throw error;
+    setCount(0);
+    return c ?? 0;
+  }, [organization]);
+
   useEffect(() => {
     void refresh();
     // Poll on the same relaxed cadence the dashboard uses elsewhere so the
@@ -964,7 +991,7 @@ export function useUnresolvedAlertCount() {
     return () => window.clearInterval(id);
   }, [refresh]);
 
-  return { count, refresh };
+  return { count, refresh, clearAllForOrg };
 }
 
 // =============== Latest system metrics per agent ===============

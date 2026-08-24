@@ -138,6 +138,13 @@ export default function SettingsPanel({
       icon: 'ri-clipboard-line',
       on: settings.clipboard_enabled,
     },
+    {
+      key: 'email_intercept_public_only',
+      label: 'Email inspection (public webmail)',
+      sub: 'Requires agent v0.7.0+. Terminates HTTPS on Gmail/Yahoo/Outlook.com/iCloud/Proton so the full email body and attachments are captured. Corporate mail, banking, healthcare and payments are always bypassed. Each endpoint prompts the user for consent once before the proxy starts.',
+      icon: 'ri-shield-keyhole-line',
+      on: settings.email_intercept_public_only ?? false,
+    },
   ];
 
   return (

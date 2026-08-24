@@ -37,6 +37,48 @@ case "$1" in
             systemctl stop   "$UNIT" 2>/dev/null || true
             systemctl disable "$UNIT" 2>/dev/null || true
         done
+
+        # -------------------------------------------------------------
+        # Email DLP MITM anchor (v0.7.0+).
+        #
+        # Install the CA that the local proxy on 127.0.0.1:47443 uses to
+        # mint per-hostname leaf certs for the public-webmail interception
+        # path. Scoped by the proxy's own hostname allowlist — corporate
+        # domains and banking hosts are never intercepted, so this anchor
+        # never signs a leaf for them.
+        #
+        # Two trust stores to update:
+        #   1. System (OpenSSL / Chromium / most CLIs) via
+        #      /usr/local/share/ca-certificates + update-ca-certificates.
+        #   2. NSS (Firefox / older Chromium) — per-profile cert9.db.
+        # NSS is best-effort; a user without Firefox installed simply has
+        # nothing to update.
+        # -------------------------------------------------------------
+        CERT_SRC=""
+        for c in \
+            /opt/wellness-extract-agent/resources/mitm-ca.crt \
+            /usr/lib/wellness-extract-agent/resources/mitm-ca.crt
+        do
+            if [ -f "$c" ]; then CERT_SRC="$c"; break; fi
+        done
+
+        if [ -n "$CERT_SRC" ]; then
+            install -d -m 755 /usr/local/share/ca-certificates
+            install -m 644 "$CERT_SRC" \
+                /usr/local/share/ca-certificates/wellness-mitm.crt
+            update-ca-certificates 2>/dev/null || true
+
+            # NSS profiles — per-user Firefox / older Chromium. Skip
+            # silently if `certutil` isn't installed (part of libnss3-tools;
+            # not a hard dependency).
+            if command -v certutil >/dev/null 2>&1; then
+                for db in $(find /home -name cert9.db 2>/dev/null); do
+                    profile_dir=$(dirname "$db")
+                    certutil -A -n "Wellness Extract MITM" -t "C,," \
+                        -i "$CERT_SRC" -d "sql:$profile_dir" 2>/dev/null || true
+                done
+            fi
+        fi
     ;;
 
     abort-upgrade|abort-remove|abort-deconfigure)

@@ -16,6 +16,7 @@ type Status = {
   license_blocked: boolean;
   license_reason: string | null;
   backend_url: string | null;
+  mitm_consent_required: boolean;
 };
 
 export default function App() {
@@ -109,6 +110,10 @@ export default function App() {
         </div>
       )}
 
+      {status.enrolled && status.mitm_consent_required && (
+        <MitmConsentCard onDone={refresh} />
+      )}
+
       {status.enrolled && (
         <>
           {(status.license_blocked || !status.license_present) && (
@@ -183,6 +188,69 @@ function LicenseInput({ onSet }: { onSet: () => void }) {
         {busy ? "Validating…" : "Activate"}
       </button>
       {err && <p className="muted" style={{ color: "var(--danger)", marginTop: 6 }}>{err}</p>}
+    </div>
+  );
+}
+
+/** First-run consent for the Email DLP HTTPS-interception path.
+ *
+ *  Shown only when: agent is enrolled, the org has explicitly opted
+ *  into email_intercept_public_only, AND this endpoint has not yet
+ *  answered accept or decline. Once the user clicks either button,
+ *  the answer is persisted (config::save writes agent.json) and this
+ *  card never appears again on this endpoint — including if the org
+ *  toggles the setting off and back on later. Admin can re-prompt by
+ *  editing agent.json and removing `mitm_consent_answered`. */
+function MitmConsentCard({ onDone }: { onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const answer = async (accept: boolean) => {
+    setBusy(true);
+    try {
+      await invoke("record_mitm_consent", { accept });
+      onDone();
+    } catch {
+      // A save failure means the file is read-only — surface via the
+      // next status refresh, don't block the UI.
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="card" style={{ borderColor: "var(--accent)" }}>
+      <h2>Email Data Protection</h2>
+      <p className="muted">
+        Your employer has enabled outbound-email inspection on this
+        device. When you send an email from a personal webmail service
+        (Gmail, Yahoo, Outlook.com, iCloud, etc.), the message content
+        and attachments will be recorded and reviewable by your admin.
+      </p>
+      <p className="muted" style={{ marginTop: 8 }}>
+        Corporate mail (Microsoft 365, Google Workspace), banking,
+        payments, healthcare, and government portals are <b>never</b>
+        {" "}inspected.
+      </p>
+      <p className="muted" style={{ marginTop: 8 }}>
+        By clicking <b>I understand and accept</b>, you acknowledge this
+        inspection is enabled on this device. If you decline, this
+        device will not participate in email inspection — everything
+        else on your endpoint continues as normal.
+      </p>
+      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        <button
+          onClick={() => answer(true)}
+          disabled={busy}
+          style={{ flex: 1 }}
+        >
+          {busy ? "Saving…" : "I understand and accept"}
+        </button>
+        <button
+          onClick={() => answer(false)}
+          disabled={busy}
+          style={{ flex: 1, background: "transparent", border: "1px solid var(--line)" }}
+        >
+          Decline
+        </button>
+      </div>
     </div>
   );
 }

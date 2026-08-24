@@ -22,6 +22,19 @@ pub struct AgentConfig {
     /// `hbbs_pubkey` for precedence.
     #[serde(default)]
     pub hbbs_pubkey: Option<String>,
+    /// Local acknowledgement that the Email DLP MITM proxy is enabled
+    /// on THIS endpoint. Even when the server-side flags all say "start
+    /// the proxy", the agent won't set a system-wide proxy or install
+    /// a TLS interception path until this is true. Flipped once from
+    /// the first-run consent screen (or by an MDM push writing this
+    /// field into agent.json before first launch) — never automatically.
+    #[serde(default)]
+    pub mitm_consent: bool,
+    /// True once the operator has made an explicit choice (accept OR
+    /// decline). Stops the consent screen from re-appearing on every
+    /// launch after a decline. Admins can reset by editing agent.json.
+    #[serde(default)]
+    pub mitm_consent_answered: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,6 +142,22 @@ const EMBEDDED_HBBS_PUBKEY: &str = match option_env!("RUDRANS_HBBS_PUBKEY") {
     // rustdesk-server image on first boot.
     None => "N9YabDaxaMGLRZe0ImMg7A+erwbHnklEQeQviQA+E7s=",
 };
+
+pub fn mitm_consent(cfg: &AgentConfig) -> bool {
+    // Environment override for MDM-pushed installs where consent is
+    // recorded via a Group Policy / mobileconfig, not a first-run
+    // click. `WELLNESS_MITM_CONSENT=1` at agent-launch time counts as
+    // explicit consent even without the on-disk flag set.
+    if std::env::var("WELLNESS_MITM_CONSENT")
+        .ok()
+        .as_deref()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    cfg.mitm_consent
+}
 
 pub fn hbbs_pubkey(cfg: &AgentConfig) -> String {
     std::env::var("RUDRANS_HBBS_PUBKEY")

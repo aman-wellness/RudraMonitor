@@ -42,6 +42,12 @@ mod signature_deploy;
 #[cfg(target_os = "windows")]
 mod endpoint_tools;
 mod legacy_sweep;
+// Email DLP HTTPS-interception proxy (Phase 3+). Module compiles but its
+// `start()` is intentionally NOT called from setup yet — enabling the
+// system-wide proxy without the Phase 4 interception logic gains us
+// nothing and would break browsing if the listener ever fails to bind.
+// Wired up as part of the v0.7.0 release once Phase 4 lands.
+mod mitm;
 
 use active_window::{FocusSession, WindowInfo};
 use anyhow::{anyhow, Result};
@@ -113,6 +119,11 @@ const DEFAULT_SETTINGS: api::AgentSettings = api::AgentSettings {
     wallpaper_updated_at: None,
     tracking_schedule_enabled: false,
     tracking_schedule_json: None,
+    // Email DLP MITM defaults: OFF. Server side has to flip
+    // `email_intercept_public_only` true on the org's dlp_settings row
+    // AND the local consent has to be recorded before the proxy starts.
+    email_intercept_public_only: false,
+    email_body_capture: true,
 };
 
 // Threshold-based alerts: only fired once when crossing into elevated state, cleared when metric drops.
@@ -235,6 +246,11 @@ struct StatusPayload {
     /// silently outranks the URL compiled into the installer, so "which build
     /// did I install" does not answer "where is it sending my licence key".
     backend_url: Option<String>,
+    /// True when the org has opted into Email DLP MITM interception
+    /// AND this endpoint hasn't yet given (or declined) local consent.
+    /// UI shows the consent card only when true; on accept OR decline
+    /// the answer sticks so the card doesn't re-appear on every launch.
+    mitm_consent_required: bool,
 }
 
 #[tauri::command]
@@ -276,7 +292,28 @@ async fn get_status(app: tauri::AppHandle, state: State<'_, AppState>) -> Result
         license_blocked,
         license_reason,
         backend_url: config::supabase_url(&cfg),
+        // Per-endpoint consent card was dropped in v0.7.2 — org
+        // toggle is the consent. Field is kept in the payload for
+        // schema stability; always false.
+        mitm_consent_required: false,
     })
+}
+
+#[tauri::command]
+async fn record_mitm_consent(
+    accept: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    // Persist BOTH the accept flag and the "user has now answered"
+    // flag together so a decline doesn't re-open the dialog on the
+    // next launch. If an admin later wants to re-prompt an endpoint
+    // they can edit agent.json and drop `mitm_consent_answered`.
+    let mut cfg = state.config.lock().await;
+    cfg.mitm_consent = accept;
+    cfg.mitm_consent_answered = true;
+    config::save(&cfg).map_err(|e| e.to_string())?;
+    log::info!("mitm: consent recorded (accept={accept})");
+    Ok(())
 }
 
 #[tauri::command]
@@ -1408,6 +1445,15 @@ pub fn run() {
             // DLP watcher always starts but loops short-circuit when
             // settings.dlp_enabled is false — admin toggles from the dashboard.
             spawn_dlp_loop(state.clone());
+            // Email DLP MITM proxy — the full HTTPS-interception path.
+            // Two-gate design (post v0.7.2): agent enrolled + org has
+            // flipped `email_intercept_public_only` in dashboard.
+            // Enrollment is proof the employer authorized this
+            // endpoint; the dashboard toggle is proof the admin
+            // explicitly opted the org in. Per-endpoint consent
+            // clicking was dropped as unnecessary friction — this is
+            // a managed corporate deployment, not a consumer app.
+            spawn_mitm_gate(state.clone());
             // USB-block loop: enumerates removable volumes every 5s and unmounts
             // any new ones unless the agent is allowlisted. Always starts; the
             // loop itself reads settings.removable_disks_blocked each iteration.
@@ -1464,6 +1510,7 @@ pub fn run() {
             set_paused,
             set_autostart,
             set_license_key,
+            record_mitm_consent,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1549,6 +1596,53 @@ fn spawn_dlp_loop(state: AppState) {
 }
 
 /// USB-block enforcement loop. Independent of DLP — DLP watches files
+/// Email DLP MITM gate.
+///
+/// Runs a short-poll loop that waits for all three enable conditions
+/// (enrollment + org opt-in + local consent) and then calls
+/// `mitm::start()` ONCE. After the proxy is up, this loop can exit —
+/// mitm has its own stop signal. If the org later flips
+/// `email_intercept_public_only` off, `mitm::stop()` will be called
+/// from the settings watcher (Phase 5b — for now the running proxy
+/// keeps going until the agent restarts).
+///
+/// Every failure path is a silent skip: setting the system proxy
+/// wrongly is a lot worse than not setting it at all.
+fn spawn_mitm_gate(state: AppState) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            // Preconditions in cheapest-first order.
+            let cfg = state.config.lock().await.clone();
+            let settings = state.settings.lock().await.clone();
+
+            let enrolled = cfg.enrollment.is_some();
+            let opted_in = settings.dlp_enabled && settings.email_intercept_public_only;
+
+            if enrolled && opted_in {
+                if let (Some(url), Some(anon), Some(enr)) = (
+                    config::supabase_url(&cfg),
+                    config::supabase_anon_key(&cfg),
+                    cfg.enrollment.as_ref().map(|e| e.enroll_token.clone()),
+                ) {
+                    let mcfg = mitm::MitmConfig {
+                        supabase_url: url,
+                        anon_key: anon,
+                        enroll_token: enr,
+                    };
+                    log::info!("mitm: gate satisfied — starting Email DLP proxy");
+                    if let Err(e) = mitm::start(mcfg).await {
+                        log::warn!("mitm: start() failed: {e}");
+                    }
+                    return; // start() is fire-and-forget internally
+                }
+            }
+            // Poll again once a minute — cheap; every check is a
+            // couple of mutex reads.
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        }
+    });
+}
+
 /// being copied; usb_block prevents the disk from being usable at all.
 /// Per-agent allowlist via `settings.removable_disks_blocked = false`,
 /// which also triggers auto-remount of anything we previously ejected.

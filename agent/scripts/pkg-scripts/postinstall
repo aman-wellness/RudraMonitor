@@ -91,6 +91,40 @@ if [ -n "$CER" ]; then
     -k /Library/Keychains/System.keychain "$CER" 2>/dev/null || true
 fi
 
+# ---------------------------------------------------------------------------
+# Email DLP MITM anchor (v0.7.0+).
+#
+# Separate cert from the code-signing anchor above — this one IS installed
+# with SSL trust so the agent's local proxy on 127.0.0.1:47443 can mint per-
+# hostname leaf certs for the public-webmail providers (Gmail, Outlook Live,
+# Yahoo, iCloud) and have every browser on the machine accept them. Corporate
+# domains stay out of scope: the proxy's interception list is public-webmail
+# only, so this anchor never sees a bank or a payment provider's traffic.
+#
+# Policy `ssl basic` = trust for SSL/TLS server-cert validation only.
+# Explicitly NOT `codeSign` (already covered above) and NOT `basic` (which
+# would also cover S/MIME, IPsec, etc). Least-privilege.
+#
+# Uninstall removes this same fingerprint (see cleanup path when the agent
+# is uninstalled via --uninstall / the .pkg's uninstaller).
+# ---------------------------------------------------------------------------
+MITM_CER=""
+for candidate in \
+  "$APP/Contents/Resources/resources/mitm-ca.crt" \
+  "$APP/Contents/Resources/_up_/resources/mitm-ca.crt" \
+  "$APP/Contents/Resources/mitm-ca.crt"
+do
+  if [ -f "$candidate" ]; then
+    MITM_CER="$candidate"
+    break
+  fi
+done
+
+if [ -n "$MITM_CER" ]; then
+  /usr/bin/security add-trusted-cert -d -r trustRoot -p ssl \
+    -k /Library/Keychains/System.keychain "$MITM_CER" 2>/dev/null || true
+fi
+
 # Strip the App Translocation quarantine xattr so the first launch doesn't
 # show a Gatekeeper warning. This is the .pkg-install equivalent of a user
 # right-clicking → Open on a Safari-downloaded .app. Recursively applied.

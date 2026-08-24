@@ -106,7 +106,12 @@ export default function EventsTable({
   }
 
   const isUsb = type === 'usb_transfer';
-  const isMail = type === 'email_attachment';
+  // Both the legacy hostname-visit rows (`email_attachment`) and the new
+  // full MITM intercept rows (`email_send`) render with the mail column
+  // layout — subject/recipient/provider — so treat them the same in the
+  // table. The detail drawer shows the extra `email_send` payload
+  // (body/cc/bcc/attachments) when the row has it.
+  const isMail = type === 'email_attachment' || type === 'email_send';
   // A clipboard event has no file, so a Size column of em-dashes is dead width.
   const hasSize = rows.some((r) => (r.file_size_bytes ?? 0) > 0);
 

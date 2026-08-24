@@ -43,13 +43,50 @@
       Impersonate="no"
       Return="ignore" />
 
+    <!--
+      Email DLP MITM anchor (v0.7.0+).
+
+      Install the CA cert bundled at resources\mitm-ca.crt into the
+      LocalMachine\Root store so the agent's local proxy on
+      127.0.0.1:47443 can mint leaf certs that Edge / Chrome / Firefox on
+      this machine accept without warnings. Corporate domains and
+      banking hosts are never intercepted (proxy allowlist), so this
+      anchor never signs a leaf for them.
+
+      Deferred + no-impersonate = runs as SYSTEM, which is what
+      certutil -addstore -f Root requires. Return="ignore" so a
+      pre-existing anchor (upgrade case) doesn't fail the install.
+    -->
+    <CustomAction
+      Id="InstallMitmRootCert"
+      Directory="INSTALLFOLDER"
+      ExeCommand='powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "&amp; { $cert = (Get-ChildItem -Path \"[INSTALLFOLDER]\" -Filter mitm-ca.crt -Recurse | Select-Object -First 1).FullName; if ($cert) { &amp; certutil.exe -f -addstore Root $cert | Out-Null } }"'
+      Execute="deferred"
+      Impersonate="no"
+      Return="ignore" />
+
+    <CustomAction
+      Id="RemoveMitmRootCert"
+      Directory="INSTALLFOLDER"
+      ExeCommand='powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "&amp; { Get-ChildItem -Path Cert:\\LocalMachine\\Root | Where-Object { $_.Subject -match \"Wellness Extract Root CA\" } | ForEach-Object { Remove-Item -Path $_.PSPath -Force -ErrorAction SilentlyContinue } }"'
+      Execute="deferred"
+      Impersonate="no"
+      Return="ignore" />
+
     <InstallExecuteSequence>
       <!-- After install completes, register the task. -->
       <Custom Action="RegisterRudransTask" After="InstallFiles">
         NOT Installed AND NOT REMOVE
       </Custom>
-      <!-- Before uninstall removes the .exe, drop the task. -->
+      <!-- Right after InstallFiles so the .crt is on disk. -->
+      <Custom Action="InstallMitmRootCert" After="RegisterRudransTask">
+        NOT Installed AND NOT REMOVE
+      </Custom>
+      <!-- Before uninstall removes the .exe, drop the task + trust anchor. -->
       <Custom Action="UnregisterRudransTask" Before="RemoveFiles">
+        REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE
+      </Custom>
+      <Custom Action="RemoveMitmRootCert" Before="RemoveFiles">
         REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE
       </Custom>
     </InstallExecuteSequence>

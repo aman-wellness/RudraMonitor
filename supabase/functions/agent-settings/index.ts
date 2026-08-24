@@ -69,6 +69,17 @@ Deno.serve(async (req) => {
     .eq("org_id", data.org_id)
     .maybeSingle();
 
+  // Email DLP MITM opt-in (migration 0148 / 0149). Only surfaces true
+  // when: (a) the org has explicitly flipped the flag in Settings, AND
+  // (b) their plan includes DLP. Both agent and edge fn re-check the
+  // plan here so a lapsed subscription silently turns the proxy off
+  // without touching the row.
+  const { data: dlpSettings } = await admin
+    .from("dlp_settings")
+    .select("email_intercept_public_only, email_body_capture")
+    .eq("org_id", data.org_id)
+    .maybeSingle();
+
   // Tracking schedule resolution: per-agent override beats org default.
   //
   //   If the agent has tracking_schedule_override = true → use the agent's
@@ -102,6 +113,13 @@ Deno.serve(async (req) => {
     wallpaper_updated_at: orgSettings?.wallpaper_updated_at ?? null,
     tracking_schedule_enabled: trackingScheduleEnabled,
     tracking_schedule_json: trackingScheduleJson,
+    // Email DLP MITM proxy — only fires when the plan includes DLP AND
+    // the admin has explicitly opted in in Settings. Default off
+    // post-0149 so a v0.7.0 rollout doesn't start intercepting HTTPS
+    // for anyone who hasn't asked for it.
+    email_intercept_public_only:
+      allowDlp && !!dlpSettings?.email_intercept_public_only,
+    email_body_capture: dlpSettings?.email_body_capture ?? true,
   });
 });
 

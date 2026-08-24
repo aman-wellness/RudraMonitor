@@ -209,8 +209,28 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
   // the badge). The badge count comes from a COUNT query, not from the number
   // of fetched rows — that's why it can show the true total instead of being
   // capped by a fetch `limit` (the old `limit: 5` was why it was stuck at "5").
-  const { rows: alertRows } = useAlerts({ sinceHours: 24 * 7, limit: 50 });
-  const { count: unresolvedAlertCount } = useUnresolvedAlertCount();
+  const { rows: alertRows, refresh: refreshAlerts } = useAlerts({ sinceHours: 24 * 7, limit: 50 });
+  const { count: unresolvedAlertCount, clearAllForOrg } = useUnresolvedAlertCount();
+  const [clearingAlerts, setClearingAlerts] = useState(false);
+  const openAlertRows = alertRows.filter((a) => !a.ai_resolved);
+  const clearAllNotifications = async () => {
+    // Resolve EVERY unresolved alert in the org — the tray only fetches 50
+    // but the badge can be 99+, so limiting the clear to the fetched rows
+    // leaves the badge stuck. clearAllForOrg goes wide and drops the badge
+    // to 0 in-hand.
+    if (openAlertRows.length === 0 && unresolvedAlertCount === 0) return;
+    setClearingAlerts(true);
+    try {
+      await clearAllForOrg('cleared from notification tray');
+      // Refetch the tray rows so the "resolved" flag we just set is visible
+      // in the currently-loaded slice (in case realtime hasn't caught up).
+      void refreshAlerts();
+    } catch (e) {
+      console.error('clear notifications failed', e);
+    } finally {
+      setClearingAlerts(false);
+    }
+  };
   const { role: appRole } = useAppRole();
   const features = useFeatures();
   const appAccess = useAppAccess();
@@ -615,16 +635,26 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
 
               {notifOpen && (
                 <div className="s-pop w-72">
-                  <div className="px-3.5 py-2.5 s-pop-head">
+                  <div className="px-3.5 py-2.5 s-pop-head flex items-center justify-between">
                     <span className="text-[11.5px] font-medium t1">Notifications</span>
+                    {(openAlertRows.length > 0 || unresolvedAlertCount > 0) && (
+                      <button
+                        onClick={clearAllNotifications}
+                        disabled={clearingAlerts}
+                        className="text-[10px] font-medium t-accent hover:underline disabled:opacity-50"
+                        title="Mark all unread notifications as resolved"
+                      >
+                        {clearingAlerts ? 'Clearing…' : 'Clear all'}
+                      </button>
+                    )}
                   </div>
                   <div className="max-h-64 overflow-y-auto">
-                    {alertRows.length === 0 ? (
+                    {openAlertRows.length === 0 ? (
                       <div className="px-4 py-6 text-center text-[11px] t3">
                         No recent alerts.
                       </div>
                     ) : (
-                      alertRows.map((a) => (
+                      openAlertRows.map((a) => (
                         <div key={a.id} className="px-3.5 py-2.5 cell cursor-pointer">
                           <div className="flex items-start gap-2.5">
                             <span
