@@ -417,7 +417,12 @@ pub async fn ensure_ffmpeg() -> Result<PathBuf> {
 }
 
 async fn download_to(dest: &PathBuf) -> Result<()> {
+    // .no_proxy() — see api::build_client. Same rationale: the agent
+    // must never route its own traffic through the OS system-proxy
+    // (which it sets itself for MITM), or ffmpeg-bucket downloads
+    // will loop back into 127.0.0.1:47443 and stall.
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(300))
         .build()
         .context("building http client")?;
