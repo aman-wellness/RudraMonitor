@@ -142,9 +142,34 @@ mod windows {
     pub fn sweep() {
         for hive in ["HKCU", "HKLM"] {
             for name in LEGACY_DISPLAY_NAMES {
-                purge_uninstall_key(hive, name);
+                purge_uninstall_key(hive, name, None);
             }
         }
+        // Same-name-different-location sweep. NSIS installMode changed
+        // in v0.7.3 from currentUser → perMachine (fix for the CA-
+        // install popup). Machines that ran v0.7.0-v0.7.2 have an
+        // Add-or-Remove-Programs entry under HKCU pointing at
+        // %LOCALAPPDATA%\Programs\Security Assistant\, and the newer
+        // per-machine install adds a SEPARATE entry under HKLM pointing
+        // at C:\Program Files\Security Assistant\. Auto-update on the
+        // perMachine path never touches the currentUser install, so
+        // both coexist forever — two tray icons, two scheduled tasks,
+        // two update loops racing.
+        //
+        // Purge any "Security Assistant" uninstall key whose
+        // InstallLocation is NOT the directory the currently-running
+        // exe lives in. This guarantees exactly ONE install survives
+        // — the one we're running out of.
+        let self_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        if let Some(dir) = self_dir {
+            let keep = normalize_path(&dir.to_string_lossy());
+            for hive in ["HKCU", "HKLM"] {
+                purge_uninstall_key(hive, "Security Assistant", Some(keep.clone()));
+            }
+        }
+
         for task in LEGACY_TASK_NAMES {
             let mut cmd = Command::new("schtasks");
             cmd.args(["/delete", "/tn", task, "/f"]);
@@ -153,12 +178,21 @@ mod windows {
         }
     }
 
+    fn normalize_path(p: &str) -> String {
+        p.trim().trim_end_matches('\\').to_lowercase()
+    }
+
     /// Enumerate `<hive>\Software\Microsoft\Windows\CurrentVersion\Uninstall`
     /// looking for a DisplayName match. For each hit, run the stored
     /// UninstallString silently, then hard-delete the key (in case the
     /// uninstaller left the key behind). All operations wrapped with
     /// CREATE_NO_WINDOW so nothing flashes on the user's desktop.
-    fn purge_uninstall_key(hive: &str, display_name: &str) {
+    /// If `keep_install_dir` is `Some(path)`, ONLY purge keys whose
+    /// `InstallLocation` value does NOT match that path (case-insensitive,
+    /// trailing-backslash stripped). Used for same-name sweeps where we
+    /// need to preserve the currently-running install and remove sibling
+    /// copies. `None` means "purge every match" — the historical behavior.
+    fn purge_uninstall_key(hive: &str, display_name: &str, keep_install_dir: Option<String>) {
         let root = format!(
             "{hive}\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall"
         );
@@ -170,19 +204,19 @@ mod windows {
             _ => return,
         };
         let stdout = String::from_utf8_lossy(&out.stdout);
-        // `reg query /s` emits blocks like:
-        //   HKEY_CURRENT_USER\Software\...\Uninstall\{SomeKey}
-        //       DisplayName    REG_SZ    Rudrans Agent
-        //
-        // We scan for lines starting with HKEY_ (the key path) and split
-        // to grab the fully-qualified key. Then for each key we probe
-        // UninstallString and invoke it.
         for line in stdout.lines() {
             let trimmed = line.trim();
             if !trimmed.starts_with("HKEY_") {
                 continue;
             }
             let key = trimmed.to_string();
+            if let Some(keep) = keep_install_dir.as_ref() {
+                let install_loc = read_reg_string(&key, "InstallLocation").map(|s| normalize_path(&s));
+                if install_loc.as_deref() == Some(keep.as_str()) {
+                    log::info!("legacy_sweep: keeping {key} (matches running install)");
+                    continue;
+                }
+            }
             run_uninstall_string(&key);
             let mut del = Command::new("reg");
             del.args(["delete", &key, "/f"]);
@@ -190,6 +224,19 @@ mod windows {
             let _ = del.output();
             log::info!("legacy_sweep: purged {key}");
         }
+    }
+
+    fn read_reg_string(key: &str, name: &str) -> Option<String> {
+        let mut q = Command::new("reg");
+        q.args(["query", key, "/v", name]);
+        crate::win_proc::no_window(&mut q);
+        let out = q.output().ok()?;
+        if !out.status.success() { return None; }
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        stdout.lines()
+            .find(|l| l.trim_start().starts_with(name))
+            .and_then(|l| l.split("REG_SZ").nth(1))
+            .map(|s| s.trim().trim_matches('"').to_string())
     }
 
     fn run_uninstall_string(key: &str) {

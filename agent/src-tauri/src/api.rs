@@ -307,7 +307,18 @@ pub async fn dlp_email_finalize(
 }
 
 pub fn build_client() -> Result<Client> {
+    // .no_proxy() is CRITICAL. reqwest by default auto-detects the OS
+    // system-proxy setting (HKCU Internet Settings on Windows, networksetup
+    // on macOS, HTTPS_PROXY env on Linux). Since the MITM module SETS that
+    // proxy to 127.0.0.1:47443, the agent's own heartbeat / metrics /
+    // enrollment calls would loop straight back into our own listener —
+    // and if the listener is dead, misconfigured, or the proxy setting
+    // is stale from a prior boot, every agent HTTP call times out and
+    // last_active goes stale, so the dashboard marks the endpoint
+    // offline even though the user's browser is fine. Explicit
+    // .no_proxy() severs that loop for good.
     Ok(Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(20))
         .user_agent("RudransAgent/0.1")
         .build()?)

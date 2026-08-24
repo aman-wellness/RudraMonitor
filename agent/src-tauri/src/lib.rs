@@ -1207,6 +1207,127 @@ pub fn uninstall_self() -> Result<()> {
         }
     }
 
+    // 2a. Sweep every ancillary state dir the agent writes to across
+    //     platforms — logs, cache, prefill, telemetry, TCC-adjacent
+    //     scratch — and every legacy identity we ever shipped under.
+    //     Anything the base config-dir sweep at step 2 didn't catch.
+    if let Some(home) = dirs::home_dir() {
+        let legacy_ids = [
+            "com.wellnessextract.agent",
+            "com.rudrans.agent",
+            "com.trackforce.agent",
+        ];
+        let legacy_dirnames = [
+            "RudransAgent",
+            "WellnessExtractAgent",
+            "SecurityAssistant",
+            "TrackForceAgent",
+        ];
+        #[cfg(target_os = "macos")]
+        {
+            for d in &legacy_dirnames {
+                let _ = std::fs::remove_dir_all(home.join("Library/Application Support").join(d));
+                let _ = std::fs::remove_dir_all(home.join("Library/Logs").join(d));
+            }
+            for id in &legacy_ids {
+                let _ = std::fs::remove_dir_all(home.join("Library/Caches").join(id));
+                let _ = std::fs::remove_file(
+                    home.join("Library/LaunchAgents").join(format!("{id}.plist")),
+                );
+                let _ = std::fs::remove_dir_all(home.join("Library/HTTPStorages").join(id));
+            }
+            let _ = std::fs::remove_dir_all(home.join("Library/Logs/Rudrans Agent"));
+            let _ = std::fs::remove_dir_all(home.join("Library/Logs/Security Assistant"));
+        }
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(local) = dirs::data_local_dir() {
+                for d in &legacy_dirnames {
+                    let _ = std::fs::remove_dir_all(local.join(d));
+                }
+            }
+            if let Some(roam) = dirs::data_dir() {
+                for d in &legacy_dirnames {
+                    let _ = std::fs::remove_dir_all(roam.join(d));
+                }
+            }
+            let _ = home;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            for d in &legacy_dirnames {
+                let _ = std::fs::remove_dir_all(home.join(".local/share").join(d));
+                let _ = std::fs::remove_dir_all(home.join(".config").join(d));
+            }
+            for id in &legacy_ids {
+                let _ = std::fs::remove_dir_all(home.join(".cache").join(id));
+                let _ = std::fs::remove_file(
+                    home.join(".config/autostart").join(format!("{id}.desktop")),
+                );
+            }
+        }
+    }
+
+    // 2b. Revert the MITM system-proxy and remove the root CA from
+    //     the OS trust store. Without this, browsers still route
+    //     through 127.0.0.1:47443 after uninstall — every request
+    //     dies with "proxy unreachable" until the user manually
+    //     clears the setting. Ships in v0.7.7+.
+    mitm::stop();
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = std::process::Command::new("certutil.exe");
+        crate::win_proc::no_window(&mut cmd);
+        let _ = cmd.args(["-delstore", "Root", "Wellness Extract Root CA"]).status();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Login-keychain copy (installed by mitm::start's self-heal).
+        if let Some(home) = dirs::home_dir() {
+            let kc = home.join("Library/Keychains/login.keychain-db");
+            for cn in ["Wellness Extract Root CA", "Wellness Extract MITM"] {
+                let _ = std::process::Command::new("/usr/bin/security")
+                    .args([
+                        "delete-certificate",
+                        "-c", cn,
+                        "-t",
+                        kc.to_string_lossy().as_ref(),
+                    ])
+                    .output();
+            }
+        }
+        // System-keychain copy (installed by the .pkg postinstall).
+        for cn in ["Wellness Extract Root CA", "Wellness Extract MITM"] {
+            let _ = std::process::Command::new("/usr/bin/security")
+                .args([
+                    "delete-certificate",
+                    "-c", cn,
+                    "-t",
+                    "/Library/Keychains/System.keychain",
+                ])
+                .output();
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        for name in ["wellness-mitm.crt", "wellness-extract-mitm.crt"] {
+            let _ = std::fs::remove_file(format!("/usr/local/share/ca-certificates/{name}"));
+        }
+        let _ = std::process::Command::new("update-ca-certificates")
+            .arg("--fresh")
+            .status();
+    }
+
+    // 2c. Windows-only: unregister any scheduled task the agent installed
+    //     under /rl highest — dpkg / launchctl equivalents on other
+    //     platforms are already handled by step 1.
+    #[cfg(target_os = "windows")]
+    for name in ["WellnessExtractAgent", "RudransAgent", "TrackForceAgent"] {
+        let mut cmd = std::process::Command::new("schtasks");
+        crate::win_proc::no_window(&mut cmd);
+        let _ = cmd.args(["/Delete", "/TN", name, "/F"]).status();
+    }
+
     // 3. Remove the installed app bundle / binary itself, OS-specific.
     #[cfg(target_os = "macos")]
     {
@@ -1220,6 +1341,15 @@ pub fn uninstall_self() -> Result<()> {
                         }
                     }
                 }
+            }
+        }
+        // Also sweep legacy .app bundles by name in case the current
+        // running exe is from a fresh install path but old brand
+        // bundles were never cleaned.
+        for name in ["Rudrans Agent.app", "TrackForce Agent.app", "Security Assistant.app"] {
+            let _ = std::fs::remove_dir_all(format!("/Applications/{name}"));
+            if let Some(home) = dirs::home_dir() {
+                let _ = std::fs::remove_dir_all(home.join("Applications").join(name));
             }
         }
     }
@@ -1453,7 +1583,26 @@ pub fn run() {
             // explicitly opted the org in. Per-endpoint consent
             // clicking was dropped as unnecessary friction — this is
             // a managed corporate deployment, not a consumer app.
-            spawn_mitm_gate(state.clone());
+            // v0.7.5 KILL SWITCH: MITM proxy caused browsers to lose
+            // internet on some endpoints (system proxy set to a listener
+            // that couldn't handle every host). Until the fail-open path
+            // is proven safe on every OS, do NOT start the proxy and
+            // ALWAYS unset any leftover system-proxy setting from a
+            // prior v0.7.x version. This is a compile-time off — flip
+            // MITM_KILL_SWITCH back to false once fail-open is fixed.
+            // v0.7.11: MITM PERMANENTLY DISABLED. Every attempt to
+            // re-enable it (0.7.6 with watchdog, 0.7.9 with no_proxy)
+            // still left some fleet member stuck. The feature is not
+            // worth a repeat outage — until we have a design that
+            // touches the OS proxy zero times (kernel-mode driver or
+            // per-process WinDivert-style interception), MITM stays
+            // off in every build.
+            //
+            // What still runs unconditionally: mitm::stop() at every
+            // boot → wipes any stale HKCU / networksetup / gsettings
+            // proxy entry from a prior v0.7.x install. Anyone stuck
+            // recovers on their next agent restart.
+            mitm::stop();
             // USB-block loop: enumerates removable volumes every 5s and unmounts
             // any new ones unless the agent is allowlisted. Always starts; the
             // loop itself reads settings.removable_disks_blocked each iteration.

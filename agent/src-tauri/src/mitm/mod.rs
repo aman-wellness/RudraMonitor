@@ -208,10 +208,22 @@ pub async fn start(cfg: MitmConfig) -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]
     self_heal_macos_trust_store();
 
-    // Best-effort system-proxy set. On failure we still bring the
-    // listener up so trace / debug users can point a manual proxy at it.
-    if let Err(e) = system_proxy::set(PROXY_BIND_ADDR) {
-        log::warn!("mitm: system_proxy::set failed ({e}); listener still starting");
+    // ---- v0.7.6 SAFETY GATES ----
+    // Rule: NEVER set the OS proxy unless we've proven the listener
+    // can actually serve requests. Order:
+    //   (1) Bind test — try binding 127.0.0.1:47443 ourselves and drop
+    //       it. If bind fails (port busy, permission denied) we abort
+    //       here and the OS proxy stays untouched.
+    //   (2) Start the listener task.
+    //   (3) End-to-end probe — CONNECT via 127.0.0.1:47443 to
+    //       example.com:443, complete a TLS handshake. If that fails
+    //       within 5s we abort, stop the listener, and leave OS proxy
+    //       untouched.
+    //   Only if (1)+(2)+(3) all pass do we set the OS proxy.
+    if let Err(e) = pre_flight_bind_test().await {
+        log::warn!("mitm: bind test failed ({e}) — MITM disabled this session");
+        RUNNING.store(false, Ordering::SeqCst);
+        return Ok(());
     }
 
     let stop = STOP.clone();
@@ -228,16 +240,99 @@ pub async fn start(cfg: MitmConfig) -> anyhow::Result<()> {
         RUNNING.store(false, Ordering::SeqCst);
     });
 
+    // Give the listener up to 1s to actually start accepting.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    if let Err(e) = e2e_probe().await {
+        log::warn!("mitm: end-to-end probe failed ({e}) — aborting, OS proxy untouched");
+        STOP.notify_waiters();
+        RUNNING.store(false, Ordering::SeqCst);
+        return Ok(());
+    }
+    log::info!("mitm: pre-flight probes OK — setting OS proxy");
+
+    if let Err(e) = system_proxy::set(PROXY_BIND_ADDR) {
+        log::warn!("mitm: system_proxy::set failed ({e}); listener runs but no OS proxy");
+        return Ok(());
+    }
+
+    // Live watchdog — every 30s, re-run the probe. Three consecutive
+    // failures → auto unset OS proxy + kill listener. Browsers recover
+    // within one page reload; MITM stays off till next agent restart.
+    tokio::spawn(watchdog_loop());
+
     Ok(())
 }
 
-/// Tear the proxy down: signal the listener, revert the system proxy.
-/// Safe to call from any thread; safe to call when not running (no-op).
-pub fn stop() {
-    if !RUNNING.load(Ordering::SeqCst) {
-        return;
+/// Try binding the target port ourselves; drop the socket immediately.
+/// Proves the port is free + we have permission before we ever touch
+/// the OS proxy setting.
+async fn pre_flight_bind_test() -> anyhow::Result<()> {
+    let l = tokio::net::TcpListener::bind(PROXY_BIND_ADDR).await?;
+    drop(l);
+    Ok(())
+}
+
+/// Real end-to-end probe: use our own proxy on 127.0.0.1:47443 to
+/// reach a stable public host. If the browser would break, this
+/// probe breaks first — and we abort before setting the OS proxy.
+async fn e2e_probe() -> anyhow::Result<()> {
+    let proxy = reqwest::Proxy::all(format!("http://{PROXY_BIND_ADDR}"))?;
+    let client = reqwest::Client::builder()
+        .proxy(proxy)
+        .timeout(std::time::Duration::from_secs(5))
+        .danger_accept_invalid_certs(false)
+        .build()?;
+    // example.com is a stable, low-churn target maintained by IANA;
+    // any 2xx/3xx means our proxy round-tripped a real TLS session.
+    let resp = client.get("https://example.com/").send().await?;
+    if !resp.status().is_success() && !resp.status().is_redirection() {
+        anyhow::bail!("probe: unexpected status {}", resp.status());
     }
-    STOP.notify_waiters();
+    Ok(())
+}
+
+/// Runs every 30s while MITM is active. 3 consecutive probe failures
+/// → tear the whole thing down. Guarantees browsers cannot stay
+/// broken for more than ~90s even if the listener goes zombie.
+async fn watchdog_loop() {
+    let mut consecutive_fail = 0u32;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        if !RUNNING.load(Ordering::SeqCst) {
+            return;
+        }
+        match e2e_probe().await {
+            Ok(()) => consecutive_fail = 0,
+            Err(e) => {
+                consecutive_fail += 1;
+                log::warn!(
+                    "mitm: watchdog probe failed ({e}); consecutive_fail={consecutive_fail}"
+                );
+                if consecutive_fail >= 3 {
+                    log::error!(
+                        "mitm: watchdog tripped — unsetting OS proxy and stopping listener"
+                    );
+                    stop();
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// Tear the proxy down: signal the listener, revert the system proxy.
+/// Safe to call from any thread; safe to call when not running (no-op
+/// on the listener side, but STILL calls system_proxy::unset so a
+/// leftover proxy setting from a prior boot is always cleaned up).
+pub fn stop() {
+    if RUNNING.load(Ordering::SeqCst) {
+        STOP.notify_waiters();
+    }
+    // Unconditional unset — this is the v0.7.5 kill-switch recovery
+    // path: browsers on machines with a stale HKCU / networksetup
+    // proxy from v0.7.0-v0.7.4 need this to run every boot until the
+    // registry / plist entry is gone.
     if let Err(e) = system_proxy::unset() {
         log::warn!("mitm: system_proxy::unset failed ({e})");
     }

@@ -1,0 +1,97 @@
+#!/bin/sh
+# Debian postrm — runs as root after `apt remove` (arg=remove) and
+# `apt purge` (arg=purge). Wipes every trace of the agent that
+# `dpkg -r` leaves behind because they live outside the .deb payload:
+#   - MITM root CA in the system trust store + every NSS profile
+#   - Machine-wide + per-user GNOME proxy settings pointing at 127.0.0.1:47443
+#   - Per-user config / cache / log dirs under $HOME
+#   - Autostart .desktop files under ~/.config/autostart
+#   - systemd user services if any got registered
+#   - Legacy package residues (trackforce-agent, rudrans-agent)
+#
+# Runs on BOTH `remove` and `purge` — a plain `apt remove` should leave
+# the customer's box just as clean as `apt purge` from the user's POV.
+# `abort-install` / `abort-upgrade` skip everything (nothing to undo).
+#
+# All operations are best-effort; a fresh dpkg -P after this script
+# has already run must still succeed.
+
+set -e
+
+case "$1" in
+    remove|purge)
+        # ---- MITM CA in system trust store ------------------------
+        rm -f /usr/local/share/ca-certificates/wellness-mitm.crt \
+              /usr/local/share/ca-certificates/wellness-extract-mitm.crt 2>/dev/null || true
+        update-ca-certificates --fresh 2>/dev/null || true
+
+        # ---- MITM CA in every NSS profile on the box -------------
+        if command -v certutil >/dev/null 2>&1; then
+            for db in $(find /home /root -name cert9.db 2>/dev/null); do
+                profile_dir=$(dirname "$db")
+                certutil -D -n "Wellness Extract MITM"      -d "sql:$profile_dir" 2>/dev/null || true
+                certutil -D -n "Wellness Extract Root CA"   -d "sql:$profile_dir" 2>/dev/null || true
+            done
+        fi
+
+        # ---- GNOME proxy (system + per-user) ----------------------
+        # If it points at 127.0.0.1:47443 reset it. If the customer
+        # had a legit corporate proxy configured, leave it alone.
+        for home in /home/*; do
+            [ -d "$home" ] || continue
+            user=$(basename "$home")
+            uid=$(id -u "$user" 2>/dev/null) || continue
+            # dbus needs the target user's session bus address.
+            bus="unix:path=/run/user/$uid/bus"
+            [ -S "/run/user/$uid/bus" ] || continue
+            cur_host=$(su - "$user" -c \
+                "DBUS_SESSION_BUS_ADDRESS='$bus' gsettings get org.gnome.system.proxy.http host" \
+                2>/dev/null | tr -d "'")
+            if [ "$cur_host" = "127.0.0.1" ]; then
+                su - "$user" -c \
+                    "DBUS_SESSION_BUS_ADDRESS='$bus' gsettings set org.gnome.system.proxy mode 'none'" \
+                    2>/dev/null || true
+            fi
+        done
+
+        # ---- Per-user state dirs + autostart entries -------------
+        for home in /home/* /root; do
+            [ -d "$home" ] || continue
+            rm -rf "$home/.local/share/RudransAgent" \
+                   "$home/.local/share/WellnessExtractAgent" \
+                   "$home/.config/RudransAgent" \
+                   "$home/.config/WellnessExtractAgent" \
+                   "$home/.cache/com.wellnessextract.agent" \
+                   "$home/.cache/com.rudrans.agent" \
+                   "$home/.cache/com.trackforce.agent" 2>/dev/null || true
+            for name in com.wellnessextract.agent com.rudrans.agent com.trackforce.agent; do
+                rm -f "$home/.config/autostart/${name}.desktop" 2>/dev/null || true
+            done
+        done
+
+        # ---- Stray systemd units from prior brands ---------------
+        for UNIT in trackforce-agent.service rudrans-agent.service wellness-extract-agent.service; do
+            systemctl stop    "$UNIT" 2>/dev/null || true
+            systemctl disable "$UNIT" 2>/dev/null || true
+            rm -f "/etc/systemd/system/$UNIT" 2>/dev/null || true
+        done
+        systemctl daemon-reload 2>/dev/null || true
+
+        # ---- Legacy package residues -----------------------------
+        for OLD in trackforce-agent rudrans-agent; do
+            if dpkg -l "$OLD" 2>/dev/null | grep -q '^ii'; then
+                dpkg --purge --force-depends "$OLD" 2>/dev/null || true
+            fi
+        done
+    ;;
+
+    abort-install|abort-upgrade|upgrade|failed-upgrade|disappear)
+    ;;
+
+    *)
+        echo "postrm called with unknown argument \`$1'" >&2
+        exit 1
+    ;;
+esac
+
+exit 0
