@@ -49,6 +49,41 @@ fn sweep() {
 
     #[cfg(target_os = "linux")]
     linux::sweep();
+
+    // Remove the previous update(s) the auto-updater left on disk.
+    purge_stale_update_downloads();
+}
+
+/// Delete the Tauri updater's leftover download directories.
+///
+/// Every auto-update extracts its installer into
+/// `<TEMP>/<productName>-<version>-updater-<random>/` and NEVER cleans it up,
+/// so each update leaves a ~40-60 MB folder behind and they pile up
+/// indefinitely (customers saw many hundred MB of stale installers in
+/// `%TEMP%`). This runs from `run_once()` at boot — which, after an update,
+/// happens on the freshly-installed version's first launch — so by the time we
+/// get here every such folder (including the one that just installed us) is
+/// finished and safe to delete. Best-effort: a folder whose installer .exe is
+/// still momentarily locked simply fails and is cleaned on the next boot.
+fn purge_stale_update_downloads() {
+    let tmp = std::env::temp_dir();
+    let entries = match std::fs::read_dir(&tmp) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        // Tauri's updater temp dir is "<productName>-<version>-updater-<rand>".
+        // "-updater-" is Tauri's own marker; the productName prefix scopes the
+        // match to our app so we never touch anyone else's temp files.
+        if name.starts_with("Security Assistant-") && name.contains("-updater-") {
+            match std::fs::remove_dir_all(entry.path()) {
+                Ok(()) => log::info!("cleanup: removed stale update download '{name}'"),
+                Err(e) => log::debug!("cleanup: could not remove '{name}' (in use?): {e}"),
+            }
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
