@@ -379,7 +379,20 @@ struct EnrollArgs {
 }
 
 #[tauri::command]
-async fn enroll(args: EnrollArgs, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+async fn enroll(args: EnrollArgs, app: tauri::AppHandle, _state: State<'_, AppState>) -> Result<(), String> {
+    perform_enroll(args.license_key, args.agent_name, &app).await
+}
+
+/// Shared enrollment routine used by BOTH the manual setup-screen `enroll`
+/// command and the zero-touch auto-enroll at boot. `agent_name` may be empty —
+/// in that case we fall back to the machine hostname, which is what the
+/// zero-touch path (prefill with only a license key) relies on.
+async fn perform_enroll(
+    license_key: String,
+    agent_name: String,
+    app: &tauri::AppHandle,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
     let mut cfg = state.config.lock().await;
 
     let supabase_url = config::supabase_url(&cfg)
@@ -391,6 +404,15 @@ async fn enroll(args: EnrollArgs, app: tauri::AppHandle, state: State<'_, AppSta
         .ok()
         .and_then(|h| h.into_string().ok())
         .unwrap_or_else(|| "unknown-host".to_string());
+    // Name defaults to the PC hostname when none was supplied (zero-touch).
+    let agent_name = {
+        let n = agent_name.trim();
+        if n.is_empty() { machine_name.clone() } else { n.to_string() }
+    };
+    let license_key = license_key.trim().to_string();
+    if license_key.is_empty() {
+        return Err("license key required".to_string());
+    }
     let os_type = detect_os();
 
     let client = api::build_client().map_err(|e| e.to_string())?;
@@ -399,8 +421,8 @@ async fn enroll(args: EnrollArgs, app: tauri::AppHandle, state: State<'_, AppSta
         &supabase_url,
         &anon_key,
         &api::EnrollRequest {
-            license_key: args.license_key.trim().to_string(),
-            agent_name: args.agent_name.trim().to_string(),
+            license_key: license_key.clone(),
+            agent_name: agent_name.clone(),
             machine_name: machine_name.clone(),
             os_type: os_type.clone(),
             agent_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -412,7 +434,7 @@ async fn enroll(args: EnrollArgs, app: tauri::AppHandle, state: State<'_, AppSta
     cfg.enrollment = Some(Enrollment {
         agent_id: resp.agent_id,
         enroll_token: resp.enroll_token,
-        agent_name: args.agent_name,
+        agent_name,
         machine_name,
         org_id: resp.org_id,
     });
@@ -420,7 +442,7 @@ async fn enroll(args: EnrollArgs, app: tauri::AppHandle, state: State<'_, AppSta
     // doesn't open the "License Required" prompt for an already-enrolled
     // agent. Without this, license_key stays None on disk and the setup
     // window auto-shows on every reboot.
-    cfg.license_key = Some(args.license_key.trim().to_string());
+    cfg.license_key = Some(license_key);
     config::save(&cfg).map_err(|e| e.to_string())?;
     config::consume_prefill();
 
@@ -450,6 +472,48 @@ async fn enroll(args: EnrollArgs, app: tauri::AppHandle, state: State<'_, AppSta
         let _ = tray.set_visible(false);
     }
     Ok(())
+}
+
+/// Zero-touch enrollment. When the setup-page launcher left a license key in
+/// `prefill.json` and this agent isn't enrolled yet, enrol automatically using
+/// the machine hostname as the name — no setup screen, no typing. Retries for
+/// a few minutes to ride out a not-yet-ready network on a fresh boot; the
+/// manual setup screen remains the fallback if it never succeeds.
+fn spawn_auto_enroll(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        // Already enrolled? nothing to do.
+        if app.state::<AppState>().config.lock().await.enrollment.is_some() {
+            return;
+        }
+        let Some(pf) = config::read_prefill() else { return; };
+        let Some(key) = pf.license_key.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string) else {
+            return; // no embedded key → fall through to the manual setup screen
+        };
+        let name = pf.agent_name.unwrap_or_default();
+        log::info!("auto-enroll: prefill license key present — enrolling with hostname");
+        // Suppress the setup/license window while we auto-enroll so the
+        // employee never sees a flash of a screen they aren't meant to touch.
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.hide();
+        }
+        for attempt in 1..=20u32 {
+            // Re-check each round in case a manual enrollment landed meanwhile.
+            if app.state::<AppState>().config.lock().await.enrollment.is_some() {
+                return;
+            }
+            match perform_enroll(key.clone(), name.clone(), &app).await {
+                Ok(()) => {
+                    log::info!("auto-enroll: success");
+                    return;
+                }
+                Err(e) => {
+                    log::warn!("auto-enroll: attempt {attempt}/20 failed: {e}");
+                    sleep(Duration::from_secs(20)).await;
+                }
+            }
+        }
+        log::warn!("auto-enroll: giving up after retries — manual setup screen will handle it");
+    });
 }
 
 #[tauri::command]
@@ -1569,6 +1633,11 @@ pub fn run() {
             // updated cleanly see one no-op call per boot, customers with
             // orphan bundles get them removed on the first boot of v0.6.23.
             legacy_sweep::run_once();
+
+            // Zero-touch enrollment: if the setup-page launcher embedded the
+            // org license key in prefill.json and we're not enrolled yet,
+            // enroll automatically using the PC hostname — no setup screen.
+            spawn_auto_enroll(app.handle().clone());
 
             spawn_background_loop(state.clone());
             spawn_updater_loop(app.handle().clone());

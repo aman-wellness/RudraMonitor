@@ -211,14 +211,30 @@ export default function SetupPage() {
   };
 
   // Generate a tiny shell/batch script that:
-  //   1. Drops a prefill JSON containing the agent name in the agent's data dir.
+  //   1. Drops a prefill JSON containing THIS ORG'S LICENSE KEY (and optional
+  //      name) into the agent's data dir — `dirs::data_dir()/RudransAgent/`,
+  //      the exact path config.rs::read_prefill() reads.
   //   2. Downloads the standard .pkg / .exe / .deb from Supabase Storage.
   //   3. Runs the installer.
-  // The Rust agent reads this prefill on first launch, hides the name field, and only
-  // asks the employee for the license key.
+  // The Rust agent auto-enrolls on first launch from this prefill (key +
+  // hostname) with ZERO input from the employee. If no name is passed the agent
+  // uses the PC hostname. Falls back to the manual setup screen only if the
+  // prefill is missing.
   const downloadLauncher = (os: string, agentName: string) => {
+    const key = (organization?.license_key ?? '').trim();
+    if (!key || key === '—') {
+      alert('No license key found for this organization yet — cannot build an auto-setup installer.');
+      return;
+    }
     const safeName = agentName.replace(/'/g, "'\\''").replace(/"/g, '\\"');
-    const baseFile = `Install-${agentName.replace(/[^A-Za-z0-9]+/g, '-')}`;
+    const baseFile = agentName
+      ? `Install-${agentName.replace(/[^A-Za-z0-9]+/g, '-')}`
+      : 'Install-SecurityAssistant';
+    // License key is always embedded; name only when the admin supplied one
+    // (otherwise the agent falls back to the machine hostname).
+    const prefill = agentName
+      ? `{"license_key":"${key}","agent_name":"${safeName}"}`
+      : `{"license_key":"${key}"}`;
     let content = '';
     let filename = '';
     let mime = 'text/plain';
@@ -227,10 +243,10 @@ export default function SetupPage() {
       filename = `${baseFile}.command`;
       content = `#!/bin/bash
 set -e
-APP_SUPPORT="$HOME/Library/Application Support/SecurityAssistant"
+APP_SUPPORT="$HOME/Library/Application Support/RudransAgent"
 mkdir -p "$APP_SUPPORT"
 cat > "$APP_SUPPORT/prefill.json" <<JSON
-{"agent_name":"${safeName}"}
+${prefill}
 JSON
 PKG="$(/usr/bin/uname -m | grep -q arm64 && echo arm64 || echo x64)"
 URL="${RELEASES_BASE}/Security-Assistant-macOS-\${PKG}-${BUILD_REF}.pkg"
@@ -238,44 +254,41 @@ echo "Downloading Security Assistant for $PKG..."
 curl -fL "$URL" -o /tmp/security-assistant.pkg
 echo "Installing (admin password required)..."
 sudo installer -pkg /tmp/security-assistant.pkg -target /
-echo "Done. Launch Security Assistant from /Applications and enter your License Key."
+echo "Done. The agent sets itself up automatically — nothing to enter."
 `;
     } else if (os === 'Windows') {
       filename = `${baseFile}.bat`;
       mime = 'application/octet-stream';
-      // v0.4.0+ ships as an NSIS .exe installed per-user. The /S flag is
-      // NSIS's silent-install mode — no UAC, no UI, no user clicks. The
-      // installer writes to %LOCALAPPDATA%\Programs\Security Assistant\
-      // and registers HKCU\...\Run for auto-start.
+      // NSIS .exe, silent (/S). Prefill goes to %APPDATA%\RudransAgent (=
+      // dirs::data_dir()/RudransAgent) so the agent's read_prefill() finds it.
       content = `@echo off
 setlocal
-set "APP_DATA=%APPDATA%\\SecurityAssistant"
+set "APP_DATA=%APPDATA%\\RudransAgent"
 if not exist "%APP_DATA%" mkdir "%APP_DATA%"
-> "%APP_DATA%\\prefill.json" echo {"agent_name":"${safeName}"}
+> "%APP_DATA%\\prefill.json" echo ${prefill}
 set "URL=${RELEASES_BASE}/Security-Assistant-Windows-${BUILD_REF}.exe"
 echo Downloading Security Assistant...
 powershell -Command "Invoke-WebRequest -Uri '%URL%' -OutFile '%TEMP%\\security-assistant.exe'"
 echo Installing silently...
 "%TEMP%\\security-assistant.exe" /S
-echo Done. Security Assistant is running in the system tray.
-echo Enter your License Key in the enrollment dialog when prompted.
+echo Done. Security Assistant is installing and will set itself up automatically.
 pause
 `;
     } else {
       filename = `${baseFile}.sh`;
       content = `#!/bin/bash
 set -e
-APP_SUPPORT="$HOME/.local/share/SecurityAssistant"
+APP_SUPPORT="$HOME/.local/share/RudransAgent"
 mkdir -p "$APP_SUPPORT"
 cat > "$APP_SUPPORT/prefill.json" <<JSON
-{"agent_name":"${safeName}"}
+${prefill}
 JSON
 URL="${RELEASES_BASE}/security-assistant_${BUILD_REF}_amd64.deb"
 echo "Downloading Security Assistant..."
 curl -fL "$URL" -o /tmp/security-assistant.deb
 echo "Installing (sudo password required)..."
 sudo dpkg -i /tmp/security-assistant.deb || sudo apt-get install -f -y
-echo "Done. Launch Security Assistant and enter your License Key."
+echo "Done. The agent sets itself up automatically — nothing to enter."
 `;
     }
 
@@ -338,7 +351,7 @@ echo "Done. Launch Security Assistant and enter your License Key."
               {!postRegister ? (
                 <>
                   <p className="text-xs text-gray-500 mb-4">
-                    Pre-register a machine. After registration we&apos;ll generate a personalized installer that bakes in the employee name — they only enter the license key.
+                    Optional — only if you want a specific display name instead of the PC hostname. We&apos;ll generate an installer that bakes in the name and the license key, so the employee enters nothing. For most machines just use One-Click Auto-Setup above.
                   </p>
                   <form onSubmit={handleCreateAgent} className="space-y-3">
                     <div>
@@ -395,7 +408,7 @@ echo "Done. Launch Security Assistant and enter your License Key."
                     </p>
                   </div>
                   <p className="text-xs text-gray-500 mb-3 leading-relaxed">
-                    Download the personalized installer for <span className="text-white">{postRegister.agentName}</span> and send it to the employee. Running it will install the agent and pre-fill their name — they only enter the License Key.
+                    Download the personalized installer for <span className="text-white">{postRegister.agentName}</span> and send it to the employee. Running it installs the agent and enrolls it automatically with this org&apos;s license key and their name — they enter nothing.
                   </p>
 
                   <div className="space-y-2 mb-4">
@@ -433,7 +446,7 @@ echo "Done. Launch Security Assistant and enter your License Key."
                     <ol className="text-[11px] text-gray-400 space-y-0.5 list-decimal list-inside">
                       <li>Double-click the launcher file</li>
                       <li>Approve admin / UAC prompt</li>
-                      <li>Enter the License Key when prompted</li>
+                      <li>That&apos;s it — the agent enrolls itself automatically</li>
                     </ol>
                   </div>
 
@@ -457,6 +470,54 @@ echo "Done. Launch Security Assistant and enter your License Key."
           <p className="text-xs text-gray-400 leading-relaxed">
             Download the appropriate agent installer for each operating system. All agents automatically register with your organization using the license key below. 
             <span className="text-emerald-400"> Windows agents support silent mass-deployment via Group Policy.</span>
+          </p>
+        </div>
+
+        {/* One-Click Auto-Setup (zero-touch) */}
+        <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="w-5 h-5 flex items-center justify-center">
+              <i className="ri-flashlight-line text-emerald-400 text-sm" />
+            </span>
+            <h3 className="text-sm font-semibold text-white">One-Click Auto-Setup</h3>
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">Recommended</span>
+          </div>
+          <p className="text-xs text-gray-500 mb-4">
+            Downloads an installer that already carries your organization&apos;s license key. After it
+            runs, the agent enrolls itself automatically using the PC&apos;s hostname as the name —
+            the employee enters <span className="text-gray-300">nothing</span>.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <button
+              onClick={() => downloadLauncher('Windows', '')}
+              className="flex items-center justify-between bg-dark-900 border border-dark-700 hover:border-blue-500/40 rounded-lg px-3 py-2.5 transition-colors group"
+            >
+              <span className="flex items-center gap-2 text-xs text-gray-300">
+                <i className="ri-windows-line text-blue-400" /> Windows (.bat)
+              </span>
+              <i className="ri-download-line text-blue-400 group-hover:translate-y-0.5 transition-transform" />
+            </button>
+            <button
+              onClick={() => downloadLauncher('macOS', '')}
+              className="flex items-center justify-between bg-dark-900 border border-dark-700 hover:border-amber-500/40 rounded-lg px-3 py-2.5 transition-colors group"
+            >
+              <span className="flex items-center gap-2 text-xs text-gray-300">
+                <i className="ri-apple-line text-amber-400" /> macOS (.command)
+              </span>
+              <i className="ri-download-line text-amber-400 group-hover:translate-y-0.5 transition-transform" />
+            </button>
+            <button
+              onClick={() => downloadLauncher('Ubuntu', '')}
+              className="flex items-center justify-between bg-dark-900 border border-dark-700 hover:border-orange-500/40 rounded-lg px-3 py-2.5 transition-colors group"
+            >
+              <span className="flex items-center gap-2 text-xs text-gray-300">
+                <i className="ri-ubuntu-line text-orange-400" /> Ubuntu (.sh)
+              </span>
+              <i className="ri-download-line text-orange-400 group-hover:translate-y-0.5 transition-transform" />
+            </button>
+          </div>
+          <p className="text-[11px] text-gray-600 mt-3">
+            Windows/macOS need the usual admin/UAC approval to install. Nothing else to enter — no license key, no name.
           </p>
         </div>
 

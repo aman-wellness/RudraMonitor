@@ -53,25 +53,49 @@ pub fn config_path() -> Result<PathBuf> {
     Ok(dir.join("agent.json"))
 }
 
-/// Read the optional pre-fill file dropped by the personalized launcher script
-/// (Install-<Name>.command / .bat / .sh). When present, the UI hides the agent
-/// name input and only asks the employee for the license key.
+/// Pre-fill file dropped by the setup-page launcher script
+/// (Install-<Name>.command / .bat / .sh) BEFORE the installer runs. It lets an
+/// admin ship a zero-touch install: the launcher embeds the org's license key
+/// (and optionally a name) so the agent enrolls itself on first boot with no
+/// input from the employee.
 ///
-/// File location matches the launcher scripts:
+/// File location (must match the launcher scripts):
 ///   macOS:   ~/Library/Application Support/RudransAgent/prefill.json
 ///   Windows: %APPDATA%/RudransAgent/prefill.json
 ///   Linux:   ~/.local/share/RudransAgent/prefill.json
 /// All map to `dirs::data_dir()/RudransAgent/prefill.json`.
-pub fn read_prefill_name() -> Option<String> {
-    let base = dirs::data_dir()?;
-    let path = base.join("RudransAgent").join("prefill.json");
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Prefill {
+    /// Org license key embedded by the setup page. When present the agent
+    /// enrolls automatically (see `lib.rs` first-boot auto-enroll).
+    #[serde(default)]
+    pub license_key: Option<String>,
+    /// Optional display name. Usually omitted so the agent falls back to the
+    /// machine hostname.
+    #[serde(default)]
+    pub agent_name: Option<String>,
+}
+
+fn prefill_path() -> Option<PathBuf> {
+    Some(dirs::data_dir()?.join("RudransAgent").join("prefill.json"))
+}
+
+pub fn read_prefill() -> Option<Prefill> {
+    let path = prefill_path()?;
     if !path.exists() {
         return None;
     }
     let raw = std::fs::read_to_string(&path).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let name = v.get("agent_name")?.as_str()?.trim().to_string();
-    if name.is_empty() { None } else { Some(name) }
+    serde_json::from_str::<Prefill>(&raw).ok()
+}
+
+/// Convenience: the embedded name if any (used by the setup UI to pre-fill the
+/// name field on the manual path).
+pub fn read_prefill_name() -> Option<String> {
+    read_prefill()
+        .and_then(|p| p.agent_name)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// After successful enrollment the prefill file is no longer needed; remove it
@@ -165,4 +189,28 @@ pub fn hbbs_pubkey(cfg: &AgentConfig) -> String {
         .filter(|s| !s.is_empty())
         .or_else(|| cfg.hbbs_pubkey.clone().filter(|s| !s.is_empty()))
         .unwrap_or_else(|| EMBEDDED_HBBS_PUBKEY.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The zero-touch launcher writes {"license_key": ...}; the older launcher
+    // wrote {"agent_name": ...}. Both must parse, and each field is optional.
+    #[test]
+    fn prefill_parses_key_and_optional_name() {
+        let key_only: Prefill = serde_json::from_str(r#"{"license_key":"ABC-123"}"#).unwrap();
+        assert_eq!(key_only.license_key.as_deref(), Some("ABC-123"));
+        assert_eq!(key_only.agent_name, None);
+
+        let both: Prefill = serde_json::from_str(r#"{"license_key":"K","agent_name":"Rahul"}"#).unwrap();
+        assert_eq!(both.license_key.as_deref(), Some("K"));
+        assert_eq!(both.agent_name.as_deref(), Some("Rahul"));
+
+        // Legacy name-only prefill: no key, so the agent falls back to the
+        // manual setup screen rather than auto-enrolling.
+        let legacy: Prefill = serde_json::from_str(r#"{"agent_name":"Old"}"#).unwrap();
+        assert_eq!(legacy.license_key, None);
+        assert_eq!(legacy.agent_name.as_deref(), Some("Old"));
+    }
 }
