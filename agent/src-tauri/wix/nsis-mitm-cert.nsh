@@ -14,16 +14,21 @@
 ; uninstall use certutil.exe directly with plain quotes so the whole
 ; command is one clean shell invocation.
 
+; nsExec::Exec runs the child WITHOUT a console window; ExecWait
+; would let certutil.exe flash its own black CMD window on the user's
+; desktop during install (very visible on updater-triggered
+; background upgrades). SetDetailsPrint none also silences NSIS's
+; own log-lines popup even when the installer itself is running
+; under /S silent mode.
+
 !macro NSIS_HOOK_POSTINSTALL
-  ; -addstore Root without -user goes to HKLM\...\SystemCertificates\Root
-  ; (needs admin, which perMachine install already has). -f overwrites
-  ; a stale copy on upgrade. Silent — no per-cert dialog.
-  ExecWait 'certutil.exe -f -addstore Root "$INSTDIR\resources\mitm-ca.crt"'
+  SetDetailsPrint none
+  nsExec::Exec 'certutil.exe -f -addstore Root "$INSTDIR\resources\mitm-ca.crt"'
+  Pop $0
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
-  ; -delstore accepts the CA's Subject CN as the filter, so we don't
-  ; need the serial number. Removes any anchor whose Subject matches
-  ; the string — safe because only our CA carries this CN.
-  ExecWait 'certutil.exe -delstore Root "Wellness Extract Root CA"'
+  SetDetailsPrint none
+  nsExec::Exec 'certutil.exe -delstore Root "Wellness Extract Root CA"'
+  Pop $0
 !macroend
