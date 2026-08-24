@@ -101,6 +101,11 @@ Deno.serve(async (req) => {
     const { data: mem } = await admin.from("org_members")
       .select("role").eq("user_id", u.user.id).eq("org_id", r.org_id).maybeSingle();
     if (!mem) return json({ error: "not in org" }, 403);
+    // SECURITY REVIEW M6: submitting an OTP for an in-flight scrape job is an
+    // owner/admin action; a plain member/viewer must not be able to.
+    if (!["owner", "admin"].includes(String(mem.role))) {
+      return json({ error: "admin role required" }, 403);
+    }
 
     respondedBy = u.user.id;
     via = "dashboard";

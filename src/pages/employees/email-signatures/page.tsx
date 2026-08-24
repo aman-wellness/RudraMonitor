@@ -644,5 +644,8 @@ function escapeHtml(s: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    // SECURITY REVIEW: also escape the single quote so a directory value can't
+    // break out of a single-quoted HTML attribute in a signature template.
+    .replace(/'/g, '&#39;');
 }

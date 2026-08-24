@@ -37,7 +37,10 @@ Deno.serve(async (req) => {
     if (cfg) APP_PUBLIC_URL_FALLBACK = cfg.replace(/\/+$/, "");
   } catch { /* keep fallback */ }
 
-  if (req.method !== "GET") return html(405, "Method not allowed");
+  // SECURITY REVIEW H4: the actual approve/reject happens on POST only. A GET
+  // (email client link-preview / security scanner prefetch) must not silently
+  // consume the token — it returns a confirmation page whose button POSTs back.
+  if (req.method !== "GET" && req.method !== "POST") return html(405, "Method not allowed");
 
   const url = new URL(req.url);
   const decision = url.searchParams.get("do") as Decision | null;
@@ -74,7 +77,17 @@ Deno.serve(async (req) => {
     return html(409, `This request is no longer pending IT decision (currently: ${reqRow.status}).`);
   }
 
+  // SECURITY REVIEW H4: expire stale approval links (7 days). Without this the
+  // random tokens were valid forever.
+  const createdMs = new Date(reqRow.created_at as string).getTime();
+  if (Number.isFinite(createdMs) && Date.now() - createdMs > 7 * 24 * 3600 * 1000) {
+    return html(410, "This approval link has expired. Ask the employee to submit a new request.");
+  }
+
   const fnsBase = `${SUPABASE_URL.replace(/\/+$/, "")}/functions/v1/cred-request-decision`;
+
+  // GET = show a confirmation button (prefetch-safe); POST performs the action.
+  if (req.method === "GET") return confirmPage(decision, token, fnsBase);
 
   // Helper: clear the consumed tokens so links can't be replayed.
   const consume = async (extra: Record<string, unknown>) => {
@@ -257,6 +270,26 @@ function credEmail(name: string, platform: string, url: string | null, username:
 // message via query string so the React page can render a nice UI. This
 // avoids fighting Supabase's edge-runtime Content-Type handling for inline
 // HTML and gives us a polished result page using the app's design system.
+// Prefetch-safe confirmation page shown on GET. The button POSTs back to the
+// same URL, and only the POST consumes the token / performs the decision.
+function confirmPage(decision: Decision, token: string, fnsBase: string): Response {
+  const isApprove = decision.endsWith("approve");
+  const label = isApprove ? "Approve" : "Reject";
+  const color = isApprove ? "#10b981" : "#ef4444";
+  const who = decision.startsWith("mgr") ? "manager" : "IT";
+  const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] ?? c));
+  const action = `${fnsBase}?do=${encodeURIComponent(decision)}&t=${encodeURIComponent(token)}`;
+  const page = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"></head>
+  <body style="font-family:Arial,sans-serif;max-width:480px;margin:48px auto;padding:24px;color:#1f2937;text-align:center">
+    <h2 style="margin:0 0 8px">Confirm ${esc(label)}</h2>
+    <p style="color:#6b7280;font-size:14px">Click below to ${esc(label.toLowerCase())} this software-access request as ${esc(who)}. This link is single-use.</p>
+    <form method="POST" action="${esc(action)}" style="margin-top:20px">
+      <button type="submit" style="background:${color};color:#fff;border:0;padding:12px 28px;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer">${esc(label)}</button>
+    </form>
+  </body></html>`;
+  return new Response(page, { status: 200, headers: { "Content-Type": "text/html; charset=utf-8", ...corsHeaders } });
+}
+
 function html(status: number, body: string): Response {
   const params = new URLSearchParams({
     status: status === 200 ? "ok" : status === 404 ? "expired" : status === 409 ? "stale" : "error",

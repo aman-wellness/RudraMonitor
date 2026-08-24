@@ -1,0 +1,20 @@
+# Production security headers (Netlify / Cloudflare Pages read this file;
+# for nginx/S3/CloudFront translate these into the equivalent response headers).
+#
+# From the security review. These apply to the PRODUCTION build only (they do
+# NOT affect the Vite dev server), so script-src can be strict 'self' — the
+# build ships self-hosted, hashed bundles with no inline scripts.
+#
+# IMPORTANT: verify the app still loads on staging after enabling the CSP. If a
+# future feature adds a new external origin (a new analytics host, a different
+# storage/CDN domain), add it to the matching directive or that resource will
+# be blocked. connect-src is intentionally left broad (https:/wss:) so the
+# Supabase REST/Realtime, TURN/relay and LiveKit endpoints keep working; tighten
+# it to your exact hosts once they're fixed.
+/*
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: geolocation=(), payment=()
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https: wss:; worker-src 'self' blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'

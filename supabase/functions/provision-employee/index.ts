@@ -256,6 +256,17 @@ Deno.serve(async (req) => {
 
 // ============== helpers ==============
 
+// Uniform integer in [0, maxExclusive) from a CSPRNG (rejection sampling to
+// avoid modulo bias). SECURITY REVIEW M2: temp cloud passwords must not come
+// from the non-cryptographic Math.random().
+function randInt(maxExclusive: number): number {
+  const limit = Math.floor(0x1_0000_0000 / maxExclusive) * maxExclusive;
+  const buf = new Uint32Array(1);
+  let x = 0;
+  do { crypto.getRandomValues(buf); x = buf[0]; } while (x >= limit);
+  return x % maxExclusive;
+}
+
 function generatePassword(len: number): string {
   // Sufficient entropy for Azure AD's default complexity policy.
   const upper = "ABCDEFGHJKMNPQRSTUVWXYZ";
@@ -263,12 +274,12 @@ function generatePassword(len: number): string {
   const digits = "23456789";
   const special = "!@#$%&*-_=+?";
   const all = upper + lower + digits + special;
-  const pick = (s: string) => s[Math.floor(Math.random() * s.length)];
+  const pick = (s: string) => s[randInt(s.length)];
   const out = [pick(upper), pick(lower), pick(digits), pick(special)];
   for (let i = out.length; i < len; i++) out.push(pick(all));
   // Fisher-Yates shuffle so the required chars aren't at the front.
   for (let i = out.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = randInt(i + 1);
     [out[i], out[j]] = [out[j], out[i]];
   }
   return out.join("");

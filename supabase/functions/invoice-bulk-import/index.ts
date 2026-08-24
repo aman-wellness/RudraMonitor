@@ -64,6 +64,9 @@ Deno.serve(async (req) => {
   const credIdByPlatform = new Map<string, string>(
     (allCreds ?? []).map((c: { id: string; platform_name: string }) => [c.platform_name.toLowerCase(), c.id]),
   );
+  // SECURITY REVIEW H2: the set of credential ids that actually belong to the
+  // caller's org, so a body-supplied `credential_id` can't target another org.
+  const validCredIds = new Set<string>((allCreds ?? []).map((c: { id: string }) => c.id));
 
   const outcomes: Array<{ index: number; ok: boolean; id?: string; action?: "insert" | "update"; error?: string }> = [];
   for (let i = 0; i < rows.length; i++) {
@@ -73,6 +76,8 @@ Deno.serve(async (req) => {
         ? r.credential_id.trim()
         : credIdByPlatform.get((r.platform_name ?? "").trim().toLowerCase());
       if (!credId) throw new Error(`unknown credential (platform_name='${r.platform_name ?? ""}')`);
+      // Reject any credential_id that isn't in this org (cross-tenant IDOR).
+      if (!validCredIds.has(credId)) throw new Error("credential does not belong to your organization");
 
       const payload: Record<string, unknown> = {
         org_id: orgId,
@@ -96,6 +101,7 @@ Deno.serve(async (req) => {
         const { data } = await admin
           .from("credential_invoices")
           .select("id")
+          .eq("org_id", orgId)
           .eq("credential_id", credId)
           .eq("invoice_number", r.invoice_number)
           .maybeSingle();
@@ -103,7 +109,7 @@ Deno.serve(async (req) => {
       }
 
       if (existing) {
-        const { error } = await admin.from("credential_invoices").update(payload).eq("id", existing.id);
+        const { error } = await admin.from("credential_invoices").update(payload).eq("id", existing.id).eq("org_id", orgId);
         if (error) throw new Error(error.message);
         outcomes.push({ index: i, ok: true, id: existing.id, action: "update" });
       } else {

@@ -14,6 +14,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.4";
 import { sendGraphEmail } from "../_shared/graph-email.ts";
 import { getIntegration } from "../_shared/integrations.ts";
 import { randomToken } from "../_shared/crypto.ts";
+import { verifyToken } from "../_shared/hmac-token.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -22,47 +23,47 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
 
-  let body: { work_email?: string; action?: string; credential_ids?: string[]; custom_text?: string; manager_emails?: string[] };
+  let body: { token?: string; action?: string; credential_ids?: string[]; custom_text?: string; manager_emails?: string[] };
   try { body = await req.json(); } catch { return json({ error: "invalid json" }, 400); }
-  const workEmail = (body.work_email ?? "").trim().toLowerCase();
-  if (!workEmail || !workEmail.includes("@")) return json({ error: "work_email required" }, 400);
-  const domain = workEmail.split("@")[1] ?? "";
 
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 
-  // ---- domain → org resolution -----------------------------------------
-  // First look up by exact work_email match (we already know which org they
-  // belong to). Fall back to matching domain against any active integration's
-  // primary_domain. If no match — reject silently with the same shape so an
-  // outsider can't probe which domains are connected.
-  let orgId: string | null = null;
-  let employeeRow: { id: string; full_name: string; work_email: string | null; manager_id: string | null; department_id: string | null; status: string } | null = null;
+  // ---- identity: REQUIRE the signed form-session token from cred-request-start.
+  // This endpoint is public (verify_jwt=false); the HMAC token is what proves
+  // the caller actually controls the employee's mailbox (the link was emailed
+  // there). SECURITY REVIEW C1/H5: the org/employee were previously resolved
+  // from an UNVERIFIED `work_email` in the body, so anyone who knew a company
+  // domain could read that org's entire credential inventory (action:context)
+  // and file forged requests. Identity now comes only from the verified token.
+  let payload: { kind?: string; emp?: string; org?: string; exp?: number } | null = null;
+  try {
+    payload = await verifyToken<{ kind?: string; emp?: string; org?: string; exp?: number }>(
+      (body.token ?? "").trim(),
+      "CRED_REQUEST_SIGNING_KEY",
+    );
+  } catch {
+    // e.g. signing key not configured — fail CLOSED, never 500 with a token.
+    payload = null;
+  }
+  if (!payload || payload.kind !== "cred_form" || !payload.emp || !payload.org) {
+    return json({ error: "Your form link is invalid or has expired. Request a new one from the start." }, 401);
+  }
 
-  const { data: empByEmail } = await admin
+  const { data: employeeRow } = await admin
     .from("employees")
     .select("id, org_id, full_name, work_email, manager_id, department_id, status")
-    .ilike("work_email", workEmail)
+    .eq("id", payload.emp)
     .maybeSingle();
-  if (empByEmail) {
-    orgId = empByEmail.org_id;
-    employeeRow = empByEmail;
-  } else {
-    const { data: integ } = await admin
-      .from("org_integrations")
-      .select("org_id")
-      .ilike("primary_domain", domain)
-      .limit(1)
-      .maybeSingle();
-    if (integ) orgId = integ.org_id;
+  if (!employeeRow || employeeRow.org_id !== payload.org) {
+    return json({ error: "Your form link is invalid or has expired. Request a new one from the start." }, 401);
   }
-  if (!orgId) {
-    return json({ error: "This email isn't recognised. Use your work email — the same one your IT team has on file." }, 403);
-  }
-  if (employeeRow && employeeRow.status !== "active") {
+  if (employeeRow.status !== "active") {
     return json({ error: "Your account is not active. Contact IT." }, 403);
   }
+  const orgId = employeeRow.org_id as string;
+  const workEmail = (employeeRow.work_email ?? "").trim().toLowerCase();
 
   // ---- context fetch ----
   if (body.action === "context") {
@@ -139,13 +140,25 @@ Deno.serve(async (req) => {
   if (!credentialIds.length && !customText) {
     return json({ error: "Pick at least one credential or describe what you need" }, 400);
   }
-  // Manager emails picked on the form — de-dupe + only keep ones that look
-  // valid + aren't the requester themselves (prevents self-approval). Empty
-  // is fine; we'll fall back to the auto-resolved manager / IT routing.
+  // Manager emails picked on the form. SECURITY REVIEW H5: restrict to the
+  // org's ACTUAL managers (the same candidate set the form is given), not just
+  // "any address that isn't me" — otherwise a requester could name an address
+  // they control as their approver and self-approve the manager stage.
+  const { data: mgrIdRows } = await admin
+    .from("employees").select("manager_id").eq("org_id", orgId).not("manager_id", "is", null);
+  const validMgrIds = [...new Set((mgrIdRows ?? []).map((r: { manager_id: string }) => r.manager_id))];
+  let validManagerEmails = new Set<string>();
+  if (validMgrIds.length) {
+    const { data: mgrs } = await admin
+      .from("employees").select("work_email, status").in("id", validMgrIds).neq("status", "offboarded");
+    validManagerEmails = new Set(
+      (mgrs ?? []).map((m: { work_email: string | null }) => (m.work_email ?? "").toLowerCase()).filter(Boolean),
+    );
+  }
   const managerEmailsPicked = [...new Set(
     (body.manager_emails ?? [])
       .map((e) => String(e).trim().toLowerCase())
-      .filter((e) => e.includes("@") && e !== workEmail),
+      .filter((e) => e.includes("@") && e !== workEmail && validManagerEmails.has(e)),
   )];
 
   // Resolve manager and IT recipients. Picks from the form take precedence;

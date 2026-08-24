@@ -66,9 +66,10 @@ async function start(admin: ReturnType<typeof createClient>, callerId: string, b
   if (!emp) return json({ error: "employee not found" }, 404);
   if (emp.status !== "active") return json({ error: `employee status is ${emp.status}` }, 409);
 
-  // Authorise caller is a member of this org.
-  const { data: mem } = await admin.from("org_members").select("org_id").eq("user_id", callerId).eq("org_id", emp.org_id);
-  if (!mem?.length) return json({ error: "not authorised for this org" }, 403);
+  // SECURITY REVIEW H3: starting offboarding is an owner/admin-only action.
+  const { data: mem } = await admin.from("org_members").select("org_id, role").eq("user_id", callerId).eq("org_id", emp.org_id).in("role", ["owner", "admin"]);
+  const { data: ownerRow } = await admin.from("organizations").select("id").eq("id", emp.org_id).eq("owner_user_id", callerId);
+  if ((mem?.length ?? 0) === 0 && (ownerRow?.length ?? 0) === 0) return json({ error: "not authorised for this org (owner/admin only)" }, 403);
 
   // Create the offboardings row.
   const { data: off, error: offErr } = await admin.from("offboardings").insert({
@@ -147,8 +148,12 @@ async function revoke(admin: ReturnType<typeof createClient>, callerId: string, 
     return json({ error: `cannot revoke at stage ${off.current_stage}/${off.status}` }, 409);
   }
 
-  const { data: mem } = await admin.from("org_members").select("org_id").eq("user_id", callerId).eq("org_id", off.org_id);
-  if (!mem?.length) return json({ error: "not authorised for this org" }, 403);
+  // SECURITY REVIEW H3: offboarding disables M365/Google accounts, revokes
+  // sign-in and strips assignments — an owner/admin-only action (matching
+  // delete-employee). Any member used to pass this check.
+  const { data: mem } = await admin.from("org_members").select("org_id, role").eq("user_id", callerId).eq("org_id", off.org_id).in("role", ["owner", "admin"]);
+  const { data: ownerRow } = await admin.from("organizations").select("id").eq("id", off.org_id).eq("owner_user_id", callerId);
+  if ((mem?.length ?? 0) === 0 && (ownerRow?.length ?? 0) === 0) return json({ error: "not authorised for this org (owner/admin only)" }, 403);
 
   const { data: emp } = await admin
     .from("employees")
@@ -258,8 +263,12 @@ async function advanceToDevices(admin: ReturnType<typeof createClient>, callerId
   if (off.status !== "in_progress" || off.current_stage !== "access_revoked") {
     return json({ error: `cannot advance at stage ${off.current_stage}/${off.status}` }, 409);
   }
-  const { data: mem } = await admin.from("org_members").select("org_id").eq("user_id", callerId).eq("org_id", off.org_id);
-  if (!mem?.length) return json({ error: "not authorised for this org" }, 403);
+  // SECURITY REVIEW H3: offboarding disables M365/Google accounts, revokes
+  // sign-in and strips assignments — an owner/admin-only action (matching
+  // delete-employee). Any member used to pass this check.
+  const { data: mem } = await admin.from("org_members").select("org_id, role").eq("user_id", callerId).eq("org_id", off.org_id).in("role", ["owner", "admin"]);
+  const { data: ownerRow } = await admin.from("organizations").select("id").eq("id", off.org_id).eq("owner_user_id", callerId);
+  if ((mem?.length ?? 0) === 0 && (ownerRow?.length ?? 0) === 0) return json({ error: "not authorised for this org (owner/admin only)" }, 403);
 
   await admin.from("offboardings")
     .update({ current_stage: "devices_pending" })
@@ -291,8 +300,12 @@ async function complete(admin: ReturnType<typeof createClient>, callerId: string
     return json({ error: `cannot complete at stage ${off.current_stage}/${off.status}` }, 409);
   }
 
-  const { data: mem } = await admin.from("org_members").select("org_id").eq("user_id", callerId).eq("org_id", off.org_id);
-  if (!mem?.length) return json({ error: "not authorised for this org" }, 403);
+  // SECURITY REVIEW H3: offboarding disables M365/Google accounts, revokes
+  // sign-in and strips assignments — an owner/admin-only action (matching
+  // delete-employee). Any member used to pass this check.
+  const { data: mem } = await admin.from("org_members").select("org_id, role").eq("user_id", callerId).eq("org_id", off.org_id).in("role", ["owner", "admin"]);
+  const { data: ownerRow } = await admin.from("organizations").select("id").eq("id", off.org_id).eq("owner_user_id", callerId);
+  if ((mem?.length ?? 0) === 0 && (ownerRow?.length ?? 0) === 0) return json({ error: "not authorised for this org (owner/admin only)" }, 403);
 
   const { data: emp } = await admin
     .from("employees")

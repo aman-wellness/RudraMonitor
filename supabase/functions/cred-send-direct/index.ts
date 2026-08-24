@@ -69,6 +69,17 @@ Deno.serve(async (req) => {
       .maybeSingle();
     if (!dir) return json({ error: "directory user not found" }, 404);
 
+    // SECURITY REVIEW M9: authorise BEFORE we may auto-create an employees row
+    // for this directory user. Previously the admin gate ran only after the
+    // INSERT, so a non-admin could pollute another org's employees table.
+    const { data: memD } = await admin
+      .from("org_members").select("role").eq("user_id", callerId).eq("org_id", dir.org_id).in("role", ["admin", "owner"]);
+    const { data: ownerD } = await admin
+      .from("organizations").select("id").eq("id", dir.org_id).eq("owner_user_id", callerId);
+    if ((memD?.length ?? 0) === 0 && (ownerD?.length ?? 0) === 0) {
+      return json({ error: "admin role required" }, 403);
+    }
+
     const empCol = provider === "m365" ? "m365_user_id" : "google_user_id";
     // Try to find an existing employees row attached to this directory id.
     const { data: existing } = await admin

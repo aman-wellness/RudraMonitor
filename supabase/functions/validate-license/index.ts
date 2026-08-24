@@ -10,9 +10,37 @@ import { corsHeaders } from "../_shared/cors.ts";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
+// SECURITY REVIEW (Low): light anti-enumeration limiter. This endpoint is
+// public and reveals org metadata for a VALID key, so an attacker could probe
+// many keys. We rate-limit ONLY failed lookups per IP — a legitimate agent
+// always sends its real key, so it never accumulates failures. Crucially this
+// means an office NAT'ing dozens of agents behind one IP is NOT throttled
+// (their heartbeats succeed); only an IP spraying invalid keys gets blocked.
+// Best-effort/in-memory (per isolate) — a speed bump, not a wall.
+const FAILS = new Map<string, { n: number; resetAt: number }>();
+const FAIL_WINDOW_MS = 60_000;
+const FAIL_MAX = 20;
+function clientIp(req: Request): string {
+  const xff = req.headers.get("x-forwarded-for") ?? "";
+  return (xff.split(",")[0] ?? "").trim() || "unknown";
+}
+function isBlocked(ip: string): boolean {
+  const e = FAILS.get(ip);
+  return !!e && Date.now() <= e.resetAt && e.n > FAIL_MAX;
+}
+function noteFailure(ip: string): void {
+  const now = Date.now();
+  const e = FAILS.get(ip);
+  if (!e || now > e.resetAt) FAILS.set(ip, { n: 1, resetAt: now + FAIL_WINDOW_MS });
+  else e.n++;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ valid: false, reason: "method not allowed" }, 405);
+
+  const ip = clientIp(req);
+  if (isBlocked(ip)) return json({ valid: false, reason: "rate limited — too many invalid keys" }, 429);
 
   let body: { license_key?: string; org_id?: string; agent_id?: string };
   try { body = await req.json(); } catch { return json({ valid: false, reason: "invalid json" }, 400); }
@@ -57,7 +85,7 @@ Deno.serve(async (req) => {
     }
   }
 
-  if (!lic) return json({ valid: false, reason: "license not found" });
+  if (!lic) { noteFailure(ip); return json({ valid: false, reason: "license not found" }); }
 
   if (body.org_id && lic.organization_id !== body.org_id) {
     return json({ valid: false, reason: "license belongs to a different organization" });

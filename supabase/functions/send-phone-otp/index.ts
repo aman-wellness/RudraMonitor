@@ -44,8 +44,13 @@ Deno.serve(async (req) => {
     return json({ error: "Too many OTP requests. Wait a few minutes and try again." }, 429);
   }
 
-  // Generate a 6-digit code (000000-999999, zero-padded).
-  const code = String(Math.floor(Math.random() * 1_000_000)).padStart(6, "0");
+  // Generate a 6-digit code (000000-999999, zero-padded) from a CSPRNG.
+  // SECURITY REVIEW M2: Math.random() is predictable; use crypto with
+  // rejection sampling so all 10^6 codes are equally likely.
+  const otpBuf = new Uint32Array(1);
+  const otpLimit = Math.floor(0x1_0000_0000 / 1_000_000) * 1_000_000;
+  do { crypto.getRandomValues(otpBuf); } while (otpBuf[0] >= otpLimit);
+  const code = String(otpBuf[0] % 1_000_000).padStart(6, "0");
   const codeHash = await sha256Hex(code);
 
   await admin.from("otp_codes").insert({

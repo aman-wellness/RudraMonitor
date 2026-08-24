@@ -1,11 +1,15 @@
-// Public, unauthenticated route. Single-page form:
-//   1. User enters their work email.
-//   2. We resolve the org by matching domain against any connected directory
-//      integration's primary_domain (no magic link).
-//   3. On success the form expands with the available platform checklist.
-//   4. Submit creates a credential_requests row → mails manager + IT.
+// Public, unauthenticated route. Two-step, email-verified flow:
+//   1. User enters their work email → cred-request-start emails them a
+//      single-use magic link (proves mailbox ownership; no data is returned
+//      to an anonymous caller).
+//   2. The link opens this page with ?t=<signed token>. Only then do we fetch
+//      the platform checklist (cred-request-submit action:context) and let them
+//      submit — both authenticated by the token, not by a typed-in email.
+// SECURITY REVIEW C1: previously step 1 returned the org's credential inventory
+// straight from an unverified email, so anyone who knew a company domain could
+// read it. The token now gates every data path.
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
 type ContextResp = {
   org_name: string;
@@ -15,9 +19,14 @@ type ContextResp = {
   credentials: Array<{ id: string; platform_name: string; category: string | null; notes: string | null }>;
 };
 
+const FN = (name: string) => `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/${name}`;
+
 export default function PublicCredentialsRequest() {
+  const token = new URLSearchParams(window.location.search).get('t') ?? '';
   const [email, setEmail] = useState('');
+  const [linkSent, setLinkSent] = useState(false);
   const [ctx, setCtx] = useState<ContextResp | null>(null);
+  const [loadingCtx, setLoadingCtx] = useState(!!token);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [managerEmails, setManagerEmails] = useState<Set<string>>(new Set());
   const [managerQ, setManagerQ] = useState('');
@@ -26,28 +35,47 @@ export default function PublicCredentialsRequest() {
   const [err, setErr] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState<string | null>(null);
 
-  const fetchCtx = async (e: React.FormEvent) => {
+  // Step 1 (no token): request a magic link. We never reveal whether the email
+  // matched — the response is intentionally the same either way.
+  const requestLink = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true); setErr(null);
     try {
-      const r = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/cred-request-submit`, {
+      const r = await fetch(FN('cred-request-start'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ work_email: email.trim().toLowerCase(), action: 'context' }),
+        body: JSON.stringify({ work_email: email.trim().toLowerCase() }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error ?? `${r.status}`);
+      setLinkSent(true);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally { setBusy(false); }
+  };
+
+  // Step 2 (token present): load the checklist, authenticated by the token.
+  const fetchCtx = useCallback(async () => {
+    setLoadingCtx(true); setErr(null);
+    try {
+      const r = await fetch(FN('cred-request-submit'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, action: 'context' }),
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error ?? `${r.status}`);
       const ctxResp = j as ContextResp;
       setCtx(ctxResp);
-      // Pre-check the auto-resolved manager if one's on file. The requester
-      // can still add more / swap.
       if (ctxResp.default_manager_email) {
         setManagerEmails(new Set([ctxResp.default_manager_email.toLowerCase()]));
       }
     } catch (e) {
       setErr((e as Error).message);
-    } finally { setBusy(false); }
-  };
+    } finally { setLoadingCtx(false); }
+  }, [token]);
+
+  useEffect(() => { if (token) void fetchCtx(); }, [token, fetchCtx]);
 
   const toggleManager = (email: string) => setManagerEmails((s) => {
     const lower = email.toLowerCase();
@@ -71,10 +99,10 @@ export default function PublicCredentialsRequest() {
   const submit = async () => {
     setBusy(true); setErr(null);
     try {
-      const r = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/cred-request-submit`, {
+      const r = await fetch(FN('cred-request-submit'), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          work_email: email.trim().toLowerCase(),
+          token,
           action: 'submit',
           credential_ids: [...picked],
           custom_text: customText.trim() || undefined,
@@ -102,41 +130,71 @@ export default function PublicCredentialsRequest() {
     );
   }
 
+  // Step 1 — no token yet: ask for the work email and email a magic link.
+  if (!token) {
+    return (
+      <Shell>
+        <h1 className="text-2xl font-poppins font-semibold text-white mb-1">Request software access</h1>
+        {err && <div className="mb-3 px-3 py-2 rounded-lg text-xs bg-rose-500/10 border border-rose-500/30 text-rose-300">{err}</div>}
+        {linkSent ? (
+          <p className="text-sm text-gray-400">
+            If <strong className="text-white">{email.trim().toLowerCase()}</strong> matches an active employee,
+            we've emailed a secure link to continue. It's valid for 30 minutes. You can close this tab.
+          </p>
+        ) : (
+          <>
+            <p className="text-sm text-gray-400 mb-5">
+              Enter your work email. We'll email you a secure link to continue — this keeps your company's
+              software list private to verified employees.
+            </p>
+            <form onSubmit={requestLink} className="space-y-3">
+              <label className="block">
+                <span className="block text-xs text-gray-400 mb-1">Work email</span>
+                <div className="flex gap-2">
+                  <input type="email" required value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="flex-1 px-3 py-2.5 bg-dark-900 border border-dark-700 rounded-lg text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500"
+                    placeholder="you@company.com" />
+                  <button type="submit" disabled={busy || !email}
+                    className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-lg text-sm text-white font-medium whitespace-nowrap">
+                    {busy ? 'Sending…' : 'Email me a link'}
+                  </button>
+                </div>
+              </label>
+            </form>
+          </>
+        )}
+      </Shell>
+    );
+  }
+
+  // Step 2 — token present: verifying, or the checklist, or an expired link.
+  if (loadingCtx) {
+    return <Shell><p className="text-sm text-gray-400">Verifying your link…</p></Shell>;
+  }
+  if (!ctx) {
+    return (
+      <Shell>
+        <h1 className="text-xl font-poppins font-semibold text-white mb-2">Link expired</h1>
+        <p className="text-sm text-gray-400">
+          {err ?? 'This link is invalid or has expired.'}{' '}
+          <a href="/r/credentials-request" className="text-emerald-400 underline">Start over</a> to get a new one.
+        </p>
+      </Shell>
+    );
+  }
+
   return (
     <Shell>
       <h1 className="text-2xl font-poppins font-semibold text-white mb-1">Request software access</h1>
       <p className="text-sm text-gray-400 mb-5">
-        Use your work email. Pick the platforms you need — your request will go to your manager (cc IT).
+        Pick the platforms you need — your request will go to your manager (cc IT).
       </p>
 
       {err && <div className="mb-3 px-3 py-2 rounded-lg text-xs bg-rose-500/10 border border-rose-500/30 text-rose-300">{err}</div>}
 
-      <form onSubmit={fetchCtx} className="space-y-3">
-        <label className="block">
-          <span className="block text-xs text-gray-400 mb-1">Work email</span>
-          <div className="flex gap-2">
-            <input type="email" required disabled={!!ctx} value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="flex-1 px-3 py-2.5 bg-dark-900 border border-dark-700 rounded-lg text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 disabled:opacity-60"
-              placeholder="you@company.com" />
-            {!ctx && (
-              <button type="submit" disabled={busy || !email}
-                className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-lg text-sm text-white font-medium whitespace-nowrap">
-                {busy ? 'Checking…' : 'Continue'}
-              </button>
-            )}
-            {ctx && (
-              <button type="button" onClick={() => { setCtx(null); setPicked(new Set()); setCustomText(''); }}
-                className="px-3 py-2.5 bg-dark-700 hover:bg-dark-600 rounded-lg text-xs text-white">
-                Change
-              </button>
-            )}
-          </div>
-        </label>
-      </form>
-
-      {ctx && (
-        <div className="mt-5 pt-5 border-t border-dark-700 space-y-4">
+      {(
+        <div className="space-y-4">
           {ctx.org_name && (
             <p className="text-xs text-gray-500">
               Submitting to <strong className="text-white">{ctx.org_name}</strong>

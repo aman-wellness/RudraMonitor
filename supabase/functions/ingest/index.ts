@@ -30,8 +30,14 @@ const ALLOWED_FIELDS: Record<string, Set<string>> = {
   system_metrics: new Set([
     "cpu_usage", "ram_usage", "disk_usage", "disk_activity", "battery_level", "network_speed", "recorded_at",
   ]),
+  // SECURITY REVIEW M3: screenshot_url / video_url are deliberately NOT
+  // accepted here. The agent only ever sets them through upload-screenshot /
+  // upload-video (which write the storage object first, then insert the row),
+  // so allowing them on the generic ingest path served no purpose and let a
+  // token holder point a row at another org's storage key. Screenshot/video
+  // rows continue to work — they just don't come through ingest.
   activity_logs: new Set([
-    "activity_type", "application_name", "url", "page_title", "duration", "screenshot_url", "video_url", "created_at",
+    "activity_type", "application_name", "url", "page_title", "duration", "created_at",
   ]),
   alerts: new Set([
     "alert_type", "message", "ai_resolved", "resolution", "created_at",

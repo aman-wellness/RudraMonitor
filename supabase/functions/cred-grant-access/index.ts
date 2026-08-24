@@ -91,14 +91,20 @@ Deno.serve(async (req) => {
       .filter((e): e is string => !!e)
       .map((e) => e.toLowerCase());
 
+    // SECURITY REVIEW M8: these values come from directory sync (semi-trusted).
+    // They are interpolated into a PostgREST .or() filter, so a value containing
+    // a quote / comma / paren could corrupt the filter and broaden the match.
+    // Legit external ids and emails never contain these, so stripping them
+    // neutralises injection without affecting real data.
+    const orSafe = (s: string) => s.replace(/["\\(),]/g, "");
     const { data: existingEmps } = await admin
       .from("employees")
       .select("id, work_email, m365_user_id, google_user_id")
       .eq("org_id", orgId)
       .or([
-        m365Ids.length ? `m365_user_id.in.(${m365Ids.map((s) => `"${s}"`).join(",")})` : "",
-        googleIds.length ? `google_user_id.in.(${googleIds.map((s) => `"${s}"`).join(",")})` : "",
-        emails.length ? `work_email.in.(${emails.map((s) => `"${s}"`).join(",")})` : "",
+        m365Ids.length ? `m365_user_id.in.(${m365Ids.map((s) => `"${orSafe(s)}"`).join(",")})` : "",
+        googleIds.length ? `google_user_id.in.(${googleIds.map((s) => `"${orSafe(s)}"`).join(",")})` : "",
+        emails.length ? `work_email.in.(${emails.map((s) => `"${orSafe(s)}"`).join(",")})` : "",
       ].filter(Boolean).join(","));
 
     type EmpRow = { id: string; work_email: string | null; m365_user_id: string | null; google_user_id: string | null };
