@@ -223,6 +223,14 @@ async fn handle_event(
             log::info!("updater: agent.update_now received");
             crate::wake_updater();
         }
+        "settings.refresh" => {
+            // Admin changed a per-agent setting in the dashboard (e.g. the
+            // USB-block toggle). Ring the settings bell so the poller re-fetches
+            // immediately and the change is enforced within seconds instead of
+            // waiting up to the 60s poll interval.
+            log::info!("settings: settings.refresh received");
+            crate::wake_settings();
+        }
         "tool.run" => {
             log::info!("tool.run: received payload={inner_payload}");
             // Windows-only. Both bundled scripts (DriverManagerPro,

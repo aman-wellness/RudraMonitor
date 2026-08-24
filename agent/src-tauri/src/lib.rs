@@ -889,7 +889,16 @@ fn spawn_background_loop(state: AppState) {
                         log::warn!("settings tick failed: {e:#}");
                     }
                 }
-                sleep(Duration::from_secs(SETTINGS_REFRESH_SECS)).await;
+                // Sleep for the poll interval OR until an admin toggles a
+                // setting in the dashboard (realtime `settings.refresh` rings
+                // SETTINGS_NOTIFY) — whichever comes first. This is what makes
+                // the USB-block toggle take effect in seconds.
+                tokio::select! {
+                    _ = sleep(Duration::from_secs(SETTINGS_REFRESH_SECS)) => {}
+                    _ = SETTINGS_NOTIFY.notified() => {
+                        log::info!("settings: refresh bell rung by admin — applying now");
+                    }
+                }
             }
         });
     }
@@ -1656,6 +1665,20 @@ pub static UPDATE_NOTIFY: once_cell::sync::Lazy<std::sync::Arc<tokio::sync::Noti
 /// interrupted.
 pub fn wake_updater() {
     UPDATE_NOTIFY.notify_one();
+}
+
+/// Admin-toggled "apply settings NOW" bell. The settings poller selects on
+/// `sleep(SETTINGS_REFRESH_SECS)` OR `SETTINGS_NOTIFY.notified()`; the realtime
+/// `settings.refresh` handler rings it the instant an admin changes a per-agent
+/// setting (e.g. the USB-block toggle) in the dashboard, so it takes effect in
+/// seconds instead of waiting up to a full poll interval. Same shape as the
+/// updater bell above.
+pub static SETTINGS_NOTIFY: once_cell::sync::Lazy<std::sync::Arc<tokio::sync::Notify>> =
+    once_cell::sync::Lazy::new(|| std::sync::Arc::new(tokio::sync::Notify::new()));
+
+/// Ring the settings bell (called by the realtime `settings.refresh` handler).
+pub fn wake_settings() {
+    SETTINGS_NOTIFY.notify_one();
 }
 
 fn spawn_updater_loop(handle: tauri::AppHandle) {

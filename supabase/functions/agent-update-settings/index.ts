@@ -148,6 +148,22 @@ Deno.serve(async (req) => {
     return json({ error: "update affected no rows" }, 500);
   }
 
+  // Nudge the agent to apply the new settings immediately over Realtime rather
+  // than waiting for its next 60s settings poll — so toggles like USB block
+  // take effect within seconds. Best-effort: same pattern as agent-run-tool;
+  // the poll is the fallback if the broadcast is missed.
+  try {
+    const ch = admin.channel(`agent:${agentId}`);
+    await ch.send({
+      type: "broadcast",
+      event: "settings.refresh",
+      payload: { at: new Date().toISOString() },
+    });
+    await admin.removeChannel(ch);
+  } catch (e) {
+    console.warn(`[agent-update-settings] broadcast failed: ${(e as Error).message}`);
+  }
+
   return json({ ok: true, agent: updated, ignored });
 });
 
