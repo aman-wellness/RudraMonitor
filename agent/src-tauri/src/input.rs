@@ -1,8 +1,11 @@
 // Remote-control input injection for the WebRTC Remote tab.
 //
-// One dedicated OS thread (`"wellness-extract-input"`) owns the `enigo::Enigo` and
-// `arboard::Clipboard` instances; the rest of the agent talks to it via an
-// unbounded mpsc channel of `InputEvent`s. Two reasons:
+// One dedicated OS thread (`"wellness-extract-input"`) owns the `enigo::Enigo`
+// instance; the rest of the agent talks to it via an unbounded mpsc channel of
+// `InputEvent`s. Clipboard access opens a FRESH `arboard::Clipboard` per
+// operation (see `clip_set`/`clip_get`) rather than caching one, so a transient
+// clipboard lock at startup can't disable copy/paste for the whole session.
+// Two reasons for the dedicated thread:
 //
 //   1. macOS `enigo` uses CGEvent under the hood. Even though current enigo
 //      doesn't strictly require a CFRunLoop on the calling thread, keeping
@@ -16,6 +19,7 @@
 // auto-updates. Windows needs no permission for same-session input.
 
 use std::sync::OnceLock;
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
@@ -85,7 +89,6 @@ pub fn spawn() {
                     return;
                 }
             };
-            let mut clipboard = arboard::Clipboard::new().ok();
             log::info!("input: thread ready");
 
             // tokio Receiver::blocking_recv exists on UnboundedReceiver too.
@@ -170,12 +173,18 @@ pub fn spawn() {
                         }
                     }
                     InputEvent::ClipSet { text } => {
-                        if let Some(c) = clipboard.as_mut() {
-                            let _ = c.set_text(text);
+                        if let Err(e) = clip_set(&text) {
+                            log::warn!("clip_set failed after retries: {e}");
                         }
                     }
                     InputEvent::ClipGet(reply) => {
-                        let v = clipboard.as_mut().and_then(|c| c.get_text().ok());
+                        let v = match clip_get() {
+                            Ok(s) => Some(s),
+                            Err(e) => {
+                                log::warn!("clip_get failed after retries: {e}");
+                                None
+                            }
+                        };
                         let _ = reply.send(v);
                     }
                 }
@@ -183,6 +192,44 @@ pub fn spawn() {
             log::info!("input: thread exiting (channel closed)");
         })
         .expect("spawn wellness-extract-input thread");
+}
+
+/// Push text to the OS clipboard, opening it fresh with a short retry.
+///
+/// On Windows `OpenClipboard` fails with ERROR_ACCESS_DENIED whenever ANY other
+/// process holds the clipboard open at that instant (Explorer, browsers,
+/// password managers all grab it transiently). The previous code cached one
+/// `arboard::Clipboard` at thread start, so a single unlucky moment left
+/// paste-to-remote dead for the entire session. Opening per-op and retrying a
+/// few times makes clipboard sync self-healing across all platforms.
+fn clip_set(text: &str) -> Result<(), String> {
+    let mut last = String::from("unknown");
+    for _ in 0..5 {
+        match arboard::Clipboard::new().and_then(|mut c| c.set_text(text.to_owned())) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last = e.to_string();
+                std::thread::sleep(Duration::from_millis(40));
+            }
+        }
+    }
+    Err(last)
+}
+
+/// Read text from the OS clipboard, opening it fresh with a short retry.
+/// Same rationale as `clip_set`.
+fn clip_get() -> Result<String, String> {
+    let mut last = String::from("unknown");
+    for _ in 0..5 {
+        match arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
+            Ok(s) => return Ok(s),
+            Err(e) => {
+                last = e.to_string();
+                std::thread::sleep(Duration::from_millis(40));
+            }
+        }
+    }
+    Err(last)
 }
 
 /// Map a browser `KeyboardEvent.code` to `enigo::Key`. Layout-independent —

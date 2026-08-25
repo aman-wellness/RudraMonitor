@@ -41,10 +41,21 @@ CRCCheck off
   ; all. CopyFiles /SILENT avoids a progress dialog under the quiet install.
   CopyFiles /SILENT "$EXEPATH" "$INSTDIR\enroll.dat"
 
-  ; --- 3. Elevated logon task = silent auto-updates; run it now = elevated boot ---
+  ; --- 3. Register (but DO NOT run) the elevated logon task ---
+  ; Registering from the one-time ELEVATED install is what lets the /rl highest
+  ; task launch silently at every logon (no UAC) — that's the silent-update path.
+  ;
+  ; We must NOT `schtasks /run` it here. This installer's finish page already
+  ; launches the agent via nsis_tauri_utils::RunAsUser — i.e. NON-elevated. If we
+  ; also /run the task, an ELEVATED agent starts at the same instant as the
+  ; non-elevated one. Windows single-instance objects don't cross integrity
+  ; levels, so neither dedupes the other: two agents + two guardians spawn and
+  ; respawn each other every ~2s, flashing a window forever (the v0.7.13 /
+  ; b166862 prod regression). The finish-page RunAsUser covers the first start;
+  ; the task covers every subsequent logon. (service_install.rs re-creates this
+  ; same task on launch too — this elevated registration just guarantees the
+  ; admin approval so no UAC ever appears.)
   nsExec::Exec 'schtasks /create /f /sc onlogon /rl highest /it /tn "WellnessExtractAgent" /tr "\"$INSTDIR\wellness-extract-agent.exe\""'
-  Pop $0
-  nsExec::Exec 'schtasks /run /tn "WellnessExtractAgent"'
   Pop $0
 !macroend
 

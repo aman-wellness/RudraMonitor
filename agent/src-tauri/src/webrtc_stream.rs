@@ -354,17 +354,22 @@ async fn handle_session(
         }
     };
 
-    // Build the WebRTC API instance. Default codecs include H.264; we don't
-    // need to register anything extra. The dashboard-side SDP munger (see
-    // src/pages/monitoring/components/LiveTab.tsx) strips non-baseline H.264
-    // PTs from the offer BEFORE we see it, so the answer that webrtc-rs
-    // generates can only pick from baseline-compatible PTs. Doing the
-    // restriction dashboard-side instead of agent-side is safer because:
-    //   • we can deploy a dashboard build in seconds (no Rust rebuild + CI),
-    //   • register_default_codecs() is the well-trodden path through
-    //     webrtc-rs's negotiation logic — replacing it caused the agent to
-    //     emit malformed answers on v0.2.49/0.2.50 (no signaling rows ever
-    //     hit the DB).
+    // Build the WebRTC API instance. register_default_codecs() negotiates
+    // H.264 constrained-baseline (profile-level-id=42e01f) with
+    // level-asymmetry-allowed=1 — and nothing else. The ffmpeg encoder is
+    // pinned to emit that SAME profile (see ffmpeg::encoder_args →
+    // `-profile:v baseline`); if the two ever diverge, Chrome receives RTP
+    // but decodes zero frames → black screen with working input.
+    //
+    // There is NO dashboard-side SDP munger. An earlier version of this
+    // comment referenced one in LiveTab.tsx, but Live moved to LiveKit and
+    // that code is gone — so the agent-side encoder profile is the ONLY
+    // lever that keeps sender and receiver in agreement. Do NOT switch the
+    // encoder back to main/high without also making webrtc-rs negotiate it.
+    //
+    // We keep register_default_codecs() rather than hand-registering codecs:
+    // replacing it once produced malformed answers (v0.2.49/0.2.50 — no
+    // signaling rows ever hit the DB), so we match it from the encoder side.
     let mut me = MediaEngine::default();
     me.register_default_codecs()
         .map_err(|e| anyhow!("register codecs: {e}"))?;

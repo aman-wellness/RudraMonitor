@@ -457,7 +457,22 @@ async fn perform_enroll(
 
     // Auto-enable launch-at-login so the agent persists across reboots without the user
     // having to know about it.
-    let _ = app.autolaunch().enable();
+    //
+    // Windows: autostart is owned by the elevated `WellnessExtractAgent` scheduled
+    // task (service_install.rs + the NSIS installer). We must NOT also register the
+    // non-elevated HKCU Run key — two launchers at different integrity levels can't
+    // see each other through Windows' single-instance guard, so both start, spawn
+    // dueling guardians, and respawn each other every ~2s (the v0.7.13 window-flash
+    // loop). Actively disable the Run key so the task is the single launcher.
+    // macOS/Linux have no such task, so keep their LaunchAgent/systemd autostart.
+    #[cfg(target_os = "windows")]
+    {
+        let _ = app.autolaunch().disable();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app.autolaunch().enable();
+    }
 
     // Now that we're enrolled, hide the window and shed all visible UI. From here on the
     // agent runs silently — no dock icon (macOS Accessory), no taskbar, no tray.
@@ -1570,10 +1585,22 @@ pub fn run() {
             // re-write it on every launch so an auto-update to a new
             // install path immediately repoints autostart at the new exe.
             if enrolled {
-                let mgr = app.autolaunch();
-                match mgr.enable() {
-                    Ok(()) => log::info!("autostart: ensured enabled at boot"),
-                    Err(e) => log::warn!("autostart: enable failed: {e}"),
+                // Windows: the elevated scheduled task owns autostart. Actively
+                // REMOVE the redundant non-elevated HKCU Run key on every launch so
+                // agents upgrading from v0.7.13 drop the second (cross-integrity)
+                // launcher that caused the respawn/window-flash loop. macOS/Linux
+                // keep their LaunchAgent/systemd autostart (no scheduled task there).
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = app.autolaunch().disable();
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let mgr = app.autolaunch();
+                    match mgr.enable() {
+                        Ok(()) => log::info!("autostart: ensured enabled at boot"),
+                        Err(e) => log::warn!("autostart: enable failed: {e}"),
+                    }
                 }
             }
 
