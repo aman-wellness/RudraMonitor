@@ -107,7 +107,7 @@ Deno.serve(async (req) => {
   // Reuse existing row for this machine (idempotent enrollment).
   const { data: existing, error: lookupErr } = await admin
     .from("agents")
-    .select("id, enroll_token")
+    .select("id, enroll_token, agent_name")
     .eq("org_id", org.id)
     .eq("machine_name", machine_name)
     .maybeSingle();
@@ -117,10 +117,21 @@ Deno.serve(async (req) => {
   }
 
   if (existing) {
-    await admin
-      .from("agents")
-      .update({ agent_name, os_type, agent_version, status: "online", last_active: new Date().toISOString() })
-      .eq("id", existing.id);
+    const upd: Record<string, unknown> = {
+      os_type,
+      agent_version,
+      status: "online",
+      last_active: new Date().toISOString(),
+    };
+    // Preserve an admin's dashboard rename across re-enrolls (reinstall,
+    // zero-touch re-run, wiped config). agent_name and machine_name start equal
+    // at first enrolment; a rename makes them differ. So only refresh the name
+    // from the reported hostname when it was NEVER changed — otherwise leave the
+    // admin's chosen name intact.
+    if (existing.agent_name === machine_name) {
+      upd.agent_name = agent_name;
+    }
+    await admin.from("agents").update(upd).eq("id", existing.id);
     return json({ agent_id: existing.id, enroll_token: existing.enroll_token, org_id: org.id });
   }
 

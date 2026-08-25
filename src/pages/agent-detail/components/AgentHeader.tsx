@@ -23,6 +23,8 @@ interface Props {
   os?: string;
   department?: string;
   onDepartmentChange?: (next: string | null) => void;
+  /** Fired after a successful rename so the parent can update its cached name. */
+  onNameChange?: (next: string) => void;
   /** Right-hand slot — the date-range picker sits here so the two share a row. */
   children?: React.ReactNode;
 }
@@ -67,6 +69,7 @@ export default function AgentHeader({
   os,
   department,
   onDepartmentChange,
+  onNameChange,
   children,
 }: Props) {
   const navigate = useNavigate();
@@ -78,6 +81,18 @@ export default function AgentHeader({
   const [saving, setSaving] = useState(false);
   const [removing, setRemoving] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
+
+  // Editable display name. The agent enrolls with its PC hostname; an admin can
+  // override that here. Kept in local state so the rename shows instantly, and
+  // re-synced whenever the parent re-fetches the agent (realtime / refetch).
+  const [displayName, setDisplayName] = useState(name);
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState(name);
+  const [savingName, setSavingName] = useState(false);
+
+  useEffect(() => {
+    setDisplayName(name);
+  }, [name]);
 
   useEffect(() => {
     setDept(department && department !== 'Unassigned' ? department : null);
@@ -113,7 +128,7 @@ export default function AgentHeader({
     };
   }, [editing]);
 
-  const initials = name
+  const initials = displayName
     .split(' ')
     .map((w) => w[0])
     .filter(Boolean)
@@ -140,6 +155,30 @@ export default function AgentHeader({
     setDept(next);
     notify.success(next ? `Moved to ${next}` : 'Department cleared', { description: name });
     onDepartmentChange?.(next);
+  };
+
+  const rename = async () => {
+    const next = nameDraft.trim();
+    if (!next || next === displayName) {
+      setRenaming(false);
+      return;
+    }
+    setSavingName(true);
+    // Direct RLS write — same path as the department editor above. `agent_name`
+    // is the display name; the heartbeat never overwrites it (only re-enroll
+    // does, which enroll-agent now avoids for existing rows).
+    let q = supabase.from('agents').update({ agent_name: next }).eq('id', agentId);
+    if (orgId) q = q.eq('org_id', orgId);
+    const { error } = await q;
+    setSavingName(false);
+    setRenaming(false);
+    if (error) {
+      notify.fail('Could not rename agent', error);
+      return;
+    }
+    setDisplayName(next);
+    notify.success('Agent renamed', { description: next });
+    onNameChange?.(next);
   };
 
   const remove = async () => {
@@ -190,9 +229,42 @@ export default function AgentHeader({
 
           <div className="min-w-0">
             <div className="flex items-center gap-2.5 flex-wrap">
-              <h1 className="num" style={{ fontSize: 17 }}>
-                {name}
-              </h1>
+              {renaming ? (
+                <input
+                  autoFocus
+                  value={nameDraft}
+                  onChange={(e) => setNameDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void rename();
+                    if (e.key === 'Escape') setRenaming(false);
+                  }}
+                  onBlur={() => void rename()}
+                  disabled={savingName}
+                  maxLength={64}
+                  className="num bg-transparent outline-none"
+                  style={{
+                    fontSize: 17,
+                    borderBottom: '1px solid var(--d-line)',
+                    minWidth: 140,
+                  }}
+                />
+              ) : (
+                <h1 className="num" style={{ fontSize: 17 }}>
+                  {displayName}
+                </h1>
+              )}
+              {!renaming && (
+                <button
+                  onClick={() => {
+                    setNameDraft(displayName);
+                    setRenaming(true);
+                  }}
+                  className="chip chip-quiet text-[10px]"
+                  title="Rename agent"
+                >
+                  <i className="ri-pencil-line" />
+                </button>
+              )}
               <span className={`inline-flex items-center gap-1.5 text-[11px] ${statusTone}`}>
                 <span
                   className={`live-dot ${status === 'online' ? '' : 'is-off'}`}
