@@ -268,6 +268,29 @@ async fn handle_event(
                 rustdesk_host::kill_orphan_rustdesk().await;
             });
         }
+        "livekit_start" => {
+            // Live-view start trigger, delivered over Realtime broadcast
+            // (replaces the whip_publisher HTTP long-poll that overloaded the
+            // edge runtime). Start the WHIP publish session for this room.
+            log::info!("whip: livekit_start broadcast payload={inner_payload}");
+            let state = state.clone();
+            let session_id = inner_payload
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let room = inner_payload
+                .get("room")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            tauri::async_runtime::spawn(async move {
+                crate::whip_publisher::start_whip_session(state, session_id, room).await;
+            });
+        }
+        "livekit_stop" => {
+            log::info!("whip: livekit_stop broadcast");
+            crate::whip_publisher::stop_whip_session();
+        }
         _ => {
             log::debug!("remote: ignoring inner event {inner_event}");
         }

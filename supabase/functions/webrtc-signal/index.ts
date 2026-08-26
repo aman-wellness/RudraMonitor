@@ -45,14 +45,21 @@ type Kind =
   | "offer" | "answer" | "ice_candidate"
   | "livekit_start" | "livekit_stop";
 
-const LONG_POLL_TIMEOUT_MS = 25_000;
-// 100 ms tick inside the long-poll loop. The original 500 ms cap meant an
-// offer/answer round-trip could waste up to a second on polling alone —
-// noticeable when the user is waiting for the Remote tab to wire up. At
-// 100 ms the polling delay is ≤200 ms total for an offer + answer round
-// trip, and the DB load is still well within Supabase's budget for our
-// scale (typical session has ~10 messages over its lifetime).
-const POLL_INTERVAL_MS = 100;
+const LONG_POLL_TIMEOUT_MS = 10_000;
+// ADAPTIVE poll interval. A flat 100 ms tick meant every agent — including the
+// vast majority that are IDLE (no active session) — ran a DB query 10×/sec for
+// the full long-poll, forever. At fleet scale that saturated the edge runtime's
+// CPU budget, so its supervisor started terminating isolates mid-request
+// ("WorkerRequestCancelled" → HTTP 500), which broke Live/Remote signalling and
+// spilled over into other edge functions (e.g. settings delivery, so USB-block
+// toggles stopped reaching agents).
+//
+// We ramp from a fast start (so an active offer/answer/ICE exchange still wires
+// up in ~1 s) up to a 1 s ceiling (so an idle long-poll costs ~1 query/sec, a
+// ~10× load reduction). Over a 20 s window that's ~25 queries vs. the old ~250.
+const POLL_INTERVAL_START_MS = 200;
+const POLL_INTERVAL_MAX_MS = 1_000;
+const POLL_INTERVAL_STEP_MS = 200;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -242,6 +249,34 @@ async function handlePost(
   });
   if (insertErr) return json({ error: `insert: ${insertErr.message}` }, 500);
 
+  // Deliver `to_agent` messages over Realtime broadcast so the agent no longer
+  // has to long-poll this function — that continuous poll, held open by every
+  // agent 24/7, saturated the edge runtime's CPU budget ("WorkerRequestCancelled"
+  // → 500s across all functions). The agent's realtime_listener subscribes to
+  // `agent:<id>` and dispatches these events (livekit_start/stop today; offer/
+  // ice_candidate once the Remote slice lands). The DB insert above stays for
+  // audit/replay and as a fallback for any client still polling. Same broadcast
+  // mechanism the RustDesk `remote.request` path already uses successfully.
+  if (direction === "to_agent") {
+    try {
+      const status = await admin.channel(`agent:${agentId}`).send({
+        type: "broadcast",
+        event: kind,
+        payload: {
+          session_id: sessionId,
+          ...(payload && typeof payload === "object" ? payload as Record<string, unknown> : {}),
+        },
+      });
+      if (status !== "ok") {
+        console.error(`webrtc-signal broadcast ${kind} to agent:${agentId} returned "${status}"`);
+      }
+    } catch (e) {
+      console.error(
+        `webrtc-signal broadcast ${kind} to agent:${agentId} threw: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
   return json({ ok: true });
 }
 
@@ -284,6 +319,7 @@ async function handleGet(
   // Using cancellation via AbortSignal would be cleaner but Deno's Deno.serve
   // doesn't expose request lifecycle hooks reliably across versions.
   const deadline = Date.now() + LONG_POLL_TIMEOUT_MS;
+  let pollInterval = POLL_INTERVAL_START_MS;
   while (Date.now() < deadline) {
     // Build the row filter dynamically: agents without a session_id read
     // every "to_agent" message addressed to their agent_id (so they can
@@ -344,7 +380,9 @@ async function handleGet(
       }
     }
 
-    await sleep(POLL_INTERVAL_MS);
+    await sleep(pollInterval);
+    // Ramp toward the ceiling so an idle long-poll backs off to ~1 query/sec.
+    pollInterval = Math.min(POLL_INTERVAL_MAX_MS, pollInterval + POLL_INTERVAL_STEP_MS);
   }
 
   return json({ messages: [] });

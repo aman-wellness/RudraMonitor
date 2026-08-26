@@ -32,8 +32,9 @@
 // another Supabase realtime channel.
 
 use anyhow::{anyhow, Context, Result};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock, RwLock};
+use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
@@ -72,43 +73,109 @@ pub fn spawn_whip_loop(state: AppState) {
         {
             crate::capture::macos::ensure_screen_recording_permission();
         }
-        // Singleton session state. Two trips through the poll loop
-        // simultaneously firing run_session() leads to TWO ffmpegs
-        // racing for the same screen-capture device — the OS gives
-        // only ONE of them access (macOS avfoundation, Windows gdigrab,
-        // Linux x11grab all single-grab the display). The losing
-        // ffmpeg starts but produces zero frames, Ingress reports
-        // "source encoder not ready" after ~8 s and drops the session.
-        //
-        // `active` flips true while a WHIP session is running;
-        // `stop_current` is the AtomicBool the ICE-state callback +
-        // livekit_stop handler signal to tear down the in-flight session.
-        let active = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let stop_current = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        // Wall-clock timestamp of when the singleton lock was last
-        // claimed. Used by the stuck-state recovery in poll_once to
-        // force-reclaim a session lock that's been held more than
-        // 120 s — defends against tauri's silent panic swallow.
-        let last_claim = Arc::new(std::sync::RwLock::new(std::time::Instant::now()));
-        let mut since = chrono::Utc::now().to_rfc3339();
-        loop {
-            match poll_once(&state, &since, &active, &stop_current, &last_claim).await {
-                Ok(Some(new_since)) => since = new_since,
-                Ok(None) => {}
-                Err(e) => {
-                    log::warn!("whip poll failed: {e:#}; backing off 10s");
-                    sleep(Duration::from_secs(10)).await;
-                }
+        // Event-driven: WHIP sessions are now started/stopped by the
+        // `livekit_start` / `livekit_stop` Realtime broadcasts (handled in
+        // realtime_listener.rs, which calls whip_publisher::start_whip_session
+        // / stop_whip_session). The old continuous long-poll against the
+        // `webrtc-signal` edge function is gone — that loop, held open by
+        // every agent 24/7, is what saturated the edge runtime's CPU budget
+        // ("WorkerRequestCancelled" → 500s across all functions). The singleton
+        // session state now lives in `whip()`. Nothing else to do at boot.
+    });
+}
+
+/// Singleton WHIP session state, shared between the boot task and the
+/// Realtime `livekit_start` / `livekit_stop` handlers. Only one WHIP session
+/// may run at a time — two would race for the single OS screen-capture device
+/// (avfoundation / gdigrab / x11grab all single-grab), and the loser produces
+/// zero frames ("source encoder not ready").
+struct WhipSingleton {
+    active: Arc<AtomicBool>,
+    stop_current: Arc<AtomicBool>,
+    last_claim: Arc<RwLock<Instant>>,
+}
+
+fn whip() -> &'static WhipSingleton {
+    static S: OnceLock<WhipSingleton> = OnceLock::new();
+    S.get_or_init(|| WhipSingleton {
+        active: Arc::new(AtomicBool::new(false)),
+        stop_current: Arc::new(AtomicBool::new(false)),
+        last_claim: Arc::new(RwLock::new(Instant::now())),
+    })
+}
+
+/// Tear down the in-flight WHIP session. Wired to the `livekit_stop` Realtime
+/// broadcast (realtime_listener.rs); `run_session` sees the flag flip and
+/// cleans up (kills ffmpeg, closes the PeerConnection).
+pub fn stop_whip_session() {
+    log::info!("whip: livekit_stop — signalling teardown");
+    whip().stop_current.store(true, Ordering::SeqCst);
+}
+
+/// Start a WHIP session for `session_id` / `room`. Wired to the `livekit_start`
+/// Realtime broadcast. Singleton-guarded exactly like the old poll path: a
+/// start while a recent session is active is ignored (dashboard hard-refresh
+/// spam), and a stale lock (>45 s) is force-reclaimed.
+pub async fn start_whip_session(state: AppState, session_id: String, room: Option<String>) {
+    let agent_id = {
+        let cfg = state.config.lock().await;
+        match cfg.enrollment.as_ref() {
+            Some(e) => e.agent_id.clone(),
+            None => {
+                log::warn!("whip: livekit_start received but agent is not enrolled — ignoring");
+                return;
             }
+        }
+    };
+
+    let s = whip();
+    let now = Instant::now();
+    let lock_age = now.duration_since(*s.last_claim.read().unwrap_or_else(|e| e.into_inner()));
+    // 45s is comfortably above the worst-case ~33s Windows ffmpeg cold start
+    // but far below a value that would lock out the operator's next "Live" click.
+    if s.active.load(Ordering::SeqCst) && lock_age < Duration::from_secs(45) {
+        log::info!("whip: livekit_start ignored — session already active ({}s ago)", lock_age.as_secs());
+        return;
+    }
+    if s.active.load(Ordering::SeqCst) {
+        log::warn!("whip: forcing reclaim of stale session lock (held {}s)", lock_age.as_secs());
+        s.active.store(false, Ordering::SeqCst);
+    }
+    *s.last_claim.write().unwrap_or_else(|e| e.into_inner()) = now;
+
+    let room = room.unwrap_or_else(|| format!("agent_{agent_id}"));
+    log::info!("whip: livekit_start for session={session_id} room={room}");
+    s.active.store(true, Ordering::SeqCst);
+    // Fresh stop flag for THIS session — ignore a stop that arrived during the
+    // previous session's teardown.
+    s.stop_current.store(false, Ordering::SeqCst);
+
+    // Drop-guard: `active` flips back to false when the session task exits,
+    // INCLUDING via panic (tauri's spawn swallows panics silently, which would
+    // otherwise strand active=true and lock out all future sessions).
+    struct ActiveGuard(Arc<AtomicBool>);
+    impl Drop for ActiveGuard {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+            log::info!("whip: session lock released (drop guard)");
+        }
+    }
+    let active_for_session = s.active.clone();
+    let stop_for_session = s.stop_current.clone();
+    tauri::async_runtime::spawn(async move {
+        let _guard = ActiveGuard(active_for_session);
+        match run_session(&state, &agent_id, &session_id, &room, stop_for_session).await {
+            Ok(()) => log::info!("whip session {session_id} ended cleanly"),
+            Err(e) => log::warn!("whip session {session_id} failed: {e}"),
         }
     });
 }
 
-/// One round of the long-poll. We reuse the existing webrtc_signal edge
-/// function — the dashboard inserts livekit_start / livekit_stop rows
-/// with `direction=to_agent`. Format mirrors the old offer envelope so
-/// the edge function needs no changes (Block A through G keep the table
-/// schema stable; only the kinds it carries shift).
+/// LEGACY (dead code): the old HTTP long-poll round. No longer called —
+/// sessions are now driven by `start_whip_session` / `stop_whip_session` off
+/// the Realtime broadcast. Kept temporarily for reference; deleted in the
+/// signaling-cleanup slice.
+#[allow(dead_code)]
 async fn poll_once(
     state: &AppState,
     since: &str,
