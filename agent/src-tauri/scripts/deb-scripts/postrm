@@ -20,6 +20,15 @@ set -e
 
 case "$1" in
     remove|purge)
+        # ---- Kill running processes BEFORE touching files -------
+        # If the agent is still running, its guardian will respawn
+        # it after we start removing state, leaving orphan files.
+        for procname in wellness-extract-agent security-assistant rudrans-agent; do
+            pkill -f "$procname" 2>/dev/null || true
+        done
+        # Give the OS a moment to release open file handles.
+        sleep 1
+
         # ---- MITM CA in system trust store ------------------------
         rm -f /usr/local/share/ca-certificates/wellness-mitm.crt \
               /usr/local/share/ca-certificates/wellness-extract-mitm.crt 2>/dev/null || true
@@ -83,6 +92,25 @@ case "$1" in
                 dpkg --purge --force-depends "$OLD" 2>/dev/null || true
             fi
         done
+
+        # ---- System-wide install dirs + logs --------------------
+        # apt remove takes the .deb payload but any files the agent
+        # dropped OUTSIDE that payload (e.g. cached ffmpeg, self-
+        # written config) live in these paths and survive dpkg.
+        rm -rf /opt/wellness-extract-agent \
+               /opt/rudrans-agent \
+               /opt/trackforce-agent \
+               /var/log/wellness-extract-agent \
+               /var/log/rudrans-agent \
+               /var/log/trackforce-agent \
+               /var/lib/wellness-extract-agent 2>/dev/null || true
+
+        # ---- Any /tmp / /var/tmp scratch -------------------------
+        find /tmp /var/tmp -maxdepth 2 \
+             \( -name 'Security Assistant-*-updater-*' \
+             -o -name 'wellness-extract-agent-*' \
+             -o -name 'rudrans-agent-*' \) \
+             -exec rm -rf {} + 2>/dev/null || true
     ;;
 
     abort-install|abort-upgrade|upgrade|failed-upgrade|disappear)

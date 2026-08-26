@@ -93,5 +93,42 @@ for BUNDLE_ID in "${BUNDLE_IDS[@]}"; do
   tccutil reset SystemPolicyAllFiles "$BUNDLE_ID" 2>/dev/null || true
 done
 
+# 6. Revert the system-wide HTTP + HTTPS proxy if it's still pointing at
+# our old MITM listener. Never clobber a legit corporate proxy — only
+# reset if the current host matches 127.0.0.1. Best-effort; skips
+# silently on systems where the current user can't run networksetup.
+for SVC in $(networksetup -listallnetworkservices 2>/dev/null | tail -n +2); do
+  CUR_HOST=$(networksetup -getwebproxy "$SVC" 2>/dev/null | awk '/^Server: / {print $2}')
+  if [ "$CUR_HOST" = "127.0.0.1" ]; then
+    sudo networksetup -setwebproxystate       "$SVC" off 2>/dev/null || true
+    sudo networksetup -setsecurewebproxystate "$SVC" off 2>/dev/null || true
+  fi
+done
+
+# 7. MITM Root CA in both Keychains. login keychain deletion works as
+# the current user; System keychain deletion needs admin (asks once).
+for CN in "Wellness Extract Root CA" "Wellness Extract MITM"; do
+  security delete-certificate -c "$CN" \
+    "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || true
+  sudo security delete-certificate -c "$CN" \
+    /Library/Keychains/System.keychain 2>/dev/null || true
+done
+
+# 8. Login Items — a fresh install may have registered the .app as a
+# per-user login item alongside the LaunchAgent. Osascript delete is
+# scoped to the current user, so it's safe.
+for APP_NAME in "${APP_NAMES[@]}"; do
+  osascript -e "tell application \"System Events\" to delete login item \"${APP_NAME}\"" \
+    2>/dev/null || true
+done
+
+# 9. Sweep any Tauri updater temp dirs left in the user's TemporaryItems
+# (macOS scatters these under $TMPDIR = /var/folders/...). One dir per
+# past auto-update — piles up otherwise.
+find "${TMPDIR:-/tmp}" -maxdepth 3 \
+     \( -name 'Security Assistant-*-updater-*' \
+     -o -name 'Rudrans Agent-*-updater-*' \) \
+     -exec rm -rf {} + 2>/dev/null || true
+
 echo
 echo "Done. Reboot recommended to release macOS TCC + Login Item caches."
