@@ -37,6 +37,13 @@ const TURN_HOST = Deno.env.get("TURN_HOST") ?? "api-ems.wellnessextract.com";
 const TURN_TLS_HOST = Deno.env.get("TURN_TLS_HOST") ?? TURN_HOST;
 // The plain UDP/TCP relay port. 3478 is the IANA default.
 const TURN_PORT = Deno.env.get("TURN_PORT") ?? "3478";
+// Geo-nearer secondary relay. When set, its UDP/TCP entries are prepended to
+// the iceServers list so ICE prefers the low-latency path (India → India stays
+// ~30-50 ms round-trip vs ~450 ms via the US primary). Shares the same
+// static-auth-secret as the primary — the HMAC username/credential this edge
+// fn issues authenticates against either relay identically. Optional: unset =
+// original single-relay behavior.
+const TURN_HOST_IN = Deno.env.get("TURN_HOST_IN") ?? "13.233.159.137";
 // The TLS relay port. 443 is deliberate, not a placeholder: TURN-over-TLS on
 // 443 is the ONE transport that reaches a client on essentially any network,
 // because to every firewall in between it looks exactly like an HTTPS
@@ -132,6 +139,24 @@ Deno.serve(async (req) => {
     // latency; a badly-firewalled one still connects. That is the whole point:
     // fast when possible, reachable always.
     iceServers: [
+      // India-nearer relay first (lowest latency for the current fleet).
+      ...(TURN_HOST_IN
+        ? [
+            { urls: `stun:${TURN_HOST_IN}:${TURN_PORT}` },
+            {
+              urls: `turn:${TURN_HOST_IN}:${TURN_PORT}?transport=udp`,
+              username,
+              credential,
+            },
+            {
+              urls: `turn:${TURN_HOST_IN}:${TURN_PORT}?transport=tcp`,
+              username,
+              credential,
+            },
+          ]
+        : []),
+      // US primary — fallback if the India path is blocked or the peer is
+      // actually closer to the US relay.
       { urls: `stun:${TURN_HOST}:${TURN_PORT}` },
       {
         urls: `turn:${TURN_HOST}:${TURN_PORT}?transport=udp`,
