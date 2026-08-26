@@ -6,6 +6,7 @@ import {
   useDlpRisk,
   useOrgProductivityDaily,
   useProductivityPerAgent,
+  useAttendance,
 } from '@/lib/dataHooks';
 import { useAuth } from '@/context/AuthContext';
 import { useRefreshOnTick } from '../refreshBus';
@@ -140,6 +141,17 @@ export default function KpiStrip() {
     [daily],
   );
 
+  // Attendance shortfall — count of agents whose most recent day's
+  // session_minutes fell below the org's daily target. Only counts
+  // the LATEST day in the range so it reads as "who is short today"
+  // rather than a running total across the whole week.
+  const { rows: attendanceRows } = useAttendance(0);
+  const shortfallCount = useMemo(() => {
+    let today = '';
+    for (const r of attendanceRows) if (r.work_date > today) today = r.work_date;
+    return attendanceRows.filter((r) => r.work_date === today && !r.met_target).length;
+  }, [attendanceRows]);
+
 
   const cells: Cell[] = [
     {
@@ -190,6 +202,17 @@ export default function KpiStrip() {
       to: '/dlp',
       tone: dlp.serious > 0 ? 't-danger' : undefined,
       icon: 'ri-shield-keyhole-line',
+    },
+    {
+      label: 'Below target',
+      value: String(shortfallCount),
+      sub:
+        shortfallCount === 0
+          ? 'all agents met 8h 45m today'
+          : `agent${shortfallCount === 1 ? '' : 's'} short of 8h 45m today`,
+      to: '/reports?tab=time',
+      tone: shortfallCount > 0 ? 't-warning' : undefined,
+      icon: 'ri-timer-flash-line',
     },
   ];
 

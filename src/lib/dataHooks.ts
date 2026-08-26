@@ -478,6 +478,61 @@ export type AppUsageRow = {
  * surviving app's duration was only the part of it that fitted in the window.
  * See migration 0130 for the measurements.
  */
+// =============== Attendance (login/logout time tracking) ===============
+
+export type AttendanceRow = {
+  agent_id: string;
+  agent_name: string;
+  department: string;
+  work_date: string;              // YYYY-MM-DD
+  first_login: string;            // ISO timestamptz
+  last_activity: string;          // ISO timestamptz
+  session_minutes: number;
+  target_minutes: number;
+  shortfall_minutes: number;
+  met_target: boolean;
+};
+
+/**
+ * Per-agent, per-day attendance across a date range. Calls
+ * `attendance_daily` RPC (see migration 0151). Returned rows are
+ * ordered latest date first, alphabetical by agent within a day.
+ *
+ * fromDaysAgo defaults to 6 (i.e. today + 6 previous days = 1 week).
+ * Timezone is Asia/Kolkata (or whatever tracking_schedule_json.tz says).
+ */
+export function useAttendance(fromDaysAgo: number = 6) {
+  const { organization } = useAuth();
+  const [rows, setRows] = useState<AttendanceRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (!organization) {
+      setRows([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    const today = new Date();
+    const from = new Date(today);
+    from.setDate(today.getDate() - fromDaysAgo);
+    const iso = (d: Date) => d.toISOString().slice(0, 10);
+    const { data, error: err } = await supabase.rpc('attendance_daily', {
+      p_org_id: organization.id,
+      p_from: iso(from),
+      p_to: iso(today),
+    });
+    if (err) setError(err.message);
+    else setError(null);
+    setRows((data as AttendanceRow[]) ?? []);
+    setLoading(false);
+  }, [organization, fromDaysAgo]);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+  return { rows, loading, error, refresh };
+}
+
 export function useAppUsage(filter: { agentId?: string; sinceHours?: number } = {}) {
   const { organization } = useAuth();
   const [rows, setRows] = useState<AppUsageRow[]>([]);

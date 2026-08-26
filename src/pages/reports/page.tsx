@@ -7,7 +7,9 @@ import {
   useProductivityPerAgent,
   useOrgProductivityDaily,
   useDlpReport,
+  useAttendance,
   type DlpReportRow,
+  type AttendanceRow,
 } from '@/lib/dataHooks';
 import { formatBytes } from '@/pages/dlp/useDlp';
 
@@ -148,6 +150,21 @@ export default function ReportsPage() {
   const { rows: dailyRows } = useOrgProductivityDaily(TREND_DAYS, 0);
   // DLP log (USB + email) for the SAME window the tables use.
   const { rows: dlpRows } = useDlpReport(rangeHours, rangeUntilHours);
+  // Attendance = login/logout per agent per day (RPC attendance_daily,
+  // migration 0151). We aggregate the returned rows into
+  // (latest work_date per agent → today's login/logout/session/target)
+  // for the Time Tracking table, and expose the full set to callers that
+  // want a multi-day view (e.g. dashboard shortfall count).
+  const attendanceDays = dateRange === 'month' ? 30 : dateRange === 'week' ? 7 : 1;
+  const { rows: attendanceRows } = useAttendance(attendanceDays);
+  const attendanceLatestByAgent = useMemo(() => {
+    const acc: Record<string, AttendanceRow> = {};
+    for (const r of attendanceRows) {
+      const prev = acc[r.agent_id];
+      if (!prev || r.work_date > prev.work_date) acc[r.agent_id] = r;
+    }
+    return acc;
+  }, [attendanceRows]);
 
   // All per-agent aggregates come from a single RPC call; each table just maps over them.
   const { agents, systemData, timeData, activityCounts, weeklyProductivity } = useMemo(() => {
@@ -182,12 +199,27 @@ export default function ReportsPage() {
         uptime: m ? '—' : 'Offline',
       };
 
-      // Login/logout precise times need first/last activity_log timestamps. The aggregation RPC
-      // doesn't surface those — leaving as derived totals; wire a dedicated RPC later if needed.
+      // Login/logout precise times: pulled from the attendance RPC
+      // (first session_start of the day, last activity_log timestamp).
+      // Older activity aggregate stays as the "session" fallback if the
+      // agent never emitted a session_start today (pre-v0.7.13 build).
+      const att = attendanceLatestByAgent[a.id];
+      const fmtTime = (iso: string) =>
+        new Date(iso).toLocaleTimeString(undefined, {
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: true,
+        });
+      const sessionMinAtt = att?.session_minutes ?? 0;
       timeOut[a.id] = {
-        login: '—',
-        logout: a.status === 'online' ? '—' : '—',
-        session: formatHours(activeSec + idleSec),
+        login: att ? fmtTime(att.first_login) : '—',
+        logout:
+          att
+            ? a.status === 'online' && att.work_date === new Date().toISOString().slice(0, 10)
+              ? 'Still online'
+              : fmtTime(att.last_activity)
+            : '—',
+        session: att ? `${Math.floor(sessionMinAtt / 60)}h ${(sessionMinAtt % 60).toString().padStart(2, '0')}m` : formatHours(activeSec + idleSec),
         breaks: formatHours(idleSec),
       };
 
@@ -995,6 +1027,7 @@ export default function ReportsPage() {
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Login Time</th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Logout Time</th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Total Session</th>
+                    <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Target</th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Break Duration</th>
                     <th className="text-left text-xs text-gray-500 font-medium px-4 py-3 uppercase">Utilization</th>
                   </tr>
@@ -1034,7 +1067,43 @@ export default function ReportsPage() {
                         </td>
                         <td className="px-4 py-3 text-sm text-gray-300">{t.login}</td>
                         <td className="px-4 py-3 text-sm text-gray-300">{t.logout}</td>
-                        <td className="px-4 py-3 text-sm text-white font-medium">{t.session}</td>
+                        <td className="px-4 py-3 text-sm text-white font-medium">
+                          {t.session}
+                          {(() => {
+                            const att = attendanceLatestByAgent[agent.id];
+                            if (!att) return null;
+                            if (att.met_target) {
+                              return (
+                                <span
+                                  className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/25"
+                                  title="Met the daily target"
+                                >
+                                  ✓ met target
+                                </span>
+                              );
+                            }
+                            const short = att.shortfall_minutes;
+                            const h = Math.floor(short / 60);
+                            const m = short % 60;
+                            return (
+                              <span
+                                className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-500/15 text-red-400 border border-red-500/25"
+                                title={`Below target by ${h}h ${m}m`}
+                              >
+                                ▼ short {h > 0 ? `${h}h ` : ''}{m}m
+                              </span>
+                            );
+                          })()}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-300">
+                          {(() => {
+                            const att = attendanceLatestByAgent[agent.id];
+                            if (!att) return '—';
+                            const h = Math.floor(att.target_minutes / 60);
+                            const m = att.target_minutes % 60;
+                            return `${h}h ${m.toString().padStart(2, '0')}m`;
+                          })()}
+                        </td>
                         <td className="px-4 py-3 text-sm text-gray-300">{t.breaks}</td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
