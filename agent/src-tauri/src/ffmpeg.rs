@@ -212,40 +212,39 @@ pub fn pick_h264_encoder(ffmpeg_bin: &PathBuf) -> &'static str {
 /// Cached for the process lifetime: the answer cannot change, and the probe
 /// costs a few hundred milliseconds.
 #[cfg(target_os = "windows")]
-pub fn can_ddagrab(ffmpeg_bin: &PathBuf) -> bool {
-    use std::sync::OnceLock;
-    static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        let mut cmd = Command::new(ffmpeg_bin);
+pub fn can_ddagrab(_ffmpeg_bin: &PathBuf) -> bool {
+    // v0.7.18: ALWAYS return false → always use gdigrab.
+    //
+    // ddagrab (Desktop Duplication API) is ~10 fps faster but has a
+    // silent failure mode that trapped every customer on this build:
+    // the 1-frame probe below used to pass on many machines where the
+    // sustained streaming path then failed. Peer connection stays
+    // healthy, ingress reports no error, dashboard shows black frames
+    // forever. Comment inside webrtc_stream.rs::pump line 819-823 warned
+    // about this exact behaviour; the probe wasn't strict enough to
+    // catch it.
+    //
+    // gdigrab (GDI BitBlt) is slower (~20 fps vs ~29 fps) but produces
+    // a picture in every situation we've encountered — user session
+    // active, lock screen, RDP session, multi-monitor. Given the
+    // pattern was "connect but black" across the whole fleet, the
+    // frame-rate cost of the safer path is a clear win.
+    //
+    // Old probe body kept below (behind `if false`) so the ddagrab
+    // path can be reintroduced once we harden the probe to also check
+    // "did N sustained frames actually arrive within M seconds" —
+    // one-frame probes aren't enough to prove ddagrab keeps working
+    // for a real WHIP session.
+    if false {
+        let mut cmd = Command::new(_ffmpeg_bin);
         crate::win_proc::no_window(&mut cmd);
-        let ok = cmd
-            .args([
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-filter_complex",
-                "ddagrab=output_idx=0:framerate=30,hwdownload,format=bgra",
-                "-frames:v",
-                "1",
-                "-f",
-                "null",
-                "-",
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if ok {
-            log::info!("ddagrab probe succeeded; using Desktop Duplication capture");
-        } else {
-            log::warn!(
-                "ddagrab probe failed on this machine; Remote Desktop will capture \
-                 with gdigrab instead (lower frame rate, but it produces a picture)"
-            );
-        }
-        ok
-    })
+        let _ = cmd.args([
+            "-hide_banner", "-loglevel", "error",
+            "-filter_complex", "ddagrab=output_idx=0:framerate=30,hwdownload,format=bgra",
+            "-frames:v", "1", "-f", "null", "-",
+        ]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
+    false
 }
 
 /// Return the ffmpeg `-vcodec <name>` argument bundle for low-latency
