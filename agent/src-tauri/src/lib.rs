@@ -2171,12 +2171,14 @@ fn spawn_usb_block_loop(state: AppState) {
         sleep(Duration::from_secs(15)).await;
         let mut blocker = usb_block::UsbBlocker::new();
         loop {
-            // Outside tracking schedule = treat policy as OFF (allow USBs).
-            // This way employees can use external storage on personal time
-            // without admin intervention. Drives auto-remount as soon as
-            // the schedule lapses, just like a manual toggle-off.
-            let in_hours = within_hours(&state).await;
-            let enabled = in_hours && state.settings.lock().await.removable_disks_blocked;
+            // USB block is a SECURITY setting — admin's toggle takes effect
+            // immediately, regardless of tracking schedule. Prior code gated
+            // this behind `within_hours`, which meant admin flipping BLOCK on
+            // during off-hours had no visible effect and looked like the
+            // realtime pipeline was broken. Agents who plug a drive outside
+            // work hours can still be blocked; if the admin wants to permit
+            // that, they toggle the setting OFF, not rely on a hidden window.
+            let enabled = state.settings.lock().await.removable_disks_blocked;
             let (blocked, remounted) = blocker.reconcile(enabled);
             // Log block + remount events so the admin sees the audit trail.
             // Best effort — if the post fails we don't retry; the local log
