@@ -265,23 +265,28 @@ pub fn encoder_args(encoder: &str) -> Vec<&'static str> {
     // encoder produced it, so it's the safe lowest common denominator
     // across VT / NVENC / QSV / AMF / VAAPI / libx264.
     //
-    // Profile choice: MAIN @ level 4.0 (v0.6.8+). Was `baseline` until
-    // v0.6.7 — that broke as soon as v0.6.6 bumped the encode target
-    // from 960 to 1920 wide. H.264 Baseline is capped at Level 3.1
-    // (1280×720 @ 30fps); at 1080p the encoder either downgraded
-    // silently to a level Chrome rejects or emitted level 4.0
-    // bitstream mismatching the SDP-negotiated profile-level-id, so
-    // Chrome received bytes but produced zero decoded frames. Main @
-    // Level 4.0 is spec-clean for 1080p30, universally supported by
-    // Chrome / Firefox / Safari WebRTC decoders, and still keeps
-    // `-bf 0` so we retain the zero-latency contract (no B-frames).
+    // Profile choice: constrained-BASELINE @ level 4.0.
+    // The encoded profile MUST match what WebRTC negotiates. webrtc-rs's
+    // register_default_codecs() offers/answers H.264 constrained-baseline
+    // (profile-level-id=42e01f) with level-asymmetry-allowed=1 — and nothing
+    // else. If we emit MAIN, Chrome receives RTP but its baseline-negotiated
+    // decoder produces ZERO frames: a live connection with a black rectangle
+    // (input still works — it rides a separate DataChannel). We shipped MAIN
+    // only because a dashboard-side SDP munger used to rewrite the offer to
+    // main; that munger was deleted when Live moved to LiveKit, so main
+    // silently regressed to black on every Remote session. The "baseline caps
+    // at 720p" note was a LEVEL confusion, not a profile one: baseline profile
+    // supports level 4.0 (1080p30), and level-asymmetry-allowed=1 lets our
+    // level-4.0 bitstream ride the level-3.1 negotiated line. `-bf 0` keeps the
+    // zero-latency contract. DO NOT switch back to main/high without also making
+    // webrtc-rs negotiate that profile.
     match encoder {
         "h264_videotoolbox" => vec![
             "-vcodec", "h264_videotoolbox",
             "-realtime", "1",        // VT-specific: skip quality re-encodes
             "-allow_sw", "1",        // graceful fall-back if HW path is busy
             "-pix_fmt", "yuv420p",
-            "-profile:v", "main",
+            "-profile:v", "baseline",
             // NOTE: ffmpeg 9.0+ h264_videotoolbox rejects `-level 4.0` with
             // "Cannot prepare encoder: -12902" — the level was previously
             // needed to keep Baseline<3.1 encoders honest at 1080p, but on
@@ -299,7 +304,7 @@ pub fn encoder_args(encoder: &str) -> Vec<&'static str> {
             "-rc", "cbr",            // constant-bitrate so REMB throttle works
             "-zerolatency", "1",
             "-pix_fmt", "yuv420p",
-            "-profile:v", "main",
+            "-profile:v", "baseline",
             "-level", "4.0",
             "-g", "15",
             "-bf", "0",
@@ -310,7 +315,7 @@ pub fn encoder_args(encoder: &str) -> Vec<&'static str> {
             "-preset", "veryfast",
             "-async_depth", "1",     // single-frame pipeline = lowest delay
             "-pix_fmt", "nv12",      // QSV's native fmt; saves a copy
-            "-profile:v", "main",
+            "-profile:v", "baseline",
             "-level", "4.0",
             "-g", "15",
             "-bf", "0",
@@ -322,7 +327,7 @@ pub fn encoder_args(encoder: &str) -> Vec<&'static str> {
             "-quality", "speed",
             "-rc", "cbr",
             "-pix_fmt", "yuv420p",
-            "-profile:v", "main",
+            "-profile:v", "baseline",
             "-level", "4.0",
             "-g", "15",
             "-bf", "0",
@@ -331,7 +336,7 @@ pub fn encoder_args(encoder: &str) -> Vec<&'static str> {
         "h264_mf" => vec![
             "-vcodec", "h264_mf",
             "-pix_fmt", "yuv420p",
-            "-profile:v", "main",
+            "-profile:v", "baseline",
             "-level", "4.0",
             "-g", "15",
             "-bsf:v", "dump_extra",
@@ -339,7 +344,7 @@ pub fn encoder_args(encoder: &str) -> Vec<&'static str> {
         "h264_vaapi" => vec![
             "-vcodec", "h264_vaapi",
             "-qp", "23",
-            "-profile:v", "main",
+            "-profile:v", "baseline",
             "-level", "4.0",
             "-bf", "0",
             "-g", "15",
@@ -350,7 +355,7 @@ pub fn encoder_args(encoder: &str) -> Vec<&'static str> {
             "-tune", "zerolatency",
             "-preset", "ultrafast",
             "-pix_fmt", "yuv420p",
-            "-profile:v", "main",
+            "-profile:v", "baseline",
             "-level", "4.0",
             "-g", "15",
             "-keyint_min", "15",

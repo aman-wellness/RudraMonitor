@@ -283,20 +283,22 @@ fn try_unmount(mount_point: &std::path::Path) -> bool {
     let drive_letter = drive.chars().next().map(|c| format!("{c}:")).unwrap_or_default();
     if drive_letter.is_empty() { return false; }
 
-    // Whether the volume is actually gone. mountvol /D removes the letter and
-    // Eject removes the media, so in either success case `X:\` stops existing.
-    // We must VERIFY this rather than trust exit codes — see the Eject note.
+    // `X:\` stops existing once the letter is detached — verify rather than
+    // trusting the exit code.
     let gone = || !std::path::Path::new(&format!("{drive_letter}\\")).exists();
 
-    // NB: crate::win_proc::no_window applies CREATE_NO_WINDOW so the child
-    // process doesn't briefly pop a console. Without that flag, spawning
-    // mountvol / powershell every 5 s (the usb_block loop cadence) makes
-    // a cmd window flash on the user's desktop AND steals focus mid-
-    // keystroke — customer symptom: "type hi nhi hota hai auto".
+    // Detach the drive letter with `mountvol X: /D`. This cuts off access
+    // immediately but is RECOVERABLE — the volume still exists, it only loses
+    // its mount point, and unblock reassigns the letter from the GUID captured
+    // in resolve_disk_id. Requires admin (per-user installs fail "Access is
+    // denied"). no_window keeps mountvol from flashing a console / stealing
+    // focus mid-keystroke (customer symptom: "type hi nhi hota hai auto").
     //
-    // Attempt 1: `mountvol X: /D` detaches the drive letter. This is the most
-    // durable block, but it REQUIRES ADMINISTRATOR rights — on a per-user
-    // (non-elevated) install it fails with "Access is denied".
+    // We deliberately DO NOT use the Shell "Eject" verb. Eject powers the media
+    // down / removes it, which software cannot reverse — once ejected only a
+    // physical replug brings the drive back. That was the root cause of "I
+    // unblock the drive but it stays blocked": the block ejected the media and
+    // nothing could remount it. Letter-detach keeps the block fully reversible.
     let mut mv_cmd = std::process::Command::new("mountvol");
     mv_cmd.arg(&drive_letter).arg("/D");
     crate::win_proc::no_window(&mut mv_cmd);
@@ -311,54 +313,75 @@ fn try_unmount(mount_point: &std::path::Path) -> bool {
         _ => {}
     }
 
-    // Attempt 2: the shell "Eject" verb — the same action as right-click →
-    // Eject in Explorer, which a NORMAL user can perform on removable media.
-    // Crucially, InvokeVerb returns no error even when it silently no-ops
-    // (drive busy, verb unavailable), so we cannot trust its exit code — the
-    // old code did, recorded a false success, and then never retried or logged
-    // why the disk was still usable. We verify the volume is actually gone.
-    let ps_cmd = format!(
-        "$sh = New-Object -ComObject Shell.Application; \
-         $vol = $sh.Namespace(17).ParseName('{}'); \
-         if ($vol) {{ $vol.InvokeVerb('Eject') }}",
-        drive_letter
-    );
-    let mut ps_command = std::process::Command::new("powershell");
-    ps_command.args(["-NoProfile", "-NonInteractive", "-Command", &ps_cmd]);
-    crate::win_proc::no_window(&mut ps_command);
-    let _ = ps_command.output();
-    // Give Windows a beat to release the volume, then check for real.
-    std::thread::sleep(std::time::Duration::from_millis(400));
-    if gone() { return true; }
-
     log::warn!(
-        "usb_block: {drive_letter} is still mounted after unmount + eject — the drive is in \
-         use or the agent lacks the privileges to block it. Run the agent elevated (admin) \
-         for reliable removable-disk blocking. Will retry next tick.",
+        "usb_block: {drive_letter} could not be detached — the drive is in use or the agent \
+         lacks admin rights. The Deny_All policy still blocks new arrivals; run the agent \
+         elevated for immediate cut-off. Will retry next tick.",
     );
     false
 }
 
 #[cfg(target_os = "windows")]
 fn resolve_disk_id(mount_point: &std::path::Path) -> Option<String> {
-    // Use the drive letter itself as the id — Windows mountvol takes the
-    // letter and an arbitrary mount-point GUID for re-mount. Simpler: we
-    // remount by rescanning all volumes (handled inside try_mount).
+    // Persist "LETTER|\\?\Volume{guid}\" so unblock can reassign the EXACT
+    // volume. The GUID is captured now, while the letter still exists (block
+    // happens right after). Fall back to letter-only when the GUID can't be
+    // resolved — unblock then relies on a replug, which works because the
+    // Deny_All policy is cleared on unblock anyway.
     let drive = mount_point.to_string_lossy().to_string();
-    drive.chars().next().map(|c| format!("{c}:"))
+    let letter = drive.chars().next().map(|c| format!("{c}:"))?;
+    match volume_guid_for_letter(&letter) {
+        Some(guid) => Some(format!("{letter}|{guid}")),
+        None => Some(letter),
+    }
+}
+
+/// Map a drive letter (e.g. "E:") to its stable volume GUID path
+/// ("\\?\Volume{...}\") by parsing `mountvol`'s listing, which prints each GUID
+/// path followed by its current mount point(s).
+#[cfg(target_os = "windows")]
+fn volume_guid_for_letter(letter: &str) -> Option<String> {
+    let mut cmd = std::process::Command::new("mountvol");
+    crate::win_proc::no_window(&mut cmd);
+    let out = cmd.output().ok()?;
+    let s = String::from_utf8_lossy(&out.stdout);
+    let want = format!("{letter}\\"); // e.g. "E:\"
+    let mut current_guid: Option<String> = None;
+    for line in s.lines() {
+        let t = line.trim();
+        if t.starts_with(r"\\?\Volume{") {
+            current_guid = Some(t.to_string());
+        } else if t.eq_ignore_ascii_case(&want) {
+            return current_guid;
+        }
+    }
+    None
 }
 
 #[cfg(target_os = "windows")]
-fn try_mount(_drive_letter: &str) -> bool {
-    // On Windows, after `mountvol X: /D`, the volume is dismounted but the
-    // underlying disk is still attached. The cleanest "remount everything"
-    // is `mountvol /R` which rescans and re-mounts all volumes that lost
-    // their assignment. Cheap enough to run once per remount attempt.
-    let mut cmd = std::process::Command::new("mountvol");
-    cmd.arg("/R");
-    crate::win_proc::no_window(&mut cmd);
-    let out = cmd.output();
-    matches!(out, Ok(ref o) if o.status.success())
+fn try_mount(id: &str) -> bool {
+    // `id` is "LETTER|\\?\Volume{guid}\" (captured at block time) or a legacy
+    // "LETTER" with no GUID. Reassign the letter to the volume — the correct
+    // inverse of `mountvol X: /D`.
+    //
+    // The old code ran `mountvol /R`, which does NOT remount anything: it only
+    // deletes mount-point directories and registry settings for volumes no
+    // longer in the system. That's why unblock never restored the drive.
+    if let Some((letter, guid)) = id.split_once('|') {
+        let mut cmd = std::process::Command::new("mountvol");
+        cmd.arg(letter).arg(guid);
+        crate::win_proc::no_window(&mut cmd);
+        return matches!(cmd.output(), Ok(ref o) if o.status.success());
+    }
+    // Legacy id with no GUID captured (blocked by a pre-fix agent): we can't
+    // deterministically reassign the letter. Deny_All is already cleared, so a
+    // physical replug remounts it. Drop it from the tracked set so we don't
+    // spin on it every tick.
+    log::warn!(
+        "usb_block: no volume GUID stored for {id} (blocked by an older agent build); \
+         unblock now relies on a replug — the Deny_All policy is already off."
+    );
+    true
 }
 
 // ---------------------------------------------------------------------------
