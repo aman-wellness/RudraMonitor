@@ -225,11 +225,16 @@ export default function SetupPage() {
   // the key is never exposed in a filename.
   const ZT_START = '{{WEZT-LICENSE}}';
   const ZT_END = '{{/WEZT-LICENSE}}';
+  // Per-install progress state so OSCard can show a live percentage
+  // instead of an indefinite "Starting…" spinner while a 70+ MB file
+  // ferries across the wire. Keyed by filename so multiple parallel
+  // downloads (rare, but possible) don't collide on state.
+  const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({});
+
   const downloadInstaller = async (os: string, arch?: string) => {
     const key = (organization?.license_key ?? '').trim();
     if (!key || key === '—') { alert('No license key on this organization yet.'); return; }
 
-    // Plain, non-identifying filename (same for every client).
     let url = '', outName = '';
     if (os === 'Windows') {
       url = `${RELEASES_BASE}/Security-Assistant-Windows-${ref}.exe`;
@@ -240,25 +245,62 @@ export default function SetupPage() {
       outName = `Security-Assistant-macOS-${a}-${ref}.pkg`;
     } else { return; }
 
-    // Fetch the release artifact, append the license footer, save under the
-    // plain name. Throws propagate to OSCard's caller, which clears its spinner.
-    const resp = await fetch(url);
-    if (!resp.ok) {
-      alert(`Couldn't fetch the installer (HTTP ${resp.status}). Please retry, or contact support.`);
-      return;
-    }
-    const base = new Uint8Array(await resp.arrayBuffer());
-    const footer = new TextEncoder().encode(`\n${ZT_START}${key}${ZT_END}\n`);
-    const stamped = new Uint8Array(base.length + footer.length);
-    stamped.set(base, 0);
-    stamped.set(footer, base.length);
+    const setProgress = (pct: number) => {
+      setDownloadProgress((prev) => ({ ...prev, [outName]: pct }));
+    };
+    setProgress(0);
 
-    const blob = new Blob([stamped], { type: 'application/octet-stream' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = outName;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    try {
+      // Streamed fetch — read the response body chunk-by-chunk instead of
+      // blocking on arrayBuffer(), so we can report a real percentage as
+      // bytes arrive. The full-file blob approach used to give the user no
+      // feedback for 3-5 minutes on a slow India→us-west-1 link; now the
+      // progress bar starts moving within the first ~500 KB.
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        alert(`Couldn't fetch the installer (HTTP ${resp.status}). Please retry, or contact support.`);
+        return;
+      }
+      const total = Number(resp.headers.get('content-length') ?? 0);
+      const reader = resp.body?.getReader();
+      const chunks: Uint8Array[] = [];
+      let received = 0;
+      if (reader) {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            chunks.push(value);
+            received += value.length;
+            if (total > 0) setProgress(Math.min(99, Math.floor((received / total) * 100)));
+          }
+        }
+      } else {
+        // Very old browser — fall back to the blocking path.
+        chunks.push(new Uint8Array(await resp.arrayBuffer()));
+        received = chunks[0].length;
+      }
+
+      // Stitch chunks + append license footer.
+      const footer = new TextEncoder().encode(`\n${ZT_START}${key}${ZT_END}\n`);
+      const stamped = new Uint8Array(received + footer.length);
+      let offset = 0;
+      for (const c of chunks) { stamped.set(c, offset); offset += c.length; }
+      stamped.set(footer, offset);
+
+      const blob = new Blob([stamped], { type: 'application/octet-stream' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = outName;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      setProgress(100);
+    } finally {
+      // Clear the progress row after a beat so the "100%" flash is visible.
+      setTimeout(() => setDownloadProgress((prev) => {
+        const next = { ...prev }; delete next[outName]; return next;
+      }), 2000);
+    }
   };
 
   return (
@@ -508,7 +550,7 @@ export default function SetupPage() {
         {/* OS Download Cards */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
           {osData.map((data) => (
-            <OSCard key={data.os} {...data} onKeyedDownload={downloadInstaller} />
+            <OSCard key={data.os} {...data} onKeyedDownload={downloadInstaller} progress={downloadProgress} />
           ))}
         </div>
 

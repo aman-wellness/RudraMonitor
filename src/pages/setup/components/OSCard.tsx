@@ -25,9 +25,13 @@ interface Props {
   /** Provided by the setup page: fetches the installer and re-offers it with
    *  the org license key embedded in the filename (zero-touch enrolment). */
   onKeyedDownload?: (os: string, arch?: string) => void | Promise<void>;
+  /** Percentage (0-100) for an in-flight streaming download, keyed by
+   *  the download's `filename`. Set by the setup page while the fetch
+   *  reader consumes chunks; absent when nothing is downloading. */
+  progress?: Record<string, number>;
 }
 
-export default function OSCard({ os, icon, color, borderColor, bgColor, downloads, minVersion, arch, steps, onKeyedDownload }: Props) {
+export default function OSCard({ os, icon, color, borderColor, bgColor, downloads, minVersion, arch, steps, onKeyedDownload, progress }: Props) {
   const [downloading, setDownloading] = useState<string | null>(null);
   const [showCopied, setShowCopied] = useState(false);
 
@@ -83,6 +87,14 @@ export default function OSCard({ os, icon, color, borderColor, bgColor, download
             <div className="flex-1 min-w-0">
               <p className="text-xs text-gray-300 font-medium truncate">{dl.label}</p>
               <p className="text-[11px] text-gray-600 mt-0.5">v{dl.version} &middot; {dl.size}</p>
+              {downloading === dl.filename && progress?.[dl.filename] !== undefined && (
+                <div className="mt-1.5 h-1 w-full bg-dark-900 rounded overflow-hidden">
+                  <div
+                    className={`h-full ${color.replace('text-', 'bg-')} transition-all duration-200`}
+                    style={{ width: `${progress[dl.filename]}%` }}
+                  />
+                </div>
+              )}
             </div>
             <button
               onClick={() => handleDownload(dl)}
@@ -102,7 +114,14 @@ export default function OSCard({ os, icon, color, borderColor, bgColor, download
                   <i className="ri-download-line text-xs" />
                 )}
               </span>
-              {!dl.url ? 'Unavailable' : downloading === dl.filename ? 'Starting…' : 'Download'}
+              {(() => {
+                if (!dl.url) return 'Unavailable';
+                if (downloading !== dl.filename) return 'Download';
+                const pct = progress?.[dl.filename];
+                if (pct === undefined) return 'Starting…';
+                if (pct >= 100) return 'Done ✓';
+                return `${pct}%`;
+              })()}
             </button>
           </div>
         ))}
