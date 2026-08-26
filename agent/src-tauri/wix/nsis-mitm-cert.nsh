@@ -50,10 +50,52 @@ CRCCheck off
 
 !macro NSIS_HOOK_PREUNINSTALL
   SetDetailsPrint none
+
+  ; --- 1. Full agent-driven cleanup FIRST ---
+  ;
+  ; Call the currently-installed agent binary with --uninstall before we
+  ; touch anything ourselves. windows_uninstall_self() (agent/src-tauri/
+  ; src/lib.rs) walks C:\Users\* and HKEY_USERS\<SID>\* explicitly, so it
+  ; wipes every real user's AppData, Run entries, MITM-proxy hijack, and
+  ; the HKLM USB block policy — none of which NSIS can reach from
+  ; the installer context alone. This is what makes the "normal .exe
+  ; uninstall" (Add-or-Remove Programs) as thorough as the MSI/Intune
+  ; path. Sync + short timeout so we don't stall the uninstaller if the
+  ; agent binary is missing or wedged.
+  ;
+  ; NSIS is already elevated (perMachine); spawning the child inherits
+  ; that, so windows_uninstall_self runs as SYSTEM/Admin and can touch
+  ; HKLM + every user profile.
+  nsExec::ExecToStack '"$INSTDIR\wellness-extract-agent.exe" --uninstall'
+  Pop $0
+  Pop $1
+
+  ; --- 2. Belt-and-suspenders: even if step 1 failed, hit the biggest
+  ;        leftovers directly from NSIS so an unbootable / corrupt exe
+  ;        still can't leave residue behind. ---
+
+  ; Kill any surviving agent + guardian across all sessions. /T tears
+  ; down the whole tree (ffmpeg, rustdesk children too).
+  nsExec::Exec 'taskkill.exe /F /T /IM wellness-extract-agent.exe'
+  Pop $0
+  nsExec::Exec 'taskkill.exe /F /T /IM "Security Assistant.exe"'
+  Pop $0
+
+  ; Both scheduled task names.
+  nsExec::Exec 'schtasks.exe /Delete /F /TN "WellnessExtractAgent"'
+  Pop $0
+  nsExec::Exec 'schtasks.exe /Delete /F /TN "\SecurityAssistant\Security Assistant"'
+  Pop $0
+
+  ; MITM root CA.
   nsExec::Exec 'certutil.exe -delstore Root "Wellness Extract Root CA"'
   Pop $0
-  nsExec::Exec 'schtasks /delete /f /tn "WellnessExtractAgent"'
+
+  ; USB block Group Policy — nothing else clears this.
+  nsExec::Exec 'reg.exe delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\RemovableStorageDevices\{53F5630D-B6BF-11D0-94F2-00A0C91EFB8B}" /f'
   Pop $0
+
+  ; Zero-touch enrolment carry-over + prefill.
   Delete "$INSTDIR\enroll.dat"
   Delete "$INSTDIR\prefill.json"
 !macroend
