@@ -85,7 +85,17 @@ pub fn spawn() {
                     return;
                 }
             };
-            let mut clipboard = arboard::Clipboard::new().ok();
+            // Note: we do NOT cache an arboard::Clipboard instance here.
+            // On Windows, OpenClipboard requires the calling thread to be
+            // running in an interactive session with a visible window
+            // station. If the agent boots BEFORE any user has logged in
+            // (Session 0 / login screen), arboard::Clipboard::new() fails
+            // permanently for this process — every subsequent ClipSet /
+            // ClipGet used to become a silent no-op, and the operator
+            // clicking "Send clipboard" / "Get clipboard" in the Remote
+            // Desktop tab saw no effect. Creating a fresh instance per
+            // operation (below) recovers automatically once the user
+            // does log in and the input desktop becomes reachable.
             log::info!("input: thread ready");
 
             // tokio Receiver::blocking_recv exists on UnboundedReceiver too.
@@ -170,12 +180,25 @@ pub fn spawn() {
                         }
                     }
                     InputEvent::ClipSet { text } => {
-                        if let Some(c) = clipboard.as_mut() {
-                            let _ = c.set_text(text);
+                        // Fresh instance per operation — see comment
+                        // above the loop for why.
+                        if let Ok(mut c) = arboard::Clipboard::new() {
+                            if let Err(e) = c.set_text(text) {
+                                log::warn!("clipboard set_text failed: {e}");
+                            }
+                        } else {
+                            log::warn!("clipboard set: arboard::Clipboard::new() failed \
+                                        — no interactive desktop yet");
                         }
                     }
                     InputEvent::ClipGet(reply) => {
-                        let v = clipboard.as_mut().and_then(|c| c.get_text().ok());
+                        let v = match arboard::Clipboard::new() {
+                            Ok(mut c) => c.get_text().ok(),
+                            Err(e) => {
+                                log::warn!("clipboard get: arboard init failed: {e}");
+                                None
+                            }
+                        };
                         let _ = reply.send(v);
                     }
                 }
