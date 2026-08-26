@@ -1181,31 +1181,367 @@ fn log_file_path() -> Option<std::path::PathBuf> {
     None
 }
 
+// ---------------------------------------------------------------------------
+// Windows uninstall helpers (v0.7.14+).
+//
+// Under Intune the MSI CustomAction that runs `--uninstall` executes as
+// `NT AUTHORITY\SYSTEM` (the Intune Management Extension is a SYSTEM
+// service; Impersonate="yes" on the CustomAction is a no-op because the
+// installing account already IS SYSTEM). That means every `dirs::*`
+// resolution + `HKCU` reference in the pre-v0.7.14 uninstall path pointed
+// at SYSTEM's empty profile hive, not the actual interactive user, and
+// silently "succeeded" against nothing — leaving the real user's data,
+// registry entries, and proxy hijack intact.
+//
+// The three helpers below take the SYSTEM view as given and iterate real
+// user profiles + hives explicitly:
+//   - `iterate_real_users()`   walks `C:\Users\*` (skipping Default /
+//                              Public / All Users) and filters for
+//                              profiles that actually contain NTUSER.DAT.
+//   - `iterate_real_user_hives()` enumerates `HKEY_USERS\<SID>` and
+//                              skips the system SIDs (.DEFAULT, S-1-5-18,
+//                              S-1-5-19, S-1-5-20, S-1-5-80*, S-1-5-82*,
+//                              S-1-5-83*) and `_Classes` variants.
+//   - `kill_agent_processes_all_sessions()` calls `taskkill /F /T /IM
+//                              <name>` so the agent + guardian die across
+//                              every session, not just the one whose
+//                              PID files SYSTEM can reach.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
+fn iterate_real_users() -> Vec<std::path::PathBuf> {
+    let users_dir = std::path::PathBuf::from("C:\\Users");
+    let skip: &[&str] = &[
+        "Default", "Default User", "Public", "All Users",
+        "desktop.ini",
+    ];
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&users_dir) else { return out };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if skip.iter().any(|s| s.eq_ignore_ascii_case(&name)) {
+            continue;
+        }
+        let path = e.path();
+        if !path.is_dir() {
+            continue;
+        }
+        // NTUSER.DAT is the marker of a real profile (loaded on first
+        // login). Absent → skip (`Default User` symlinks etc.).
+        if !path.join("NTUSER.DAT").exists() {
+            continue;
+        }
+        out.push(path);
+    }
+    out
+}
+
+#[cfg(target_os = "windows")]
+fn iterate_real_user_hives() -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cmd = std::process::Command::new("reg");
+    crate::win_proc::no_window(&mut cmd);
+    let Ok(o) = cmd.args(["query", "HKU"]).output() else { return out };
+    if !o.status.success() {
+        return out;
+    }
+    let stdout = String::from_utf8_lossy(&o.stdout);
+    for line in stdout.lines() {
+        let line = line.trim();
+        if !line.starts_with("HKEY_USERS\\") {
+            continue;
+        }
+        let sid = line.trim_start_matches("HKEY_USERS\\");
+        // System / built-in SIDs.
+        if sid == ".DEFAULT"
+            || sid == "S-1-5-18"          // LocalSystem
+            || sid == "S-1-5-19"          // LocalService
+            || sid == "S-1-5-20"          // NetworkService
+            || sid.ends_with("_Classes")  // Per-SID Classes hive.
+            || sid.starts_with("S-1-5-80") // Service SIDs
+            || sid.starts_with("S-1-5-82") // AppPool SIDs
+            || sid.starts_with("S-1-5-83") // Windows Manager SIDs
+        {
+            continue;
+        }
+        out.push(format!("HKU\\{sid}"));
+    }
+    out
+}
+
+#[cfg(target_os = "windows")]
+fn kill_agent_processes_all_sessions() {
+    for image in ["wellness-extract-agent.exe", "Security Assistant.exe"] {
+        let mut cmd = std::process::Command::new("taskkill");
+        crate::win_proc::no_window(&mut cmd);
+        // /T also kills the process tree (guardian, ffmpeg, rustdesk).
+        let _ = cmd.args(["/F", "/T", "/IM", image]).status();
+    }
+}
+
+/// Read a REG_SZ value from any hive path. Used during uninstall to
+/// check whether HKU\<SID>\...\Internet Settings\ProxyServer is
+/// currently pointing at our MITM listener before we touch it — never
+/// clobber a legit corporate proxy config.
+#[cfg(target_os = "windows")]
+fn reg_read_string(key: &str, name: &str) -> Option<String> {
+    let mut q = std::process::Command::new("reg");
+    crate::win_proc::no_window(&mut q);
+    let out = q.args(["query", key, "/v", name]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with(name))
+        .and_then(|l| l.split("REG_SZ").nth(1))
+        .map(|s| s.trim().trim_matches('"').to_string())
+}
+
+/// Enumerate `<hive_prefix>\Software\Microsoft\Windows\CurrentVersion\
+/// Uninstall\*` for a matching DisplayName and hard-delete the reg key.
+/// Unlike `legacy_sweep::purge_uninstall_key` this does NOT invoke the
+/// stored UninstallString — we're already inside our own MSI uninstall
+/// and running a foreign NSIS uninstaller in parallel would create
+/// I/O contention. Just wipe the stale reg entry; the files it
+/// referenced are handled by the per-user `AppData\Local\Programs\
+/// Security Assistant\` sweep below.
+#[cfg(target_os = "windows")]
+fn purge_uninstall_reg_entries(hive_prefix: &str, display_name: &str) {
+    let root = format!(
+        "{hive_prefix}\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall"
+    );
+    let mut probe = std::process::Command::new("reg");
+    crate::win_proc::no_window(&mut probe);
+    let out = match probe.args(["query", &root, "/s", "/f", display_name, "/d"]).output() {
+        Ok(o) if o.status.success() => o,
+        _ => return,
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("HKEY_") {
+            continue;
+        }
+        let mut del = std::process::Command::new("reg");
+        crate::win_proc::no_window(&mut del);
+        let _ = del.args(["delete", trimmed, "/f"]).status();
+    }
+}
+
+/// The Windows arm of `uninstall_self()` — SYSTEM-context sweeper.
+/// See helpers above for rationale. Every step is best-effort; failure
+/// to clean any single artefact never aborts the rest.
+#[cfg(target_os = "windows")]
+fn windows_uninstall_self() {
+    // 1. Kill agent + guardian + child processes across ALL user
+    //    sessions. Must run BEFORE we touch any files — otherwise the
+    //    guardian respawns the agent, which re-registers the scheduled
+    //    task and re-creates AppData\RudransAgent files just after we
+    //    deleted them. `/T` covers ffmpeg / rustdesk children too.
+    kill_agent_processes_all_sessions();
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    // 2. Delete both scheduled task variants shipped v0.7.13 creates.
+    //    - "WellnessExtractAgent" is registered at runtime by
+    //      service_install.rs::ensure_installed.
+    //    - "\SecurityAssistant\Security Assistant" is registered by
+    //      the MSI RegisterRudransTask CustomAction (fresh installs
+    //      from Intune / GPO / MSI).
+    for task in ["WellnessExtractAgent", "\\SecurityAssistant\\Security Assistant"] {
+        let mut cmd = std::process::Command::new("schtasks");
+        crate::win_proc::no_window(&mut cmd);
+        let _ = cmd.args(["/Delete", "/F", "/TN", task]).status();
+    }
+
+    // 3. Per-user file cleanup — iterate every real profile on the box.
+    //    Directory names we own OR historically wrote to:
+    //      RudransAgent          → v0.7.13 internal folder name (legacy
+    //                              filesystem string carried over from
+    //                              pre-rename; no brand visible).
+    //      WellnessExtractAgent  → pre-emptive future-proof target.
+    //      SecurityAssistant     → product-name-based alt cache path.
+    //    Plus AppData\Local\Programs\Security Assistant\ (currentUser
+    //    NSIS install path from v0.7.0-v0.7.2 residue).
+    const PER_USER_RELATIVE: &[&str] = &[
+        "AppData\\Roaming\\RudransAgent",
+        "AppData\\Roaming\\WellnessExtractAgent",
+        "AppData\\Roaming\\SecurityAssistant",
+        "AppData\\Local\\RudransAgent",
+        "AppData\\Local\\WellnessExtractAgent",
+        "AppData\\Local\\SecurityAssistant",
+        "AppData\\Local\\Programs\\Security Assistant",
+    ];
+    for user_dir in iterate_real_users() {
+        for rel in PER_USER_RELATIVE {
+            let _ = std::fs::remove_dir_all(user_dir.join(rel));
+        }
+        // Purge Tauri updater temp orphans under each user's TEMP.
+        let temp = user_dir.join("AppData\\Local\\Temp");
+        if let Ok(entries) = std::fs::read_dir(&temp) {
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.starts_with("Security Assistant-") && name.contains("-updater-") {
+                    let _ = std::fs::remove_dir_all(e.path());
+                }
+            }
+        }
+    }
+
+    // 4. Per-user HKCU-equivalent cleanup — iterate HKEY_USERS\<SID>.
+    for hive in iterate_real_user_hives() {
+        // 4a. Autostart Run entries under any name we've ever written.
+        for value in [
+            "Security Assistant",
+            "Wellness Extract Agent",
+            "wellness-extract-agent",
+            "Rudrans Agent",
+        ] {
+            let mut cmd = std::process::Command::new("reg");
+            crate::win_proc::no_window(&mut cmd);
+            let _ = cmd
+                .args([
+                    "delete",
+                    &format!(
+                        "{hive}\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+                    ),
+                    "/v",
+                    value,
+                    "/f",
+                ])
+                .status();
+        }
+
+        // 4b. Internet Settings proxy hijack — reset ONLY if it currently
+        //     points at our MITM listener. Same conditional pattern the
+        //     deb-scripts postrm uses for gsettings on Linux.
+        let proxy_key = format!(
+            "{hive}\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings"
+        );
+        let is_ours = reg_read_string(&proxy_key, "ProxyServer")
+            .map(|v| v.contains("127.0.0.1:47443"))
+            .unwrap_or(false);
+        if is_ours {
+            for (verb, name, extra) in [
+                ("add", "ProxyEnable", Some(("REG_DWORD", "0"))),
+                ("delete", "ProxyServer", None),
+                ("delete", "AutoConfigURL", None),
+            ] {
+                let mut cmd = std::process::Command::new("reg");
+                crate::win_proc::no_window(&mut cmd);
+                let mut args: Vec<String> =
+                    vec![verb.into(), proxy_key.clone(), "/v".into(), name.into()];
+                if let Some((t, d)) = extra {
+                    args.extend(["/t".into(), t.into(), "/d".into(), d.into()]);
+                }
+                args.push("/f".into());
+                let _ = cmd.args(&args).status();
+            }
+        }
+
+        // 4c. Legacy Uninstall entries under this user's hive
+        //     (v0.7.0-v0.7.2 currentUser NSIS residue).
+        purge_uninstall_reg_entries(&hive, "Security Assistant");
+    }
+
+    // 5. HKLM-only cleanup (only SYSTEM can do this).
+    //    5a. USB block Group Policy — the single biggest post-uninstall
+    //        breakage before this fix. `usb_block.rs` writes it; nothing
+    //        ever reverted it.
+    let mut cmd = std::process::Command::new("reg");
+    crate::win_proc::no_window(&mut cmd);
+    let _ = cmd
+        .args([
+            "delete",
+            "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\RemovableStorageDevices\\{53F5630D-B6BF-11D0-94F2-00A0C91EFB8B}",
+            "/f",
+        ])
+        .status();
+
+    //    5b. HKLM Uninstall entries (v0.7.3+ perMachine NSIS residue).
+    purge_uninstall_reg_entries("HKLM", "Security Assistant");
+    purge_uninstall_reg_entries(
+        "HKLM\\SOFTWARE\\WOW6432Node",
+        "Security Assistant",
+    );
+
+    //    5c. MITM CA from LocalMachine\Root trust store.
+    let mut cmd = std::process::Command::new("certutil.exe");
+    crate::win_proc::no_window(&mut cmd);
+    let _ = cmd
+        .args(["-delstore", "Root", "Wellness Extract Root CA"])
+        .status();
+
+    // 6. Delayed removal of install dirs — MSI RemoveFiles handles the
+    //    current install, but any stale NSIS perMachine install alongside
+    //    is not touched by MSI and stays if we don't schedule it.
+    for dir in ["C:\\Program Files\\Security Assistant"] {
+        let mut cmd = std::process::Command::new("cmd");
+        crate::win_proc::no_window(&mut cmd);
+        let _ = cmd
+            .args([
+                "/C",
+                &format!(
+                    "ping 127.0.0.1 -n 5 > nul && rmdir /s /q \"{}\"",
+                    dir
+                ),
+            ])
+            .spawn();
+    }
+    // Also each user's LocalAppData Programs path (currentUser NSIS).
+    for user_dir in iterate_real_users() {
+        let path = user_dir.join("AppData\\Local\\Programs\\Security Assistant");
+        if path.exists() {
+            let path_str = path.display().to_string();
+            let mut cmd = std::process::Command::new("cmd");
+            crate::win_proc::no_window(&mut cmd);
+            let _ = cmd
+                .args([
+                    "/C",
+                    &format!(
+                        "ping 127.0.0.1 -n 5 > nul && rmdir /s /q \"{}\"",
+                        path_str
+                    ),
+                ])
+                .spawn();
+        }
+    }
+}
+
 pub fn uninstall_self() -> Result<()> {
     // 0. Mark graceful shutdown + give the watchdog a moment to notice. Without this
     //    the guardian process polls every 2s and may respawn the agent mid-wipe.
     watchdog::mark_graceful_shutdown();
     std::thread::sleep(std::time::Duration::from_secs(3));
 
+    // Windows path: delegate everything to the SYSTEM-context sweeper.
+    // The old code below relied on `dirs::*` + `HKCU` — both silently
+    // resolve to SYSTEM's empty profile when the MSI CustomAction runs
+    // under Intune's IME, so the real user's data survived every step.
+    // See `windows_uninstall_self()` for the full multi-SID walker.
+    // Return early — the macOS + Linux paths below are correct as-is.
+    #[cfg(target_os = "windows")]
+    {
+        windows_uninstall_self();
+        return Ok(());
+    }
+
     // 0a. Kill the running agent + guardian by their recorded PIDs (not by image name —
     //    that would kill THIS uninstall process too). We skip our own PID so the
     //    uninstall continues to run.
-    let my_pid = std::process::id();
-    if let Some(base) = dirs::data_dir() {
-        let dir = base.join("RudransAgent");
-        for pid_file in &["agent.pid", "guardian.pid"] {
-            if let Ok(raw) = std::fs::read_to_string(dir.join(pid_file)) {
-                if let Ok(pid) = raw.trim().parse::<u32>() {
-                    if pid == my_pid { continue; }
-                    #[cfg(target_os = "windows")]
-                    {
-                        let mut cmd = std::process::Command::new("taskkill");
-                        crate::win_proc::no_window(&mut cmd);
-                        let _ = cmd.args(["/F", "/PID", &pid.to_string()]).status();
-                    }
-                    #[cfg(unix)]
-                    unsafe {
-                        let _ = libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    #[cfg(unix)]
+    {
+        let my_pid = std::process::id();
+        if let Some(base) = dirs::data_dir() {
+            let dir = base.join("RudransAgent");
+            for pid_file in &["agent.pid", "guardian.pid"] {
+                if let Ok(raw) = std::fs::read_to_string(dir.join(pid_file)) {
+                    if let Ok(pid) = raw.trim().parse::<u32>() {
+                        if pid == my_pid { continue; }
+                        unsafe {
+                            let _ = libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                        }
                     }
                 }
             }
@@ -1229,19 +1565,6 @@ pub fn uninstall_self() -> Result<()> {
                 .status();
         }
     }
-    #[cfg(target_os = "windows")]
-    {
-        // HKCU\Software\Microsoft\Windows\CurrentVersion\Run\<value>
-        let mut cmd = std::process::Command::new("reg");
-        crate::win_proc::no_window(&mut cmd);
-        let _ = cmd.args([
-            "delete",
-            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
-            "/v",
-            "Rudrans Agent",
-            "/f",
-        ]).status();
-    }
     #[cfg(target_os = "linux")]
     {
         if let Some(home) = dirs::home_dir() {
@@ -1256,17 +1579,6 @@ pub fn uninstall_self() -> Result<()> {
             for attempt in 0..5 {
                 if std::fs::remove_dir_all(dir).is_ok() { break; }
                 std::thread::sleep(std::time::Duration::from_millis(500 * (attempt + 1) as u64));
-            }
-            // Final fallback on Windows: scheduled cmd that nukes the dir after we exit.
-            #[cfg(target_os = "windows")]
-            if dir.exists() {
-                let dir_str = dir.display().to_string();
-                let mut cmd = std::process::Command::new("cmd");
-                crate::win_proc::no_window(&mut cmd);
-                let _ = cmd.args([
-                    "/C",
-                    &format!("ping 127.0.0.1 -n 5 > nul && rmdir /s /q \"{}\"", dir_str),
-                ]).spawn();
             }
         }
     }
@@ -1303,20 +1615,7 @@ pub fn uninstall_self() -> Result<()> {
             let _ = std::fs::remove_dir_all(home.join("Library/Logs/Rudrans Agent"));
             let _ = std::fs::remove_dir_all(home.join("Library/Logs/Security Assistant"));
         }
-        #[cfg(target_os = "windows")]
-        {
-            if let Some(local) = dirs::data_local_dir() {
-                for d in &legacy_dirnames {
-                    let _ = std::fs::remove_dir_all(local.join(d));
-                }
-            }
-            if let Some(roam) = dirs::data_dir() {
-                for d in &legacy_dirnames {
-                    let _ = std::fs::remove_dir_all(roam.join(d));
-                }
-            }
-            let _ = home;
-        }
+        // Windows: never reached (returned early via windows_uninstall_self).
         #[cfg(target_os = "linux")]
         {
             for d in &legacy_dirnames {
@@ -1337,13 +1636,9 @@ pub fn uninstall_self() -> Result<()> {
     //     through 127.0.0.1:47443 after uninstall — every request
     //     dies with "proxy unreachable" until the user manually
     //     clears the setting. Ships in v0.7.7+.
+    // Windows CA delstore is handled inside windows_uninstall_self();
+    // the early return above means this branch runs only on Unix.
     mitm::stop();
-    #[cfg(target_os = "windows")]
-    {
-        let mut cmd = std::process::Command::new("certutil.exe");
-        crate::win_proc::no_window(&mut cmd);
-        let _ = cmd.args(["-delstore", "Root", "Wellness Extract Root CA"]).status();
-    }
     #[cfg(target_os = "macos")]
     {
         // Login-keychain copy (installed by mitm::start's self-heal).
@@ -1382,15 +1677,8 @@ pub fn uninstall_self() -> Result<()> {
             .status();
     }
 
-    // 2c. Windows-only: unregister any scheduled task the agent installed
-    //     under /rl highest — dpkg / launchctl equivalents on other
-    //     platforms are already handled by step 1.
-    #[cfg(target_os = "windows")]
-    for name in ["WellnessExtractAgent", "RudransAgent", "TrackForceAgent"] {
-        let mut cmd = std::process::Command::new("schtasks");
-        crate::win_proc::no_window(&mut cmd);
-        let _ = cmd.args(["/Delete", "/TN", name, "/F"]).status();
-    }
+    // 2c. Windows schtasks cleanup is handled inside
+    //     windows_uninstall_self() — this branch is Unix-only.
 
     // 3. Remove the installed app bundle / binary itself, OS-specific.
     #[cfg(target_os = "macos")]
@@ -1417,22 +1705,7 @@ pub fn uninstall_self() -> Result<()> {
             }
         }
     }
-    #[cfg(target_os = "windows")]
-    {
-        // On Windows we can't delete the running .exe directly. Schedule a one-shot
-        // cmd that retries deletion after we exit. Best-effort.
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                let dir_str = dir.display().to_string();
-                let mut cmd = std::process::Command::new("cmd");
-                crate::win_proc::no_window(&mut cmd);
-                let _ = cmd.args([
-                    "/C",
-                    &format!("ping 127.0.0.1 -n 3 > nul && rmdir /s /q \"{}\"", dir_str),
-                ]).spawn();
-            }
-        }
-    }
+    // Windows install-dir removal is done inside windows_uninstall_self().
     #[cfg(target_os = "linux")]
     {
         if let Ok(exe) = std::env::current_exe() {

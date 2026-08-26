@@ -73,6 +73,34 @@
       Impersonate="no"
       Return="ignore" />
 
+    <!--
+      Revert the USB block Group Policy the agent writes at runtime
+      (agent/src-tauri/src/usb_block.rs). Nothing in the Rust codepath ever
+      cleared this key on uninstall before, so post-uninstall the endpoint
+      still had USB storage blocked forever. Guaranteed here at the MSI
+      layer so it happens even if --uninstall crashes.
+    -->
+    <CustomAction
+      Id="PurgeUsbBlockPolicy"
+      Directory="INSTALLFOLDER"
+      ExeCommand='powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "Remove-Item -Path ''HKLM:\SOFTWARE\Policies\Microsoft\Windows\RemovableStorageDevices\{53F5630D-B6BF-11D0-94F2-00A0C91EFB8B}'' -Recurse -Force -ErrorAction SilentlyContinue"'
+      Execute="deferred"
+      Impersonate="no"
+      Return="ignore" />
+
+    <!--
+      Belt-and-suspenders scheduled-task cleanup at the MSI layer. The Rust
+      --uninstall path also deletes these; running it here too guarantees
+      the tasks are gone even if --uninstall crashes.
+    -->
+    <CustomAction
+      Id="PurgeAllOurScheduledTasks"
+      Directory="INSTALLFOLDER"
+      ExeCommand='powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "schtasks.exe /Delete /F /TN ''WellnessExtractAgent'' 2&gt;$null; schtasks.exe /Delete /F /TN ''\SecurityAssistant\Security Assistant'' 2&gt;$null; exit 0"'
+      Execute="deferred"
+      Impersonate="no"
+      Return="ignore" />
+
     <InstallExecuteSequence>
       <!-- After install completes, register the task. -->
       <Custom Action="RegisterRudransTask" After="InstallFiles">
@@ -87,6 +115,15 @@
         REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE
       </Custom>
       <Custom Action="RemoveMitmRootCert" Before="RemoveFiles">
+        REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE
+      </Custom>
+      <!-- Belt-and-suspenders MSI-layer cleanup, sequenced AFTER
+           RunSelfUninstall (which cleanup-fragment.wxs already places
+           Before="RemoveFiles"). If --uninstall crashes, these still run. -->
+      <Custom Action="PurgeUsbBlockPolicy" After="RemoveMitmRootCert">
+        REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE
+      </Custom>
+      <Custom Action="PurgeAllOurScheduledTasks" After="PurgeUsbBlockPolicy">
         REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE
       </Custom>
     </InstallExecuteSequence>

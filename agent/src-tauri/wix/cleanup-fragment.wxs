@@ -9,17 +9,20 @@
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Fragment>
     <!--
-      Impersonate="yes" so the action runs as the installing user, NOT as SYSTEM.
-      Without impersonation, %APPDATA% resolves to the SYSTEM profile
-      (C:\Windows\system32\config\systemprofile\AppData) and the user's actual
-      RudransAgent data dir is left behind.
+      Impersonate="no" — run as SYSTEM. Under Intune the installing account
+      IS SYSTEM (IME runs as SYSTEM), so Impersonate="yes" was a no-op
+      that only mattered in the rare case of a hand-clicked Add-or-Remove
+      Programs uninstall. The Rust `uninstall_self()` now walks C:\Users\*
+      and HKEY_USERS\<SID>\* explicitly rather than trusting dirs::* to
+      resolve to the interactive user's profile, so SYSTEM context is
+      correct in every path (Intune, GPO, ARP).
       -->
     <CustomAction
       Id="RunSelfUninstall"
       FileKey="MainExecutable"
       ExeCommand="--uninstall"
       Execute="deferred"
-      Impersonate="yes"
+      Impersonate="no"
       Return="ignore" />
 
     <InstallExecuteSequence>
