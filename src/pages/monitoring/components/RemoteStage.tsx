@@ -97,12 +97,34 @@ export default function RemoteStage({ agentId, agentName, onClose }: Props) {
       onScreenInfo: (w, h) => setScreen({ w, h }),
       onLatency: setLatency,
       onClipboard: async (text) => {
+        // The agent proactively pushes a clip_data every ~500 ms while
+        // its clipboard changes (see webrtc_stream::spawn_clipboard_sync),
+        // so this handler fires without a user gesture. Chrome/Firefox
+        // block navigator.clipboard.writeText() outside of a gesture,
+        // which used to make "just press Ctrl+V after copying on the
+        // remote" fail silently.
+        //
+        // Two-layer strategy:
+        //   1. Try the modern API. In a focused tab with prior clipboard
+        //      permission it works even without a fresh gesture.
+        //   2. Fall back to the legacy execCommand('copy') via a hidden
+        //      textarea. Not gesture-scoped and still supported by every
+        //      current browser.
         try {
           await navigator.clipboard.writeText(text);
-          notify.success('Copied from the remote machine');
-        } catch {
-          notify.fail('Could not write to your clipboard', 'Grant clipboard permission and retry');
-        }
+          return;
+        } catch { /* fall through to legacy path */ }
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          ta.style.pointerEvents = 'none';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          ta.remove();
+        } catch { /* nothing else to try — operator can use "Get clipboard" */ }
       },
     });
     sessionRef.current = s;

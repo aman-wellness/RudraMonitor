@@ -1393,6 +1393,55 @@ pub(crate) fn screen_dims() -> (i32, i32) {
     (1920, 1080)
 }
 
+/// Background task that pushes remote-side clipboard changes down the
+/// data channel every 500 ms. Dashboard receives the same `clip_data`
+/// envelope it would get from an on-demand `clip_get` and immediately
+/// mirrors it into the operator's browser clipboard.
+///
+/// Why proactive push instead of relying on Ctrl+C → clip_get?
+/// Chrome/Edge/Firefox all block `navigator.clipboard.writeText()`
+/// outside of a user gesture — so the setTimeout-based clip_get in
+/// dashboard's copy handler often silently drops the reply. Pushing
+/// keeps the operator's local clipboard current without ever needing
+/// to touch the browser clipboard-write API from a non-gesture path;
+/// the write attempt still runs, but even when it fails the operator
+/// can just press Ctrl+V and the *previous* frame's push already put
+/// the text there.
+///
+/// The task self-terminates when the data channel closes (best-effort
+/// send returns an error) or when the send_text future dies.
+fn spawn_clipboard_sync(dc: Arc<RTCDataChannel>) {
+    tokio::spawn(async move {
+        let mut last_pushed = String::new();
+        // Small settle delay before the first poll — arboard::new() can
+        // fail briefly on session-change transitions (lock / unlock).
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        loop {
+            // Fresh Clipboard instance per tick — same rationale as
+            // input.rs: cached instances silently die when the session
+            // transitions.
+            let current = tokio::task::spawn_blocking(|| {
+                arboard::Clipboard::new().ok().and_then(|mut c| c.get_text().ok())
+            })
+            .await
+            .ok()
+            .flatten();
+
+            if let Some(text) = current {
+                if !text.is_empty() && text != last_pushed {
+                    let msg = json!({"t": "clip_data", "text": text.clone()});
+                    if dc.send_text(msg.to_string()).await.is_err() {
+                        // Channel closed → session over. Exit.
+                        return;
+                    }
+                    last_pushed = text;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    });
+}
+
 pub(crate) fn attach_control_channel(
     dc: Arc<RTCDataChannel>,
     params: Arc<tokio::sync::Mutex<StreamParams>>,
@@ -1401,14 +1450,23 @@ pub(crate) fn attach_control_channel(
     let (w, h) = screen_dims();
 
     // On open: send screen_info so the dashboard can de-normalize coords on
-    // its end if it wants to display a cursor reticle in-page.
+    // its end if it wants to display a cursor reticle in-page. Also kick off
+    // a background clipboard-sync task so the operator's browser gets the
+    // remote's clipboard changes pushed to it automatically — Ctrl+C on
+    // the remote (or any copy the user does with the mouse) then Just
+    // Works on the operator's side without needing the "Get clipboard"
+    // button. Symmetric side ("Send clipboard") is already covered by
+    // dashboard's Ctrl+V handler which pushes clip_set before the KeyV.
     {
         let dc_open = Arc::clone(&dc);
+        let dc_poll = Arc::clone(&dc);
         dc.on_open(Box::new(move || {
             let dc = dc_open.clone();
+            let dc_p = dc_poll.clone();
             Box::pin(async move {
                 let msg = json!({"t": "screen_info", "w": w, "h": h, "scale": 1});
                 let _ = dc.send_text(msg.to_string()).await;
+                spawn_clipboard_sync(dc_p);
             })
         }));
     }
