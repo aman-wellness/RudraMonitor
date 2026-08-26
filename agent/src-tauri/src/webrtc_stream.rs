@@ -828,8 +828,18 @@ pub(crate) async fn spawn_ffmpeg_with_params(
                 TARGET_FPS, params.width,
             ));
         } else {
+            // gdigrab-specific input options MUST come after `-f gdigrab`
+            // and before `-i desktop` — prior versions had `-draw_mouse`
+            // placed at the very top of the arg list, which ffmpeg
+            // silently ignored (it's an input demuxer option, not a
+            // global one). Not a black-screen cause on its own, but
+            // fixing the order clears one long-standing noise source
+            // in the stderr log so the actual failure reason is easier
+            // to spot when we do hit one.
+            cmd.arg("-f").arg("gdigrab");
             cmd.arg("-draw_mouse").arg("1");
-            cmd.arg("-f").arg("gdigrab").arg("-i").arg("desktop");
+            cmd.arg("-show_region").arg("0");
+            cmd.arg("-i").arg("desktop");
             // The shared -vf below is compiled out on Windows because it
             // cannot coexist with -filter_complex. This branch has no filter
             // graph, so it needs its own scale.
@@ -875,6 +885,19 @@ pub(crate) async fn spawn_ffmpeg_with_params(
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
 
+    // Log the exact ffmpeg invocation before spawn. Without this,
+    // diagnosing "connected but black" was archaeology — the actual
+    // capture filter, encoder args, and scale were spread across
+    // three cfg blocks and impossible to reconstruct from a customer
+    // support attachment. Now every session records exactly what was
+    // asked of ffmpeg, so the stderr lines that follow are decodable.
+    {
+        let ffmpeg_str = ffmpeg_bin.display().to_string();
+        let args_str: Vec<String> = cmd.as_std().get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        log::info!("webrtc: spawning ffmpeg: {ffmpeg_str} {}", args_str.join(" "));
+    }
     let mut child: Child = cmd.spawn().context("spawn ffmpeg for webrtc")?;
     let stdout = child
         .stdout
