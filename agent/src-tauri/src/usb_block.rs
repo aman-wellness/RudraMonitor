@@ -79,17 +79,23 @@ impl UsbBlocker {
         // the write no-ops — warn once so the gap is visible in the log.
         #[cfg(target_os = "windows")]
         {
-            if enabled {
-                apply_removable_storage_policy(true);
-                if self.last_enabled != Some(true) && !usb_block_available() {
-                    log::warn!(
-                        "usb_block: policy is ON but the agent is NOT elevated — the OS block \
-                         cannot be applied and removable drives will remain usable. Install/run \
-                         the agent as a service or with admin rights to enforce USB blocking."
-                    );
-                }
-            } else if self.last_enabled == Some(true) {
-                apply_removable_storage_policy(false);
+            // Idempotent: always reconcile the OS-level Group Policy
+            // to the current desired state, on every tick. Prior versions
+            // gated the OFF call behind `last_enabled == Some(true)`,
+            // which meant a fresh agent process starting up with the OS
+            // still carrying a previous session's Deny_All policy would
+            // NEVER clear it — admin toggles OFF, agent memory has
+            // last_enabled=None, condition fails, HKLM policy stays,
+            // USB stays blocked. `apply_removable_storage_policy(false)`
+            // is a no-op when the key isn't there, so calling it
+            // unconditionally every tick is cheap and correct.
+            apply_removable_storage_policy(enabled);
+            if enabled && self.last_enabled != Some(true) && !usb_block_available() {
+                log::warn!(
+                    "usb_block: policy is ON but the agent is NOT elevated — the OS block \
+                     cannot be applied and removable drives will remain usable. Install/run \
+                     the agent as a service or with admin rights to enforce USB blocking."
+                );
             }
         }
 

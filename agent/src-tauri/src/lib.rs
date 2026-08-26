@@ -2275,8 +2275,21 @@ pub static UPDATE_NOTIFY: once_cell::sync::Lazy<std::sync::Arc<tokio::sync::Noti
 /// happens inside `spawn_updater_loop` the moment its sleep is
 /// interrupted.
 pub fn wake_updater() {
+    // Admin force-update should also un-latch install_fired. Without
+    // this, if a previous check_for_update spawned an installer that
+    // then died (e.g. the customer manually killed msiexec, or a
+    // signed-installer sanity check failed post-download), the latch
+    // would keep the loop from ever re-attempting on this process —
+    // even after the admin explicitly asks. Resetting here means
+    // Force update always at least re-runs the check.
+    UPDATE_INSTALL_FIRED.store(false, std::sync::atomic::Ordering::SeqCst);
     UPDATE_NOTIFY.notify_one();
 }
+
+/// Global install-fired latch. See `wake_updater()` for why this lives
+/// outside `spawn_updater_loop` rather than inside its local Arc.
+pub static UPDATE_INSTALL_FIRED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Admin-toggled "apply settings NOW" bell. The settings poller selects on
 /// `sleep(SETTINGS_REFRESH_SECS)` OR `SETTINGS_NOTIFY.notified()`; the realtime
@@ -2308,9 +2321,9 @@ fn spawn_updater_loop(handle: tauri::AppHandle) {
         // 30-60 s to fully replace the exe, and during that window a
         // second check() → second installer → double-install crash
         // was observed in v0.6.7 as a "continuous update" loop.
-        let install_fired = std::sync::Arc::new(
-            std::sync::atomic::AtomicBool::new(false)
-        );
+        // Use the global latch so wake_updater() can un-latch it on
+        // admin Force update.
+        let install_fired: &std::sync::atomic::AtomicBool = &UPDATE_INSTALL_FIRED;
 
         // FAST LANE: for the first 10 minutes after boot, check every
         // 60 s. This is where most missed-update scenarios live —
@@ -2323,7 +2336,7 @@ fn spawn_updater_loop(handle: tauri::AppHandle) {
         while std::time::Instant::now() < fast_lane_deadline
             && !install_fired.load(std::sync::atomic::Ordering::SeqCst)
         {
-            if let Err(e) = check_for_update(&handle, &install_fired).await {
+            if let Err(e) = check_for_update(&handle, install_fired).await {
                 log::warn!("update check (fast) failed: {e}");
             }
             // Sleep for the fast-lane interval OR until an admin rings the
@@ -2350,7 +2363,7 @@ fn spawn_updater_loop(handle: tauri::AppHandle) {
         // will kill us as part of its file-swap step.
         loop {
             if !install_fired.load(std::sync::atomic::Ordering::SeqCst) {
-                if let Err(e) = check_for_update(&handle, &install_fired).await {
+                if let Err(e) = check_for_update(&handle, install_fired).await {
                     log::warn!("update check failed: {e}");
                 }
             }
