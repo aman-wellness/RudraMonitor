@@ -77,8 +77,19 @@ use crate::{api, config, AppState};
 // with hardware H.264 — the adaptive ladder downshifts to 1280/960
 // automatically when the encoder pegs.
 const TARGET_FPS: u32 = 30;
-const TARGET_WIDTH: u32 = 1920;
-const DEFAULT_BITRATE_KBPS: u32 = 4_500;
+// Downshifted from 1920×?/4500kbps (v0.7.21) to 1280×?/2500kbps for Remote
+// interactivity. Session data on the current fleet: TURN relay via US-East
+// (~450 ms India round-trip) dominates end-to-end latency; encode + upload
+// of a 1080p libx264 stream on modest client hardware adds another
+// ~120-200 ms and saturates the bitrate cap on typical Indian broadband
+// upload, both of which manifest as visible mouse lag. 1280 keeps the
+// dashboard readable while cutting pixels ¾× (encode + decode both
+// linearly faster), and 2500 kbps sits within the ~3 Mbps upload most
+// endpoints sustain so REMB doesn't throttle further. Live view (WHIP)
+// retains its own params via LiveKit ingress; this constant only
+// affects the direct P2P Remote path.
+const TARGET_WIDTH: u32 = 1280;
+const DEFAULT_BITRATE_KBPS: u32 = 2_500;
 
 /// Shared mutable stream parameters. The control DataChannel writes to
 /// these via `InboundMsg::SetQuality`; the ffmpeg pump reads them when

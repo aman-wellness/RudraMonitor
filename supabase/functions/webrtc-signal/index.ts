@@ -43,7 +43,8 @@ type Direction = "to_agent" | "to_dashboard";
 // once auto-update telemetry shows ≥95% of agents on v0.2.52+.
 type Kind =
   | "offer" | "answer" | "ice_candidate"
-  | "livekit_start" | "livekit_stop";
+  | "livekit_start" | "livekit_stop"
+  | "relay_start" | "relay_stop";
 
 const LONG_POLL_TIMEOUT_MS = 10_000;
 // ADAPTIVE poll interval. A flat 100 ms tick meant every agent — including the
@@ -165,8 +166,8 @@ async function handlePost(
   if (direction !== "to_agent" && direction !== "to_dashboard") {
     return json({ error: "direction must be to_agent or to_dashboard" }, 400);
   }
-  if (!["offer", "answer", "ice_candidate", "livekit_start", "livekit_stop"].includes(kind)) {
-    return json({ error: "kind must be offer | answer | ice_candidate | livekit_start | livekit_stop" }, 400);
+  if (!["offer", "answer", "ice_candidate", "livekit_start", "livekit_stop", "relay_start", "relay_stop"].includes(kind)) {
+    return json({ error: "kind must be offer | answer | ice_candidate | livekit_start | livekit_stop | relay_start | relay_stop" }, 400);
   }
 
   // Authorization checks:
