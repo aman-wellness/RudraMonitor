@@ -78,6 +78,28 @@ export default function AgentHeader({
   const [saving, setSaving] = useState(false);
   const [removing, setRemoving] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
+  // Rename UI state — inline editable display name. `machine` (system
+  // hostname) always renders in the meta row below so the admin can
+  // still tie the display name back to the real box even after renaming.
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState(name);
+  const [savingName, setSavingName] = useState(false);
+  useEffect(() => { setNameDraft(name); }, [name]);
+  const saveRename = async () => {
+    const next = nameDraft.trim();
+    if (!next || next === name) { setRenaming(false); return; }
+    setSavingName(true);
+    const { error } = await supabase.from('agents').update({ agent_name: next }).eq('id', agentId);
+    setSavingName(false);
+    if (error) {
+      notify.fail('Rename failed', error.message);
+      return;
+    }
+    notify.success(`Renamed to "${next}"`);
+    setRenaming(false);
+    // No need to setName() locally — the parent re-fetches on realtime UPDATE
+    // for the row (see useAgentDetail); the new value flows back in via props.
+  };
 
   useEffect(() => {
     setDept(department && department !== 'Unassigned' ? department : null);
@@ -166,11 +188,13 @@ export default function AgentHeader({
   const statusLabel = status === 'online' ? 'Online' : status === 'idle' ? 'Idle' : 'Offline';
 
   // Skip anything the agent hasn't reported — an empty "</> —" chip is noise.
+  // The hostname chip has an explicit title so admins can tell which chip is
+  // the real machine name even after they've renamed the display name.
   const meta = [
-    { icon: 'ri-computer-line', value: machine },
-    { icon: OS_ICON(os ?? ''), value: os ?? '' },
-    { icon: 'ri-global-line', value: ipAddress },
-    { icon: 'ri-code-s-slash-line', value: version },
+    { icon: 'ri-computer-line', value: machine, title: `Hostname: ${machine}` },
+    { icon: OS_ICON(os ?? ''), value: os ?? '', title: `OS: ${os ?? ''}` },
+    { icon: 'ri-global-line', value: ipAddress, title: `IP: ${ipAddress}` },
+    { icon: 'ri-code-s-slash-line', value: version, title: `Agent version: ${version}` },
   ].filter((m) => m.value && m.value !== '—' && m.value !== 'Unknown');
 
   return (
@@ -190,9 +214,59 @@ export default function AgentHeader({
 
           <div className="min-w-0">
             <div className="flex items-center gap-2.5 flex-wrap">
-              <h1 className="num" style={{ fontSize: 17 }}>
-                {name}
-              </h1>
+              {renaming ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <input
+                    autoFocus
+                    value={nameDraft}
+                    onChange={(e) => setNameDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void saveRename();
+                      else if (e.key === 'Escape') { setNameDraft(name); setRenaming(false); }
+                    }}
+                    disabled={savingName}
+                    maxLength={80}
+                    className="num rounded-md px-2 py-0.5 outline-none"
+                    style={{
+                      fontSize: 17,
+                      background: 'var(--d-sunken)',
+                      border: '1px solid var(--d-line)',
+                      color: 'var(--d-text)',
+                      minWidth: 140,
+                    }}
+                  />
+                  <button
+                    onClick={() => void saveRename()}
+                    disabled={savingName || !nameDraft.trim()}
+                    className="chip chip-accent text-[10px]"
+                    title="Save name"
+                  >
+                    <i className={savingName ? 'ri-loader-4-line animate-spin' : 'ri-check-line'} />
+                    {savingName ? 'Saving' : 'Save'}
+                  </button>
+                  <button
+                    onClick={() => { setNameDraft(name); setRenaming(false); }}
+                    disabled={savingName}
+                    className="chip chip-quiet text-[10px]"
+                    title="Cancel"
+                  >
+                    <i className="ri-close-line" />
+                  </button>
+                </span>
+              ) : (
+                <>
+                  <h1 className="num" style={{ fontSize: 17 }}>
+                    {name}
+                  </h1>
+                  <button
+                    onClick={() => setRenaming(true)}
+                    className="chip chip-quiet text-[10px]"
+                    title="Rename this agent (system hostname is shown below)"
+                  >
+                    <i className="ri-edit-line" /> Rename
+                  </button>
+                </>
+              )}
               <span className={`inline-flex items-center gap-1.5 text-[11px] ${statusTone}`}>
                 <span
                   className={`live-dot ${status === 'online' ? '' : 'is-off'}`}
@@ -254,7 +328,11 @@ export default function AgentHeader({
 
             <div className="flex items-center gap-3 flex-wrap mt-1.5">
               {meta.map((m) => (
-                <span key={m.value} className="flex items-center gap-1.5 text-[11px] t3">
+                <span
+                  key={m.value}
+                  title={m.title}
+                  className="flex items-center gap-1.5 text-[11px] t3"
+                >
                   <i className={`${m.icon} text-[12px]`} />
                   {m.value}
                 </span>
