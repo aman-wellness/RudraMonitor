@@ -1772,9 +1772,16 @@ pub fn run() {
                 .is_some();
             if !enrolled_now {
                 if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.show();
-                    let _ = w.unminimize();
-                    let _ = w.set_focus();
+                    // Only reveal the window when it was HIDDEN (setup card
+                    // dismissed / never opened). If the user has it visible
+                    // and just chose to minimize it, respect that — the
+                    // guardian's every-2s health-check would otherwise trigger
+                    // this callback repeatedly and un-minimize the window
+                    // every couple of seconds, which reads as a bug.
+                    if !w.is_visible().unwrap_or(false) {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
                 }
             }
         }))
