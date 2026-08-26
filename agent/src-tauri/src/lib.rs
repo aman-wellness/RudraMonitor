@@ -1818,6 +1818,25 @@ pub fn run() {
                     tauri::ActivationPolicy::Accessory
                 };
                 let _ = app.set_activation_policy(policy);
+
+                // Proactively request Screen Recording TCC at boot.
+                // Both screenshots (`/usr/sbin/screencapture`) and video
+                // (`record_clip_macos_native`) and the WHIP publisher's
+                // avfoundation ffmpeg source ALL require this permission
+                // to produce output. Without it macOS silently returns
+                // empty files — the agent runs, enrols, heartbeats, but
+                // 0 screenshots + 0 videos land server-side, and Live
+                // view shows a black frame.
+                //
+                // CGRequestScreenCaptureAccess() shows the OS prompt
+                // exactly once per bundle-id-per-user. If the user has
+                // already denied for this bundle id, this is a silent
+                // no-op — nothing extra pops up. If the grant already
+                // exists, this returns true immediately. Idempotent and
+                // safe to call at every boot.
+                std::thread::spawn(|| {
+                    let _ = crate::capture::macos::ensure_screen_recording_permission();
+                });
             }
 
             // Tray is intentionally hidden once the agent is enrolled — the
