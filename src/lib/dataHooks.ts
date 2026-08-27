@@ -2,6 +2,45 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase, type Agent } from './supabase';
 import { useAuth } from '../context/AuthContext';
 
+/**
+ * Keep a hook's data fresh without hammering the backend.
+ *
+ * Fixes the "cards show stale data for ~2 minutes" problem: several hooks were
+ * either mount-only (useProductivityPerAgent), realtime-only with no fallback
+ * (useAgents — so when postgres_changes events lag or drop under load the cards
+ * never refreshed), or a slow 60s poll with no refetch-on-focus. The result was
+ * an admin opening a page and acting on data up to ~2 min old.
+ *
+ * This adds two cheap triggers (only the handful of dashboard users run this,
+ * NOT the agent fleet, so the load is negligible):
+ *   • refetch the instant the tab regains focus / becomes visible — so opening
+ *     or returning to a page always shows current data immediately, not up to a
+ *     poll interval later;
+ *   • a modest background interval as a safety net for hooks whose realtime
+ *     feed is lagging or absent.
+ *
+ * `enabled` gates it (e.g. until an organization is loaded).
+ */
+function useLiveRefresh(refresh: () => void, enabled: boolean = true, intervalMs = 30_000) {
+  useEffect(() => {
+    if (!enabled) return;
+    // Initial fetch on mount (and whenever `refresh` — i.e. its inputs like
+    // org/date-range — changes). Replaces each hook's old mount-only effect.
+    refresh();
+    const id = window.setInterval(() => { refresh(); }, intervalMs);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refresh();
+    };
+    window.addEventListener('focus', onVisible);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener('focus', onVisible);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [refresh, enabled, intervalMs]);
+}
+
 // UI-shape agent: fields the dashboard/agents pages expect.
 // Derived monitoring fields (productivity/activeHours/idleTime/applications/browserUrls) start at safe
 // defaults and will be populated once activity_logs / system_metrics begin flowing from the desktop agent.
@@ -112,9 +151,7 @@ export function useAgents() {
     setLoading(false);
   }, [organization]);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  useLiveRefresh(refresh);
 
   // Realtime: any change to agents in this org → refetch.
   useEffect(() => {
@@ -312,9 +349,7 @@ export function useActivityLogs(filter: ActivityFilter = {}) {
     setLoading(false);
   }, [organization, type, agentId, sinceHours, untilHours, limit]);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  useLiveRefresh(refresh);
 
   // Realtime: insertions on activity_logs → refetch (debounced on a short timer to avoid floods).
   useEffect(() => {
@@ -384,9 +419,7 @@ export function useOrgMembers() {
     setLoading(false);
   }, [organization]);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  useLiveRefresh(refresh);
 
   // Sends a magic-link invite via the invite-member Edge Function and creates the pending
   // org_members row. The on-disk row is filled in by an auth.users trigger once the invitee
@@ -529,7 +562,7 @@ export function useAttendance(fromDaysAgo: number = 6) {
     setLoading(false);
   }, [organization, fromDaysAgo]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useLiveRefresh(refresh);
   return { rows, loading, error, refresh };
 }
 
@@ -560,7 +593,7 @@ export function useAppUsage(filter: { agentId?: string; sinceHours?: number } = 
     setLoading(false);
   }, [organization, sinceHours, agentId]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useLiveRefresh(refresh);
 
   return { rows, loading, error, refresh };
 }
@@ -616,7 +649,7 @@ export function useBrowserUsage(filter: { agentId?: string; sinceHours?: number 
     setLoading(false);
   }, [organization, sinceHours, agentId]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useLiveRefresh(refresh);
 
   return { rows, loading, error, refresh };
 }
@@ -764,9 +797,7 @@ export function useProductivityRules() {
     setLoading(false);
   }, [organization]);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  useLiveRefresh(refresh);
 
   const ruleMap: RuleMap = useMemo(() => {
     const m: RuleMap = { keyed: {}, contains: [] };
@@ -935,9 +966,7 @@ export function useAlerts(
     setLoading(false);
   }, [organization, sinceHours, untilHours, sinceMs, untilMs, agentId, limit]);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  useLiveRefresh(refresh);
 
   // Realtime: new/updated alerts → refetch. RLS scopes events to this user's orgs automatically.
   useEffect(() => {
@@ -1102,11 +1131,7 @@ export function useLatestSystemMetrics() {
     setLoading(false);
   }, [organization]);
 
-  useEffect(() => {
-    void refresh();
-    const id = setInterval(refresh, 60_000);
-    return () => clearInterval(id);
-  }, [refresh]);
+  useLiveRefresh(refresh);
 
   return { byAgent, loading, refresh };
 }
@@ -1184,9 +1209,7 @@ export function useOrgProductivityStats(sinceHours: number) {
     setLoading(false);
   }, [organization, sinceHours]);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  useLiveRefresh(refresh);
 
   return { stats, loading, refresh };
 }
@@ -1243,9 +1266,7 @@ export function useOrgProductivityDaily(days: number, untilHours = 0, agentId?: 
     setLoading(false);
   }, [organization, days, untilHours, agentId]);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  useLiveRefresh(refresh);
 
   return { rows, loading, refresh };
 }
@@ -1328,9 +1349,7 @@ export function useProductivityPerAgent(sinceHours: number, untilHours = 0) {
     setLoading(false);
   }, [organization, sinceHours, untilHours]);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  useLiveRefresh(refresh);
 
   return { byAgent, loading, refresh };
 }
@@ -1416,9 +1435,7 @@ export function useDlpReport(sinceHours: number, untilHours = 0) {
     setLoading(false);
   }, [organization, sinceHours, untilHours]);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  useLiveRefresh(refresh);
 
   return { rows, loading, refresh };
 }
@@ -1513,7 +1530,7 @@ export function useOrgActivityHourly(hours: number, untilHours = 0, agentId?: st
     setLoading(false);
   }, [organization, hours, untilHours, agentId]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useLiveRefresh(refresh);
 
   return { rows, loading, approximate, refresh };
 }
@@ -1590,7 +1607,7 @@ export function useTopApplications(
     setLoading(false);
   }, [organization, sinceHours, untilHours, agentId, limit]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useLiveRefresh(refresh);
 
   return { rows, loading, approximate, refresh };
 }
@@ -1649,7 +1666,7 @@ export function useAgentActivityHourly(hours: number, untilHours = 0, agentId?: 
     setLoading(false);
   }, [organization, hours, untilHours, agentId]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useLiveRefresh(refresh);
 
   return { byAgent, loading, refresh };
 }
@@ -1717,7 +1734,7 @@ export function useDlpRisk(sinceHours: number, untilHours = 0, agentId?: string 
     setLoading(false);
   }, [organization, sinceHours, untilHours, agentId]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useLiveRefresh(refresh);
 
   const summary = useMemo(() => {
     const cutoff = Date.now() - (untilHours + sinceHours) * 3600 * 1000;
@@ -1882,7 +1899,7 @@ export function useOrgLicense() {
     setLoading(false);
   }, [organization]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useLiveRefresh(refresh);
 
   return { license, loading, refresh };
 }
