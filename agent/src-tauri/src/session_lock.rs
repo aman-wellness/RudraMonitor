@@ -43,14 +43,18 @@ pub fn spawn_poller() {
 
 #[cfg(target_os = "windows")]
 fn probe() -> bool {
-    use windows::Win32::System::StationsAndDesktops::{CloseDesktop, OpenInputDesktop, DESKTOP_READOBJECTS};
+    use windows::Win32::System::StationsAndDesktops::{
+        CloseDesktop, OpenInputDesktop, DESKTOP_CONTROL_FLAGS, DESKTOP_READOBJECTS,
+    };
     unsafe {
         // OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS): asks for a handle to
         // whatever desktop currently receives user input. When the screen is
         // locked that desktop is Winlogon\Winlogon, which our process (running
         // on Winsta0\Default) is not allowed to touch, so the call returns an
         // invalid handle. When unlocked we get Default and the call succeeds.
-        match OpenInputDesktop(0, false, DESKTOP_READOBJECTS) {
+        // The `windows` crate wraps dwflags in the newtype DESKTOP_CONTROL_FLAGS
+        // (a plain u32 alias) — we pass 0 explicitly typed to satisfy inference.
+        match OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_READOBJECTS) {
             Ok(h) => {
                 let _ = CloseDesktop(h);
                 false
