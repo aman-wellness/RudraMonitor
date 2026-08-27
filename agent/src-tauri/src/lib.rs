@@ -33,6 +33,7 @@ mod remote;
 mod capture;
 // mod encode;  // landing in v0.3.1 alongside Windows + Linux capture.
 
+mod session_lock;
 mod usb_block;
 mod wallpaper;
 mod schedule;
@@ -813,6 +814,10 @@ async fn screenshot_tick(state: &AppState) -> Result<()> {
     if !state.settings.lock().await.screenshots_enabled {
         return Ok(());
     }
+    // Session locked = user isn't at the machine; capturing a lock screen is
+    // both useless (no context) and keeps modern-standby laptops from ever
+    // reaching deep sleep. See session_lock module for the full write-up.
+    if session_lock::is_locked() { return Ok(()); }
     let cfg = state.config.lock().await.clone();
     let enrollment = cfg.enrollment.clone().ok_or_else(|| anyhow!("not enrolled"))?;
     let supabase_url = config::supabase_url(&cfg).ok_or_else(|| anyhow!("no supabase url"))?;
@@ -841,6 +846,10 @@ async fn screenshot_tick(state: &AppState) -> Result<()> {
 async fn video_tick(state: &AppState) -> Result<()> {
     if !license_ok(state) {
         log::info!("video_tick: skip — license blocked");
+        return Ok(());
+    }
+    if session_lock::is_locked() {
+        log::info!("video_tick: skip — session locked");
         return Ok(());
     }
     if !within_hours(state).await {
@@ -1971,6 +1980,11 @@ pub fn run() {
             // proxy entry from a prior v0.7.x install. Anyone stuck
             // recovers on their next agent restart.
             mitm::stop();
+            // Session-lock poller: flips a shared AtomicBool every 5s so the
+            // capture loops can skip work while the machine is locked. Lets
+            // modern-standby laptops actually reach deep sleep instead of
+            // escalating to a forced shutdown after repeated failed sleeps.
+            session_lock::spawn_poller();
             // USB-block loop: enumerates removable volumes every 5s and unmounts
             // any new ones unless the agent is allowlisted. Always starts; the
             // loop itself reads settings.removable_disks_blocked each iteration.
@@ -2232,6 +2246,15 @@ fn spawn_wallpaper_loop(state: AppState) {
                 )
             };
             let (enforced, url, updated_at) = snap;
+            // While the machine is locked skip the wallpaper HTTP round-trip
+            // — the download + shell refresh is one of the loops keeping
+            // modern-standby machines from ever reaching deep sleep. The
+            // wallpaper won't have changed while nobody's at the machine
+            // anyway; we'll pick up the new one on the first unlocked tick.
+            if session_lock::is_locked() {
+                sleep(Duration::from_secs(60)).await;
+                continue;
+            }
             if let Err(e) = wm.tick(enforced, url.as_deref(), updated_at.as_deref()).await {
                 log::warn!("wallpaper tick failed: {e:#}");
             }
