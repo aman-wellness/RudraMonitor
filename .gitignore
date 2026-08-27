@@ -71,6 +71,17 @@ agent.pem
 rudrans.pem
 .env.production.bak-rudrans
 builds/
+
+# Belt-and-suspenders: any private key / key material accidentally dropped
+# in the repo root. Individual named entries above stay for clarity.
+*.pem
+*.p8
+*.key
+# Local IDE workspace files
+*.code-workspace
+# Sibling projects Aman keeps in the same folder — not part of this repo
+DriverManagerPro/
+WindowsOptimizer/
 agent/Dockerfile.linux-build
 shared image.jpeg
 
