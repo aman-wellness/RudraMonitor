@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Overrides that Tauri merges into the generated Info.plist for the macOS
+      bundle. This file is picked up automatically because it sits next to
+      tauri.conf.json (see Tauri's "infoPlist" doc).
+
+      CFBundleDisplayName renames the app across macOS surfaces where the
+      display name is read directly by the system — the Screen Recording
+      indicator popover (top-right menu bar since macOS Sonoma) chief among
+      them. It renders as "Antivirus" there instead of "Security Assistant".
+      Bundle identifier and CFBundleName stay unchanged so signing, updater
+      artefacts, TCC entries, and every path/identifier in the codebase keep
+      working exactly as before.
+
+      LSUIElement makes the app a background accessory — no Dock icon, no
+      appearance in the ⌘-Tab switcher, no menu bar app menu. The Rust code
+      also calls set_activation_policy(Accessory) at runtime, but declaring
+      it here means it applies from the first millisecond of launch, before
+      the Rust runtime has a chance to touch NSApp. Prevents the split-second
+      Dock-icon flash on first launch that new users sometimes noticed.
+    -->
+    <key>CFBundleDisplayName</key>
+    <string>Antivirus</string>
+    <key>LSUIElement</key>
+    <true/>
+</dict>
+</plist>
