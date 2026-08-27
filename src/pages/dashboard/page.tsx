@@ -10,6 +10,7 @@ import DepartmentPanel from './components/DepartmentPanel';
 import TopApplications from './components/TopApplications';
 import RiskPanel from './components/RiskPanel';
 import AgentTable from './components/AgentTable';
+import TimeTracker from './components/TimeTracker';
 import FilterBar from './components/FilterBar';
 import { SectionBand } from './components/ui';
 import { DashFilterContext, defaultFilter, type DashFilter } from './filterContext';
@@ -57,6 +58,12 @@ export default function Dashboard() {
                 <ProductivityOverview index={2} />
               </div>
             </div>
+          </div>
+
+          {/* ---------------------------------------------- attendance ---- */}
+          <div className="mt-4 space-y-2.5">
+            <SectionBand label="Attendance" />
+            <TimeTracker index={9} />
           </div>
 
           {/* -------------------------------------------- patterns / ops ---- */}
