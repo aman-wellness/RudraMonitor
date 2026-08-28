@@ -606,6 +606,22 @@ async fn idle_tick(state: &AppState) -> Result<()> {
             }
         }
         log::info!("idle_tick: detected sleep gap of {} s; idle session reset", gap);
+        // Post-wake reconnect: the tokio timers all resume at once, but the
+        // Realtime WSS socket that was awaiting reads during sleep is dead
+        // — the OS pulled the TCP state out from under it. Kick a fresh
+        // heartbeat + settings pull + realtime reconnect signal immediately
+        // so the agent shows online in the dashboard within seconds instead
+        // of waiting for the next natural tick. Prior behaviour left the
+        // agent looking "offline" for up to 60 s after wake, and the fix in
+        // the field was "poke the tray icon" — which just triggered one of
+        // these ticks manually. Now it happens automatically.
+        let state_c = state.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = metrics_tick(&state_c).await {
+                log::warn!("post-wake heartbeat failed: {e:#}");
+            }
+            wake_settings();
+        });
         // Don't start a new idle session on this tick — let the next
         // tick re-evaluate from a clean slate.
         return Ok(());

@@ -39,6 +39,14 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, []);
 
+  // Bump the tick immediately whenever the filter changes so every panel
+  // that subscribes via useRefreshOnTick re-fetches with the new scope
+  // right away. Prior behaviour was to wait for the next 60 s tick, which
+  // reads as "the filter didn't work" for the whole minute after the click.
+  useEffect(() => {
+    setTick((t) => t + 1);
+  }, [filter]);
+
   return (
     <DashboardLayout>
       <DashboardTick.Provider value={tick}>
