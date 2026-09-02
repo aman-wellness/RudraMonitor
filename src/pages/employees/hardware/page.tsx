@@ -114,11 +114,14 @@ export default function HardwareInventory() {
   // that device_serial as its SMBIOS chassis serial.
   const [inventoryByAsset, setInventoryByAsset] = useState<Record<string, InventoryMatch>>({});
   const [inventoryFor, setInventoryFor] = useState<{ asset: Asset; match: InventoryMatch } | null>(null);
-  // Add-on gate: only orgs on the it_hardware_inventory feature see the
-  // agent → asset cross-link. Base plans still see the raw inventory on
-  // the agent-detail page, this add-on is what buys the register-side
-  // cross-reference (matched agent badge, at-risk chips, drawer).
-  const { it_hardware_inventory_enabled: invAddon } = useFeatures();
+  // Cross-link gate. Any org on the Employee Management plan gets the
+  // agent → asset live mapping automatically as part of EM (which already
+  // owns hardware_assets + assignments as first-class objects) — that
+  // matches what customers are told when they buy EM. The standalone
+  // it_hardware_inventory add-on remains for orgs on base plans that
+  // want ONLY the cross-link without full EM. Either flag unlocks it.
+  const { em_enabled, it_hardware_inventory_enabled } = useFeatures();
+  const invAddon = em_enabled || it_hardware_inventory_enabled;
 
   const load = useCallback(async () => {
     setLoading(true);
