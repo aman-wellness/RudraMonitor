@@ -223,6 +223,20 @@ async fn handle_event(
             log::info!("updater: agent.update_now received");
             crate::wake_updater();
         }
+        "inventory.refresh" => {
+            // Dashboard-triggered immediate inventory collection. Skips the
+            // 24 h scheduled cycle wait — the moment an admin clicks
+            // "Refresh inventory" on the agent-detail page, the agent runs
+            // one_cycle now and posts fresh hardware/software/events. Fire
+            // and forget; the daily loop keeps its own cadence.
+            log::info!("inventory: refresh broadcast received");
+            let state = state.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = crate::inventory::run_one(&state).await {
+                    log::warn!("inventory: manual refresh failed: {e:#}");
+                }
+            });
+        }
         "settings.refresh" => {
             // Admin changed a per-agent setting in the dashboard (e.g. the
             // USB-block toggle). Ring the settings bell so the poller re-fetches

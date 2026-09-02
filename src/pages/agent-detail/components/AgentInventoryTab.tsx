@@ -37,26 +37,79 @@ export default function AgentInventoryTab({ agentId }: { agentId: string }) {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [softwareQ, setSoftwareQ] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
+
+  const reload = async () => {
+    const { data, error } = await supabase
+      .from('agent_inventory')
+      .select('hardware, software, battery, system_events, summary, collected_at')
+      .eq('agent_id', agentId)
+      .order('collected_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) setErr(error.message);
+    else setErr(null);
+    setRow((data as InventoryRow | null) ?? null);
+  };
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       setLoading(true);
-      setErr(null);
-      const { data, error } = await supabase
-        .from('agent_inventory')
-        .select('hardware, software, battery, system_events, summary, collected_at')
-        .eq('agent_id', agentId)
-        .order('collected_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (cancelled) return;
-      if (error) setErr(error.message);
-      setRow((data as InventoryRow | null) ?? null);
-      setLoading(false);
+      await reload();
+      if (!cancelled) setLoading(false);
     })();
     return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId]);
+
+  const refreshNow = async () => {
+    setRefreshing(true);
+    setRefreshMsg(null);
+    try {
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess.session?.access_token;
+      if (!token) throw new Error('not signed in');
+      const resp = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/agent-inventory-refresh`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ agent_id: agentId }),
+        },
+      );
+      const body = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${resp.status}`);
+      setRefreshMsg('Refresh requested — new snapshot in ~10 s.');
+      // Poll for the new row: current collected_at → new collected_at.
+      const beforeIso = row?.collected_at ?? '';
+      for (let i = 0; i < 15; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        await reload();
+        // reload updates `row` via setRow; peek at the freshest via a re-query.
+        const { data: fresh } = await supabase
+          .from('agent_inventory')
+          .select('collected_at')
+          .eq('agent_id', agentId)
+          .order('collected_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (fresh?.collected_at && fresh.collected_at !== beforeIso) {
+          setRefreshMsg('Updated.');
+          break;
+        }
+      }
+    } catch (e) {
+      setRefreshMsg(`Failed: ${(e as Error).message}`);
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   const filteredSoftware = useMemo(() => {
     if (!row?.software) return [];
@@ -141,7 +194,7 @@ export default function AgentInventoryTab({ agentId }: { agentId: string }) {
 
   return (
     <div className="space-y-4">
-      {/* Header: risk chips + collected timestamp */}
+      {/* Header: risk chips + collected timestamp + refresh */}
       <div className="bg-dark-800 border border-dark-700 rounded-xl p-4">
         <div className="flex items-start justify-between gap-4 mb-3 flex-wrap">
           <div>
@@ -150,7 +203,34 @@ export default function AgentInventoryTab({ agentId }: { agentId: string }) {
               Last collected {new Date(row.collected_at).toLocaleString()}
               {systemSerial && <> · Serial <span className="font-mono text-gray-400">{systemSerial}</span></>}
             </p>
+            {refreshMsg && (
+              <p className={`text-[11px] mt-1 ${refreshMsg.startsWith('Failed') ? 'text-rose-400' : 'text-emerald-400'}`}>
+                {refreshMsg}
+              </p>
+            )}
           </div>
+          <button
+            type="button"
+            onClick={refreshNow}
+            disabled={refreshing}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed text-white shadow-md shadow-emerald-500/10 transition"
+            title="Trigger an immediate inventory collection on the agent"
+          >
+            {refreshing ? (
+              <>
+                <span className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                Refreshing…
+              </>
+            ) : (
+              <>
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="23 4 23 10 17 10" />
+                  <path d="M20.49 15A9 9 0 1 1 5.64 5.64L1 10" />
+                </svg>
+                Refresh now
+              </>
+            )}
+          </button>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
           <Chip label="Disk" value={s.disk_predict_fail ? 'Predict fail' : 'OK'} tone={s.disk_predict_fail ? 'bad' : 'good'} />

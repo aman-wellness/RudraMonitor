@@ -831,6 +831,10 @@ pub fn spawn_inventory_loop(state: crate::AppState) {
     });
 }
 
+pub async fn run_one(state: &crate::AppState) -> Result<()> {
+    one_cycle(state).await
+}
+
 async fn one_cycle(state: &crate::AppState) -> Result<()> {
     // Config lookup on each cycle so a mid-cycle URL/token change is picked
     // up on the next post.
