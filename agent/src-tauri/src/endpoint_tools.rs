@@ -209,6 +209,16 @@ pub async fn run_tool(kind: ToolKind, run_id: String) -> Result<ToolResult> {
     // failure — the final result POST below is what matters.
     let _ = post_running(&run_id).await;
 
+    // 1c. Keep the machine awake while the script runs. Without this the
+    // laptop can enter modern-standby (lid close, idle-sleep timer) mid-
+    // run, the tokio runtime freezes, the 45-min timeout never fires, and
+    // the DB reaper flips the row to 'cancelled' at 60 min with no
+    // completion post from the agent — exactly what killed Anmol Sangwan's
+    // 2026-09-02 09:07 UTC run despite v0.7.31's tokio::process fix.
+    // KeepAwakeGuard drops back to normal power on Drop, no matter how
+    // the run exits (early-return, panic, timeout, ok).
+    let _keep_awake = KeepAwakeGuard::new();
+
     // 2. Locate the bundled .ps1.
     let script = match bundled_script_path(kind) {
         Some(p) => p,
@@ -433,4 +443,45 @@ pub async fn post_result(
         ));
     }
     Ok(())
+}
+
+/// Prevents the machine from entering sleep / modern-standby while a tool
+/// run is in flight. On construction, calls SetThreadExecutionState with
+/// ES_CONTINUOUS | ES_SYSTEM_REQUIRED — the system idle-timer is held off
+/// as long as the flag is set. On Drop, clears the flag back to
+/// ES_CONTINUOUS alone so the machine can sleep again the moment the run
+/// exits (success, failure, timeout, or panic).
+///
+/// Display sleep is deliberately NOT held: we don't want a laptop closed on
+/// a desk to light up its screen for an admin-triggered maintenance run.
+/// Only the SYSTEM idle path is blocked.
+struct KeepAwakeGuard;
+
+impl KeepAwakeGuard {
+    fn new() -> Self {
+        #[cfg(target_os = "windows")]
+        unsafe {
+            use windows::Win32::System::Power::{
+                SetThreadExecutionState, ES_CONTINUOUS, ES_SYSTEM_REQUIRED,
+            };
+            let prev = SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED);
+            if prev.0 == 0 {
+                log::warn!("keep-awake: SetThreadExecutionState returned 0 — sleep may still fire");
+            } else {
+                log::info!("keep-awake: holding system idle-timer for the duration of the tool run");
+            }
+        }
+        Self
+    }
+}
+
+impl Drop for KeepAwakeGuard {
+    fn drop(&mut self) {
+        #[cfg(target_os = "windows")]
+        unsafe {
+            use windows::Win32::System::Power::{SetThreadExecutionState, ES_CONTINUOUS};
+            let _ = SetThreadExecutionState(ES_CONTINUOUS);
+            log::info!("keep-awake: released system idle-timer hold");
+        }
+    }
 }
