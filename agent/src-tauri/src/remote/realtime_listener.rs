@@ -414,7 +414,29 @@ async fn handle_tool_run(
         _ => return Err(anyhow!("agent not enrolled — cannot post tool result")),
     };
     let client = crate::api::build_client().context("build_client")?;
-    crate::endpoint_tools::post_result(&client, &url, &anon, &token, &result).await
+    // Retry the result POST with backoff. A single failed POST used to
+    // leave the DB row stranded at 'running' until the 60-min reaper
+    // flipped it to 'cancelled' — the dashboard then said the agent
+    // "never posted a completion" when the agent HAD completed and just
+    // couldn't reach the server on the first try (edge-fn restart, wifi
+    // blip, DNS glitch). Three attempts across ~100 s covers every
+    // realistic transient without pinning the tool-run task forever.
+    let mut delay_secs = 5u64;
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 1..=3 {
+        match crate::endpoint_tools::post_result(&client, &url, &anon, &token, &result).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                log::warn!("tool.result POST attempt {attempt}/3 failed: {e:#}");
+                last_err = Some(e);
+                if attempt < 3 {
+                    tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+                    delay_secs = (delay_secs * 3).min(60);
+                }
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow!("tool.result POST failed (no error captured)")))
 }
 
 async fn handle_request(

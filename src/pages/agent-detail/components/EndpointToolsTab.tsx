@@ -52,6 +52,10 @@ export default function EndpointToolsTab({ agentId, agentName, osType }: Props) 
   const [busy, setBusy] = useState<ToolKind | null>(null);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err' | 'info'; text: string } | null>(null);
   const [confirm, setConfirm] = useState<ToolKind | null>(null);
+  // Which run's details drawer is open. Drives the expanded stdout_tail row
+  // rendered under the run — that's the only place the "why did it fail"
+  // text lives, and prior UI hid it entirely.
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   const isWindows = osType.toLowerCase().includes('windows');
 
@@ -220,28 +224,62 @@ export default function EndpointToolsTab({ agentId, agentName, osType }: Props) 
                 </tr>
               </thead>
               <tbody>
-                {runs.map((r) => (
-                  <tr key={r.id} className="border-t border-dark-700">
-                    <td className="p-2.5 text-white">{TOOL_LABEL[r.tool_kind]}</td>
-                    <td className="p-2.5"><StatePill state={r.state} /></td>
-                    <td className="p-2.5 text-gray-400 text-xs">{new Date(r.created_at).toLocaleString()}</td>
-                    <td className="p-2.5 text-right text-gray-400 text-xs tnum">
-                      {r.duration_ms === null ? '—' : fmtDuration(r.duration_ms)}
-                    </td>
-                    <td className="p-2.5 text-right text-gray-400 text-xs tnum">
-                      {r.exit_code === null ? '—' : r.exit_code}
-                    </td>
-                    <td className="p-2.5 text-right">
-                      {r.report_path ? (
-                        <button
-                          type="button"
-                          onClick={() => void downloadReport(r.report_path!)}
-                          className="text-xs text-blue-400 hover:underline"
-                        >Download</button>
-                      ) : <span className="text-xs text-gray-500">—</span>}
-                    </td>
-                  </tr>
-                ))}
+                {runs.map((r) => {
+                  const isOpen = expanded === r.id;
+                  const failed = r.state === 'failed' || r.state === 'timed_out' || r.state === 'cancelled';
+                  return (
+                    <>
+                      <tr
+                        key={r.id}
+                        className={`border-t border-dark-700 ${r.stdout_tail ? 'cursor-pointer hover:bg-dark-900/40' : ''}`}
+                        onClick={() => r.stdout_tail && setExpanded(isOpen ? null : r.id)}
+                      >
+                        <td className="p-2.5 text-white">
+                          <span className="inline-flex items-center gap-1.5">
+                            {r.stdout_tail && (
+                              <span className={`text-gray-500 text-xs transition-transform ${isOpen ? 'rotate-90' : ''}`}>▸</span>
+                            )}
+                            {TOOL_LABEL[r.tool_kind]}
+                          </span>
+                        </td>
+                        <td className="p-2.5">
+                          <StatePill state={r.state} />
+                          {failed && r.stdout_tail && !isOpen && (
+                            <span className="ml-2 text-[10px] text-gray-500">click for details</span>
+                          )}
+                        </td>
+                        <td className="p-2.5 text-gray-400 text-xs">{new Date(r.created_at).toLocaleString()}</td>
+                        <td className="p-2.5 text-right text-gray-400 text-xs tnum">
+                          {r.duration_ms === null ? '—' : fmtDuration(r.duration_ms)}
+                        </td>
+                        <td className="p-2.5 text-right text-gray-400 text-xs tnum">
+                          {r.exit_code === null ? '—' : r.exit_code}
+                        </td>
+                        <td className="p-2.5 text-right" onClick={(e) => e.stopPropagation()}>
+                          {r.report_path ? (
+                            <button
+                              type="button"
+                              onClick={() => void downloadReport(r.report_path!)}
+                              className="text-xs text-blue-400 hover:underline"
+                            >Download</button>
+                          ) : <span className="text-xs text-gray-500">—</span>}
+                        </td>
+                      </tr>
+                      {isOpen && r.stdout_tail && (
+                        <tr key={`${r.id}-details`} className="bg-dark-900/60">
+                          <td colSpan={6} className="p-3">
+                            <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-1">
+                              {failed ? 'Failure reason (last output from agent)' : 'Last output from agent'}
+                            </div>
+                            <pre className="text-xs text-gray-300 whitespace-pre-wrap break-words leading-relaxed max-h-72 overflow-y-auto font-mono bg-dark-950/50 p-2.5 rounded border border-dark-700">
+                              {r.stdout_tail}
+                            </pre>
+                          </td>
+                        </tr>
+                      )}
+                    </>
+                  );
+                })}
               </tbody>
             </table>
           </div>

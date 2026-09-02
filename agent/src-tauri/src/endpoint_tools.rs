@@ -135,25 +135,51 @@ fn ensure_pswindowsupdate() -> Result<()> {
     // Also: `-Confirm:$false` on Install-PackageProvider silences the
     // "would you like to install NuGet from https://oneget.org" prompt
     // that fires under -NonInteractive.
-    let install = "Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ForceBootstrap -Confirm:$false -Scope AllUsers -ErrorAction Stop | Out-Null; \
+    //
+    // Try AllUsers first (works when the interactive user is an admin —
+    // task RunLevel=Highest picks up admin token). On a Standard User
+    // account the AllUsers install fails with "Administrator rights are
+    // required to install packages in C:\Program Files\..." — retry with
+    // -Scope CurrentUser which lands the module under the user profile
+    // and is what the error's own hint tells us to do. Endpoint tools
+    // then work for Standard-User accounts too.
+    let install_allusers = "Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ForceBootstrap -Confirm:$false -Scope AllUsers -ErrorAction Stop | Out-Null; \
                    Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue; \
                    Install-Module -Name PSWindowsUpdate -Scope AllUsers -Force -AllowClobber -Confirm:$false -ErrorAction Stop";
-    let mut cmd = Command::new("powershell.exe");
-    cmd.args([
-        "-NoProfile", "-NonInteractive",
-        "-ExecutionPolicy", "Bypass",
-        "-WindowStyle", "Hidden",
-        "-Command", install,
-    ]);
-    crate::win_proc::no_window(&mut cmd);
-    let out = cmd.output().context("spawn PSWindowsUpdate installer")?;
-    if !out.status.success() {
-        return Err(anyhow!(
-            "PSWindowsUpdate bootstrap failed: {}",
-            String::from_utf8_lossy(&out.stderr).chars().take(400).collect::<String>()
-        ));
+    let install_currentuser = "Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ForceBootstrap -Confirm:$false -Scope CurrentUser -ErrorAction Stop | Out-Null; \
+                   Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue; \
+                   Install-Module -Name PSWindowsUpdate -Scope CurrentUser -Force -AllowClobber -Confirm:$false -ErrorAction Stop";
+    for (label, script) in [("AllUsers", install_allusers), ("CurrentUser", install_currentuser)] {
+        let mut cmd = Command::new("powershell.exe");
+        cmd.args([
+            "-NoProfile", "-NonInteractive",
+            "-ExecutionPolicy", "Bypass",
+            "-WindowStyle", "Hidden",
+            "-Command", script,
+        ]);
+        crate::win_proc::no_window(&mut cmd);
+        match cmd.output() {
+            Ok(out) if out.status.success() => {
+                log::info!("PSWindowsUpdate installed (scope={label})");
+                return Ok(());
+            }
+            Ok(out) => {
+                log::warn!(
+                    "PSWindowsUpdate install scope={label} failed: {}",
+                    String::from_utf8_lossy(&out.stderr).chars().take(200).collect::<String>()
+                );
+                // fall through to next scope
+            }
+            Err(e) => {
+                log::warn!("PSWindowsUpdate install scope={label} spawn error: {e}");
+            }
+        }
     }
-    Ok(())
+    Err(anyhow!(
+        "PSWindowsUpdate bootstrap failed under both AllUsers and CurrentUser scopes — \
+         PowerShell Gallery may be unreachable, or the user profile has NuGet blocked. \
+         Manual install: run `Install-Module PSWindowsUpdate -Scope CurrentUser` as the logged-in user."
+    ))
 }
 
 /// Execute the given tool and return a result envelope ready to POST to
