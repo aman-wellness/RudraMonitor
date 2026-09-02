@@ -175,13 +175,36 @@ fn probe_windows_license() -> Option<Value> {
     let win_rows = ps_rows::<WinSku>(
         "Get-CimInstance SoftwareLicensingProduct -Filter \"Name LIKE 'Windows%'\" | Where-Object { $_.PartialProductKey } | Select Name, PartialProductKey, ProductKeyChannel, LicenseStatus, GenuineStatus"
     ).unwrap_or_default();
+    // Try to recover the full 25-char key from DigitalProductId. If the
+    // decoded string's last-5 char group matches SPP's PartialProductKey we
+    // trust it; otherwise it's the "BBBBB-BBBBB-…" post-1607 junk and we
+    // drop it back to partial-only.
+    let decoded_full = recover_windows_full_key();
     let mut skus: Vec<Value> = Vec::new();
     for r in win_rows {
         let sc = r.LicenseStatus;
+        let last5 = &r.PartialProductKey;
+        // Priority: decoded blob if last-5 matches → decoded, else GVLK
+        // lookup by name/channel → GVLK, else null (partial only).
+        let full_key: Option<String> = decoded_full.as_ref().and_then(|k| {
+            let dec_last5 = k.rsplitn(2, '-').next().unwrap_or("");
+            if !last5.is_empty() && dec_last5.eq_ignore_ascii_case(last5) {
+                Some(k.clone())
+            } else { None }
+        }).or_else(|| {
+            if r.ProductKeyChannel.contains("Volume") || r.ProductKeyChannel.contains("GVLK") {
+                gvlk_for(&r.Name).map(|s| s.to_string())
+            } else { None }
+        });
+        let full_key_source = if full_key.is_some() {
+            if decoded_full.is_some() && full_key == decoded_full { "decoded" } else { "gvlk_public" }
+        } else { "unavailable" };
         skus.push(json!({
             "sku_name": r.Name,
             "activation_channel": r.ProductKeyChannel,
             "partial_product_key": r.PartialProductKey,
+            "full_product_key": full_key,
+            "full_key_source": full_key_source,
             "license_status_code": sc,
             "license_status": license_status_text(sc.unwrap_or(-1)),
         }));
@@ -213,15 +236,163 @@ fn probe_product_licenses() -> Value {
     ).unwrap_or_default();
     let items: Vec<Value> = rows.into_iter().map(|r| {
         let sc = r.LicenseStatus;
+        // Volume:GVLK products carry a public generic key — look it up
+        // by SKU name. Retail Office keys are not retrievable on modern
+        // Office (post-2016, token-based activation); return None there.
+        let full_key: Option<String> = if r.ProductKeyChannel.contains("Volume") || r.ProductKeyChannel.contains("GVLK") {
+            gvlk_for(&r.Name).map(|s| s.to_string())
+        } else { None };
+        let full_key_source = if full_key.is_some() { "gvlk_public" } else { "unavailable" };
         json!({
             "name": r.Name,
             "partial_product_key": r.PartialProductKey,
+            "full_product_key": full_key,
+            "full_key_source": full_key_source,
             "activation_channel": r.ProductKeyChannel,
             "license_status_code": sc,
             "license_status": license_status_text(sc.unwrap_or(-1)),
         })
     }).collect();
     json!(items)
+}
+
+// -----------------------------------------------------------------------------
+// Product-key recovery. Microsoft's SPP API only exposes PartialProductKey
+// (the last 5 chars) since Windows 10 1607 — the OEM BIOS key stays fully
+// retrievable via OA3xOriginalProductKey, but the CURRENTLY-INSTALLED key
+// after that is officially opaque. Two workarounds cover most cases:
+//
+//   1. DigitalProductId decoder. Windows / Office store an encrypted 172-byte
+//      blob under
+//        HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\DigitalProductId
+//        HKLM\SOFTWARE\Microsoft\Office\<ver>\Registration\{clsid}\DigitalProductID
+//      Bytes 52..67 hold the key encoded in a base-24 alphabet ("BCDFGHJKMPQRT
+//      VWXY2346789"). Works on Windows 7 / 8 / 8.1 / older Server, and on
+//      Office 2010-2016. Post-Windows 10 1607 Microsoft randomised these
+//      bytes at install time, so the decoded string is junk ("BBBBB-BBBBB-…")
+//      and we drop it by comparing its last 5 chars against the SPP-reported
+//      PartialProductKey.
+//
+//   2. KMS / Volume License GVLK lookup. Products activated via KMS use the
+//      Generic Volume License Key that Microsoft PUBLISHES for that SKU. The
+//      key isn't a secret — it's the same string on every KMS-activated
+//      endpoint on the planet. Match by ProductKeyChannel = "Volume:GVLK"
+//      + Name substring against a small in-code table.
+// -----------------------------------------------------------------------------
+
+/// Base-24 alphabet Microsoft uses for the DigitalProductId payload.
+#[cfg(target_os = "windows")]
+const DIGIT_MAP: &[u8] = b"BCDFGHJKMPQRTVWXY2346789";
+
+/// Decode the 15-byte key payload at offset 52..67 of a Microsoft
+/// DigitalProductId blob into the 25-char CD-key string (XXXXX-XXXXX-XXXXX-
+/// XXXXX-XXXXX). Algorithm is the classic base-24 division loop; see the
+/// public write-ups by NirSoft / Belarc for the derivation.
+#[cfg(target_os = "windows")]
+fn decode_digital_product_id(blob: &[u8]) -> Option<String> {
+    if blob.len() < 67 { return None; }
+    let mut key_bytes: [u8; 15] = blob[52..67].try_into().ok()?;
+    let mut chars = [0u8; 25];
+    for i in (0..25).rev() {
+        let mut cur = 0u32;
+        for j in (0..15).rev() {
+            cur = (cur << 8) | key_bytes[j] as u32;
+            key_bytes[j] = (cur / 24) as u8;
+            cur %= 24;
+        }
+        chars[i] = DIGIT_MAP[cur as usize];
+    }
+    let mut out = String::with_capacity(29);
+    for (i, c) in chars.iter().enumerate() {
+        if i > 0 && i % 5 == 0 { out.push('-'); }
+        out.push(*c as char);
+    }
+    // Junk-detector: on Win 10 1607+ every group is "BBBBB" or has a single
+    // non-B char. Reject anything whose base24-value distribution looks like
+    // that — the SPP PartialProductKey comparison in probe_windows_license
+    // is the authoritative check, but this cheap sanity filter avoids
+    // shipping "BBBBB-BBBBB-…" strings when SPP happens to fail too.
+    let non_b = out.chars().filter(|c| c.is_ascii_alphanumeric() && *c != 'B').count();
+    if non_b < 5 { return None; }
+    Some(out)
+}
+
+/// Read a REG_BINARY registry value and return its raw bytes. Uses `reg query`
+/// so we don't depend on the winreg crate.
+#[cfg(target_os = "windows")]
+fn reg_read_binary(hive_path: &str, value_name: &str) -> Option<Vec<u8>> {
+    let mut cmd = Command::new("reg");
+    cmd.args(["query", hive_path, "/v", value_name]);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
+    crate::win_proc::no_window(&mut cmd);
+    let out = cmd.output().ok()?;
+    if !out.status.success() { return None; }
+    let text = String::from_utf8_lossy(&out.stdout);
+    // Line looks like:  DigitalProductId    REG_BINARY    A400000003000000...
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with(value_name) { continue; }
+        let mut parts = trimmed.split_whitespace().skip(1);
+        let ty = parts.next().unwrap_or("");
+        if ty != "REG_BINARY" { continue; }
+        let hex = parts.next().unwrap_or("");
+        if hex.len() < 134 { continue; } // 67 bytes minimum
+        let mut bytes = Vec::with_capacity(hex.len() / 2);
+        for i in (0..hex.len()).step_by(2) {
+            let byte = u8::from_str_radix(&hex[i..i+2], 16).ok()?;
+            bytes.push(byte);
+        }
+        return Some(bytes);
+    }
+    None
+}
+
+/// Extract the CD-key from HKLM's Windows NT DigitalProductId. Returns None
+/// on modern Windows 10/11 (Microsoft randomises the blob at install time),
+/// which is intentional — we prefer showing "partial only" over shipping a
+/// junk decoded string.
+#[cfg(target_os = "windows")]
+fn recover_windows_full_key() -> Option<String> {
+    let blob = reg_read_binary(
+        r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+        "DigitalProductId",
+    )?;
+    decode_digital_product_id(&blob)
+}
+
+/// Known Microsoft-published KMS/GVLK strings. Not secret — Microsoft
+/// publishes these on learn.microsoft.com for every VL SKU. Matched by the
+/// SPP Name substring when ProductKeyChannel == "Volume:GVLK".
+#[cfg(target_os = "windows")]
+const GVLK_TABLE: &[(&str, &str)] = &[
+    // Windows 11 VL — most common editions.
+    ("Windows 11 Pro",              "W269N-WFGWX-YVC9B-4J6C9-T83GX"),
+    ("Windows 11 Enterprise",       "NPPR9-FWDCX-D2C8J-H872K-2YT43"),
+    ("Windows 11 Education",        "NW6C2-QMPVW-D7KKK-3GKT6-VCFB2"),
+    // Windows 10 VL.
+    ("Windows 10 Pro",              "W269N-WFGWX-YVC9B-4J6C9-T83GX"),
+    ("Windows 10 Enterprise",       "NPPR9-FWDCX-D2C8J-H872K-2YT43"),
+    ("Windows 10 Education",        "NW6C2-QMPVW-D7KKK-3GKT6-VCFB2"),
+    // Office 2024 LTSC / ProPlus VL.
+    ("Office24ProPlus2024VL",       "XJ2XN-FW8RK-P4HMP-DKDBV-GQ7XM"),
+    ("ProPlus2024Volume",           "XJ2XN-FW8RK-P4HMP-DKDBV-GQ7XM"),
+    ("Office LTSC Professional Plus 2024", "XJ2XN-FW8RK-P4HMP-DKDBV-GQ7XM"),
+    // Office 2021 LTSC VL.
+    ("ProPlus2021Volume",           "FXYTK-NJJ8C-GB6DW-3DYQT-6F7TH"),
+    ("Office LTSC Professional Plus 2021", "FXYTK-NJJ8C-GB6DW-3DYQT-6F7TH"),
+    // Office 2019 VL.
+    ("ProPlus2019Volume",           "NMMKJ-6RK4F-KMJVX-8D9MJ-6MWKP"),
+    // Office 2016 VL.
+    ("ProPlusVL_KMS_Client",        "XQNVK-8JYDB-WJ9W3-YJ8YR-WFG99"),
+    ("StandardVL_KMS_Client",       "JNRGM-WHDWX-FJJG3-K47QV-DRTFM"),
+];
+
+#[cfg(target_os = "windows")]
+fn gvlk_for(name: &str) -> Option<&'static str> {
+    for (needle, key) in GVLK_TABLE {
+        if name.contains(needle) { return Some(*key); }
+    }
+    None
 }
 
 fn license_status_text(code: i32) -> &'static str {

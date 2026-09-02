@@ -181,6 +181,8 @@ export default function AgentInventoryTab({ agentId }: { agentId: string }) {
       sku_name?: string;
       activation_channel?: string;
       partial_product_key?: string;
+      full_product_key?: string | null;
+      full_key_source?: 'decoded' | 'gvlk_public' | 'unavailable';
       license_status?: string;
       license_status_code?: number;
     }>;
@@ -381,11 +383,21 @@ export default function AgentInventoryTab({ agentId }: { agentId: string }) {
                   {sku.license_status ?? '—'}
                 </span>
               </div>
-              {sku.partial_product_key && (
+              {sku.full_product_key ? (
+                <div className="mt-1.5">
+                  <p className="text-[10px] uppercase tracking-wide text-emerald-400 mb-0.5">
+                    Product key {sku.full_key_source === 'gvlk_public' ? '(public KMS/GVLK)' : '(decoded from registry)'}
+                  </p>
+                  <p className="font-mono text-sm text-emerald-200 select-all break-all">{sku.full_product_key}</p>
+                </div>
+              ) : sku.partial_product_key ? (
                 <p className="text-[11px] text-gray-500 mt-1">
                   Installed key ends in <span className="font-mono text-gray-300">…{sku.partial_product_key}</span>
+                  <span className="text-[10px] text-gray-600 block mt-0.5">
+                    Full retail key not retrievable — Microsoft anti-piracy limitation since Windows 10 1607.
+                  </span>
                 </p>
-              )}
+              ) : null}
             </div>
           ))}
         </Card>
@@ -397,6 +409,8 @@ export default function AgentInventoryTab({ agentId }: { agentId: string }) {
         const prod = ((hw as { product_licenses?: unknown[] }).product_licenses ?? []) as Array<{
           name?: string;
           partial_product_key?: string;
+          full_product_key?: string | null;
+          full_key_source?: 'decoded' | 'gvlk_public' | 'unavailable';
           activation_channel?: string;
           license_status?: string;
           license_status_code?: number;
@@ -405,7 +419,7 @@ export default function AgentInventoryTab({ agentId }: { agentId: string }) {
         return (
           <Card title={`Software product keys (${prod.length})`}>
             <p className="text-[11px] text-gray-500 mb-2">
-              Microsoft product keys tracked by SPP (Office, Visio, Project, etc.). Only the last 5 characters of each installed key are exposed by the OS.
+              Microsoft product keys tracked by SPP (Office, Visio, Project, etc.). Volume-license SKUs show the public KMS/GVLK key; retail keys are truncated to the last 5 chars by the OS.
             </p>
             <div className="space-y-1.5">
               {prod.map((sku, i) => (
@@ -419,11 +433,21 @@ export default function AgentInventoryTab({ agentId }: { agentId: string }) {
                       {sku.license_status ?? '—'}
                     </span>
                   </div>
-                  {sku.partial_product_key && (
+                  {sku.full_product_key ? (
+                    <div className="mt-1.5">
+                      <p className="text-[10px] uppercase tracking-wide text-emerald-400 mb-0.5">
+                        Product key {sku.full_key_source === 'gvlk_public' ? '(public KMS/GVLK)' : '(decoded)'}
+                      </p>
+                      <p className="font-mono text-sm text-emerald-200 select-all break-all">{sku.full_product_key}</p>
+                    </div>
+                  ) : sku.partial_product_key ? (
                     <p className="text-[11px] text-gray-500 mt-1">
                       Key ends in <span className="font-mono text-gray-300">…{sku.partial_product_key}</span>
+                      <span className="text-[10px] text-gray-600 block mt-0.5">
+                        Full retail key not retrievable via any OS API.
+                      </span>
                     </p>
-                  )}
+                  ) : null}
                 </div>
               ))}
             </div>
