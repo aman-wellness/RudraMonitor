@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import { supabase } from '@/lib/supabase';
+import { useFeatures } from '@/lib/useFeatures';
 
 type Asset = {
   id: string;
@@ -113,6 +114,11 @@ export default function HardwareInventory() {
   // that device_serial as its SMBIOS chassis serial.
   const [inventoryByAsset, setInventoryByAsset] = useState<Record<string, InventoryMatch>>({});
   const [inventoryFor, setInventoryFor] = useState<{ asset: Asset; match: InventoryMatch } | null>(null);
+  // Add-on gate: only orgs on the it_hardware_inventory feature see the
+  // agent → asset cross-link. Base plans still see the raw inventory on
+  // the agent-detail page, this add-on is what buys the register-side
+  // cross-reference (matched agent badge, at-risk chips, drawer).
+  const { it_hardware_inventory_enabled: invAddon } = useFeatures();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -130,9 +136,14 @@ export default function HardwareInventory() {
       // View: hardware_assets_with_agent (migration 0154). We only need the
       // id + augment columns — full inventory rows can be big, so the row-
       // level "click for details" popover re-queries the specific asset.
-      supabase.from('hardware_assets_with_agent')
-        .select('id, matched_agent_id, matched_agent_name, matched_machine_name, matched_agent_version, inventory_collected_at, inventory_hardware, inventory_battery, inventory_system_events, inventory_summary')
-        .range(0, 9999),
+      // Add-on gate: skip the fetch entirely when the org isn't subscribed
+      // to it_hardware_inventory — no wasted round-trip, no risk of the
+      // augment leaking through a stale useState.
+      invAddon
+        ? supabase.from('hardware_assets_with_agent')
+            .select('id, matched_agent_id, matched_agent_name, matched_machine_name, matched_agent_version, inventory_collected_at, inventory_hardware, inventory_battery, inventory_system_events, inventory_summary')
+            .range(0, 9999)
+        : Promise.resolve({ data: [] as Array<InventoryMatch & { id: string }>, error: null }),
     ]);
     setRows((a.data ?? []) as Asset[]);
 
@@ -172,7 +183,7 @@ export default function HardwareInventory() {
     setAssetHistoryCounts(counts);
 
     setLoading(false);
-  }, []);
+  }, [invAddon]);
 
   const openHistory = async (asset: Asset) => {
     setHistoryFor(asset);

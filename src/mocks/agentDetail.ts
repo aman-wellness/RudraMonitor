@@ -365,6 +365,7 @@ export const detailBottomTabs = [
   { id: 'timeline', label: 'Timeline', icon: 'ri-time-line' },
   { id: 'alerts', label: 'Alerts', icon: 'ri-notification-3-line' },
   { id: 'system', label: 'System Health', icon: 'ri-heart-pulse-line' },
+  { id: 'inventory', label: 'Inventory', icon: 'ri-hard-drive-2-line' },
   { id: 'capture', label: 'Capture Controls', icon: 'ri-camera-line' },
   { id: 'tools', label: 'Endpoint Tools', icon: 'ri-tools-line' },
 ] as const;

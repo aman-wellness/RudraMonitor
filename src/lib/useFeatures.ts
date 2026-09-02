@@ -31,7 +31,12 @@ export type FeatureCode =
   | 'live'
   | 'remote'
   | 'dlp'
-  | 'employee_management';
+  | 'employee_management'
+  // Add-on: links agent-collected inventory (hardware / license / event log)
+  // to the org's IT Hardware register by SMBIOS chassis serial. Base plans
+  // get the raw inventory on the agent-detail page; only orgs on this add-on
+  // see the IT Hardware page cross-link + at-risk badges.
+  | 'it_hardware_inventory';
 
 export type OrgFeatures = {
   // Modern flags — always check these going forward.
@@ -42,6 +47,7 @@ export type OrgFeatures = {
   remote_enabled: boolean;
   dlp_enabled: boolean;
   em_enabled: boolean;
+  it_hardware_inventory_enabled: boolean;
 
   // Legacy compatibility for older components that import these names.
   em_active: boolean;
@@ -95,6 +101,7 @@ function emptyState() {
     remote_enabled: false,
     dlp_enabled: false,
     em_enabled: false,
+    it_hardware_inventory_enabled: false,
     em_active: false,
     em_subscribed: false,
     em_subscribed_since: null as string | null,
@@ -168,6 +175,7 @@ export function useFeatures(): OrgFeatures {
       remote_enabled: has('remote'),
       dlp_enabled: has('dlp'),
       em_enabled: has('employee_management') || legacyEm,
+      it_hardware_inventory_enabled: has('it_hardware_inventory'),
 
       em_active: !!metaRow?.em_active,
       em_subscribed: !!metaRow?.em_subscribed,
