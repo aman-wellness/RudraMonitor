@@ -63,8 +63,84 @@ fn collect_hardware() -> Value {
     if let Some(bios) = probe_bios() { out["bios"] = bios; }
     if let Some(os) = probe_os() { out["os"] = os; }
     if let Some(nics) = probe_network_adapters() { out["network_adapters"] = nics; }
+    if let Some(lic) = probe_windows_license() { out["license"] = lic; }
     out
 }
+
+/// Windows activation + product key. What we can and can't get:
+///   * OEM key baked into UEFI BIOS: retrievable via WMI
+///     SoftwareLicensingService.OA3xOriginalProductKey. Present on OEM-
+///     preloaded Windows, empty on machines where Windows was re-imaged
+///     onto non-OEM media.
+///   * Currently-installed product key: NOT retrievable. Microsoft
+///     removed the ability circa Windows 10 1607 for anti-piracy reasons;
+///     wmic returns only the last 5 chars ("partial product key") via
+///     SoftwareLicensingProduct.PartialProductKey. That's what we send.
+///   * Activation status: SoftwareLicensingProduct.LicenseStatus (0=
+///     unlicensed, 1=licensed, 2=OOB grace, 3=OOT grace, 4=non-genuine
+///     grace, 5=notification, 6=extended grace).
+///   * Windows edition (Home / Pro / Enterprise / Education) plus the
+///     activation channel: Retail / OEM_DM / OEM_SLP / Volume:MAK /
+///     Volume:GVLK — from SoftwareLicensingProduct.Name +
+///     .ProductKeyChannel.
+///
+/// One row per active Windows SKU is returned (typically just one). All
+/// probes are read-only and only require standard user context.
+#[cfg(target_os = "windows")]
+fn probe_windows_license() -> Option<Value> {
+    // 1. OEM key from BIOS.
+    let oem_key = wmic(&[
+        "path", "SoftwareLicensingService", "get", "OA3xOriginalProductKey", "/format:csv",
+    ]).and_then(|out| {
+        parse_csv(&out).into_iter().next()
+            .and_then(|r| r.get("OA3xOriginalProductKey").cloned())
+            .filter(|s| !s.is_empty())
+    });
+
+    // 2. Active SKU: LicenseStatus + PartialProductKey + Name + Channel.
+    let sku_out = wmic(&[
+        "path", "SoftwareLicensingProduct",
+        "where", "PartialProductKey <> null",
+        "get", "Name,LicenseStatus,PartialProductKey,ProductKeyChannel,GenuineStatus",
+        "/format:csv",
+    ])?;
+    let rows = parse_csv(&sku_out);
+    let mut skus: Vec<Value> = Vec::new();
+    for r in rows {
+        let name = r.get("Name").cloned().unwrap_or_default();
+        if !name.contains("Windows") { continue; }
+        let status_code = r.get("LicenseStatus").and_then(|s| s.parse::<i32>().ok());
+        skus.push(json!({
+            "sku_name": name,
+            "activation_channel": r.get("ProductKeyChannel").cloned().unwrap_or_default(),
+            "partial_product_key": r.get("PartialProductKey").cloned().unwrap_or_default(),
+            "license_status_code": status_code,
+            "license_status": license_status_text(status_code.unwrap_or(-1)),
+            "genuine_status_code": r.get("GenuineStatus").and_then(|s| s.parse::<i32>().ok()),
+        }));
+    }
+
+    Some(json!({
+        "oem_product_key": oem_key,
+        "active_skus": skus,
+    }))
+}
+
+fn license_status_text(code: i32) -> &'static str {
+    match code {
+        0 => "Unlicensed",
+        1 => "Licensed",
+        2 => "Out-of-box grace",
+        3 => "Out-of-tolerance grace",
+        4 => "Non-genuine grace",
+        5 => "Notification",
+        6 => "Extended grace",
+        _ => "Unknown",
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn probe_windows_license() -> Option<Value> { None }
 
 #[cfg(target_os = "windows")]
 fn probe_cpu() -> Option<Value> {
@@ -387,11 +463,35 @@ fn build_summary(hardware: &Value, battery: &Option<Value>, events: &Value) -> V
         .and_then(|b| b.get("health_pct"))
         .and_then(|h| h.as_i64());
     let battery_health_low = battery_health.map(|h| h < 75).unwrap_or(false);
+
+    // Pull the first SKU's status + edition so the fleet-list badge can
+    // flag unlicensed / non-genuine machines at a glance without decoding
+    // the whole license section.
+    let (windows_licensed, windows_edition) = hardware
+        .get("license")
+        .and_then(|l| l.get("active_skus"))
+        .and_then(|s| s.as_array())
+        .and_then(|arr| arr.first())
+        .map(|sku| {
+            let licensed = sku.get("license_status_code")
+                .and_then(|v| v.as_i64())
+                .map(|c| c == 1)
+                .unwrap_or(false);
+            let edition = sku.get("sku_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            (licensed, edition)
+        })
+        .unwrap_or((false, String::new()));
+
     json!({
         "disk_predict_fail": disk_predict_fail,
         "event_error_count_24h": event_error_count,
         "battery_health_low": battery_health_low,
         "battery_health_pct": battery_health,
+        "windows_licensed": windows_licensed,
+        "windows_edition": windows_edition,
         "agent_version": env!("CARGO_PKG_VERSION"),
     })
 }
