@@ -107,6 +107,9 @@ pub fn collect() -> InventoryPayload {
 
 fn collect_hardware() -> Value {
     let mut out = json!({});
+    // OS family — read by the dashboard so it can render Mac chips vs
+    // Windows chips instead of pretending every agent is Windows.
+    out["os_type"] = Value::String(std::env::consts::OS.to_string());
     // System serial FIRST — this is the string that's printed on the
     // sticker on the back of every laptop/desktop and what admins type
     // into the IT Hardware register's device_serial field. Ship it at
@@ -265,8 +268,8 @@ fn probe_system_serial() -> Option<Value> {
     None
 }
 
-#[cfg(not(target_os = "windows"))]
-fn probe_system_serial() -> Option<Value> { None }
+// Non-Windows probe_system_serial variants live further down alongside the
+// rest of the macOS / Linux platform gates.
 
 #[cfg(target_os = "windows")]
 fn probe_cpu() -> Option<Value> {
@@ -491,22 +494,180 @@ fn probe_network_adapters() -> Option<Value> {
     if nics.is_empty() { None } else { Some(json!(nics)) }
 }
 
-#[cfg(not(target_os = "windows"))]
+// -----------------------------------------------------------------------------
+// macOS probes. system_profiler -json is the canonical machine-readable
+// entry point (in-box since 10.12); pmset for battery health. No sudo
+// required for any of these paths.
+// -----------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+fn sp_json(data_type: &str) -> Option<Value> {
+    let out = Command::new("/usr/sbin/system_profiler")
+        .args([data_type, "-json"])
+        .output()
+        .ok()?;
+    if !out.status.success() { return None; }
+    serde_json::from_slice::<Value>(&out.stdout).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn probe_cpu() -> Option<Value> {
+    let root = sp_json("SPHardwareDataType")?;
+    let item = root.get("SPHardwareDataType")?.as_array()?.first()?;
+    Some(json!({
+        "name": item.get("chip_type").or_else(|| item.get("cpu_type")).and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        "cores": item.get("number_processors").and_then(|v| v.as_i64()),
+        "logical_processors": item.get("number_processors").and_then(|v| v.as_i64()),
+        "socket": "",
+    }))
+}
+
+#[cfg(target_os = "macos")]
+fn probe_memory() -> Option<Value> {
+    let root = sp_json("SPHardwareDataType")?;
+    let item = root.get("SPHardwareDataType")?.as_array()?.first()?;
+    // On Apple Silicon system_profiler reports "16 GB" as a string; parse it.
+    let total_str = item.get("physical_memory").and_then(|v| v.as_str()).unwrap_or("");
+    let total_gb: Option<f64> = total_str.split_whitespace().next().and_then(|s| s.parse::<f64>().ok());
+    let total_bytes = total_gb.map(|g| (g * 1_073_741_824.0) as u64).unwrap_or(0);
+    Some(json!({
+        "total_bytes": total_bytes,
+        "total_gb": total_gb.map(|g| (g * 100.0).round() / 100.0),
+        "slots": [],
+    }))
+}
+
+#[cfg(target_os = "macos")]
+fn probe_disks() -> Option<Value> {
+    // SPStorageDataType lists mounted volumes; SPNVMeDataType / SPSerialATA-
+    // DataType have physical devices with SMART status.
+    let mut disks = Vec::new();
+    if let Some(root) = sp_json("SPNVMeDataType") {
+        if let Some(arr) = root.get("SPNVMeDataType").and_then(|v| v.as_array()) {
+            for controller in arr {
+                if let Some(items) = controller.get("_items").and_then(|v| v.as_array()) {
+                    for d in items {
+                        let smart = d.get("smart_status").and_then(|v| v.as_str()).unwrap_or("");
+                        disks.push(json!({
+                            "model": d.get("device_model").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                            "size_bytes": d.get("size_in_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
+                            "size_gb": d.get("size_in_bytes").and_then(|v| v.as_u64()).map(|b| (b as f64 / 1_073_741_824.0).round() as u64).unwrap_or(0),
+                            "serial_number": d.get("device_serial").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                            "status": smart.to_string(),
+                            "predict_failure": !smart.eq_ignore_ascii_case("verified") && !smart.is_empty(),
+                            "media_type": "NVMe",
+                            "interface": "NVMe",
+                        }));
+                    }
+                }
+            }
+        }
+    }
+    if disks.is_empty() { None } else { Some(json!(disks)) }
+}
+
+#[cfg(target_os = "macos")]
+fn probe_gpu() -> Option<Value> {
+    let root = sp_json("SPDisplaysDataType")?;
+    let arr = root.get("SPDisplaysDataType")?.as_array()?;
+    let gpus: Vec<Value> = arr.iter().filter_map(|g| {
+        let name = g.get("sppci_model").and_then(|v| v.as_str())?.to_string();
+        Some(json!({
+            "name": name,
+            "vram_bytes": g.get("spdisplays_vram").and_then(|v| v.as_str()).and_then(|s| {
+                s.split_whitespace().next()?.parse::<u64>().ok().map(|n| n * 1_073_741_824)
+            }),
+            "driver_version": g.get("sppci_bus").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            "processor": g.get("sppci_cores").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        }))
+    }).collect();
+    if gpus.is_empty() { None } else { Some(json!(gpus)) }
+}
+
+#[cfg(target_os = "macos")]
+fn probe_motherboard() -> Option<Value> {
+    let root = sp_json("SPHardwareDataType")?;
+    let item = root.get("SPHardwareDataType")?.as_array()?.first()?;
+    Some(json!({
+        "manufacturer": "Apple",
+        "model": item.get("machine_model").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        "serial_number": item.get("serial_number").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        "version": item.get("model_number").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+    }))
+}
+
+#[cfg(target_os = "macos")]
+fn probe_bios() -> Option<Value> {
+    let root = sp_json("SPHardwareDataType")?;
+    let item = root.get("SPHardwareDataType")?.as_array()?.first()?;
+    Some(json!({
+        "manufacturer": "Apple",
+        "version": item.get("boot_rom_version").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        "smbios_version": item.get("SMC_version_system").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        "release_date": "",
+    }))
+}
+
+#[cfg(target_os = "macos")]
+fn probe_os() -> Option<Value> {
+    let root = sp_json("SPSoftwareDataType")?;
+    let item = root.get("SPSoftwareDataType")?.as_array()?.first()?;
+    let os_ver = item.get("os_version").and_then(|v| v.as_str()).unwrap_or("");
+    Some(json!({
+        "name": "macOS",
+        "version": os_ver,
+        "build": item.get("kernel_version").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        "architecture": std::env::consts::ARCH,
+        "install_date": "",
+    }))
+}
+
+#[cfg(target_os = "macos")]
+fn probe_network_adapters() -> Option<Value> {
+    let root = sp_json("SPNetworkDataType")?;
+    let arr = root.get("SPNetworkDataType")?.as_array()?;
+    let nics: Vec<Value> = arr.iter().filter_map(|n| {
+        let name = n.get("_name").and_then(|v| v.as_str())?.to_string();
+        Some(json!({
+            "name": name,
+            "mac_address": n.get("hardware_mac_address").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            "speed_bps": serde_json::Value::Null,
+            "adapter_type": n.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        }))
+    }).collect();
+    if nics.is_empty() { None } else { Some(json!(nics)) }
+}
+
+#[cfg(target_os = "macos")]
+fn probe_system_serial() -> Option<Value> {
+    let root = sp_json("SPHardwareDataType")?;
+    let item = root.get("SPHardwareDataType")?.as_array()?.first()?;
+    let sn = item.get("serial_number").and_then(|v| v.as_str())?.trim().to_string();
+    if sn.is_empty() { None } else { Some(Value::String(sn)) }
+}
+
+// -----------------------------------------------------------------------------
+// Linux / other-Unix — no probes yet; fleet is Windows + Mac.
+// -----------------------------------------------------------------------------
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn probe_cpu() -> Option<Value> { None }
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn probe_memory() -> Option<Value> { None }
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn probe_disks() -> Option<Value> { None }
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn probe_gpu() -> Option<Value> { None }
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn probe_motherboard() -> Option<Value> { None }
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn probe_bios() -> Option<Value> { None }
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn probe_os() -> Option<Value> { None }
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn probe_network_adapters() -> Option<Value> { None }
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+fn probe_system_serial() -> Option<Value> { None }
 
 // ---------------------------------------------------------------------------
 // Installed software — HKLM Uninstall enum (fast, no wmic product).
@@ -564,7 +725,65 @@ fn collect_software() -> Value {
     json!(items)
 }
 
-#[cfg(not(target_os = "windows"))]
+/// macOS installed apps — system_profiler SPApplicationsDataType is
+/// authoritative but SLOW (~30-60 s on a laptop with 400+ apps). Cheaper:
+/// enumerate /Applications and ~/Applications and read the CFBundle*
+/// keys from each Info.plist.
+#[cfg(target_os = "macos")]
+fn collect_software() -> Value {
+    fn scan(dir: &std::path::Path, out: &mut Vec<Value>, seen: &mut std::collections::HashSet<String>) {
+        let entries = match std::fs::read_dir(dir) { Ok(e) => e, Err(_) => return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("app") { continue; }
+            let plist = path.join("Contents/Info.plist");
+            let bytes = match std::fs::read(&plist) { Ok(b) => b, Err(_) => continue };
+            // Cheap XML-plist scrape — no crate. macOS ships both binary and
+            // XML Info.plist; the binary ones we skip (would need plist crate).
+            let text = String::from_utf8_lossy(&bytes);
+            if !text.contains("<?xml") { continue; }
+            let name = plist_str(&text, "CFBundleName")
+                .or_else(|| plist_str(&text, "CFBundleDisplayName"))
+                .unwrap_or_else(|| path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string());
+            if name.is_empty() { continue; }
+            let key = name.to_lowercase();
+            if !seen.insert(key) { continue; }
+            let version = plist_str(&text, "CFBundleShortVersionString")
+                .or_else(|| plist_str(&text, "CFBundleVersion"))
+                .unwrap_or_default();
+            let publisher = plist_str(&text, "CFBundleIdentifier").unwrap_or_default();
+            out.push(json!({
+                "name": name,
+                "version": version,
+                "publisher": publisher,
+                "install_date": "",
+            }));
+        }
+    }
+    let mut items: Vec<Value> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    scan(std::path::Path::new("/Applications"), &mut items, &mut seen);
+    if let Some(home) = dirs::home_dir() {
+        scan(&home.join("Applications"), &mut items, &mut seen);
+    }
+    items.sort_by(|a, b| {
+        a["name"].as_str().unwrap_or("").to_lowercase()
+            .cmp(&b["name"].as_str().unwrap_or("").to_lowercase())
+    });
+    json!(items)
+}
+
+#[cfg(target_os = "macos")]
+fn plist_str(text: &str, key: &str) -> Option<String> {
+    let needle = format!("<key>{key}</key>");
+    let start = text.find(&needle)? + needle.len();
+    let after = &text[start..];
+    let open = after.find("<string>")? + "<string>".len();
+    let close = after[open..].find("</string>")?;
+    Some(after[open..open+close].to_string())
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn collect_software() -> Value {
     json!([])
 }
@@ -598,7 +817,51 @@ fn collect_battery() -> Option<Value> {
     }))
 }
 
-#[cfg(not(target_os = "windows"))]
+/// macOS battery health via SPPowerDataType (system_profiler).
+/// health_pct = MaxCapacity / DesignCapacity * 100.
+#[cfg(target_os = "macos")]
+fn collect_battery() -> Option<Value> {
+    let root = sp_json("SPPowerDataType")?;
+    let arr = root.get("SPPowerDataType")?.as_array()?;
+    // Find the "Battery Information" section (schema differs slightly by
+    // macOS version; try a few labels).
+    for section in arr {
+        let key = section.get("_name").and_then(|v| v.as_str()).unwrap_or("");
+        if !key.contains("battery") && !key.contains("Battery") { continue; }
+        // Charge info + health info nested under sppower_battery_*
+        let health = section.get("sppower_battery_health_info");
+        let charge = section.get("sppower_battery_charge_info");
+        let design = health
+            .and_then(|h| h.get("sppower_battery_design_capacity"))
+            .and_then(|v| v.as_i64());
+        let full = health
+            .and_then(|h| h.get("sppower_battery_maximum_capacity"))
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim_end_matches('%').parse::<i64>().ok())));
+        let cycle = health
+            .and_then(|h| h.get("sppower_battery_cycle_count"))
+            .and_then(|v| v.as_i64());
+        let charge_pct = charge
+            .and_then(|c| c.get("sppower_battery_state_of_charge"))
+            .and_then(|v| v.as_i64())
+            .map(|n| n as i32);
+        let health_pct = match (design, full) {
+            (Some(d), Some(f)) if d > 0 => Some(((f as f64 / d as f64) * 100.0).round() as i32),
+            (None, Some(f)) => Some(f as i32), // Apple Silicon often reports "%" directly.
+            _ => None,
+        };
+        return Some(json!({
+            "estimated_charge_pct": charge_pct,
+            "status_code": serde_json::Value::Null,
+            "design_capacity_mwh": design,
+            "full_capacity_mwh": full,
+            "health_pct": health_pct,
+            "cycle_count": cycle,
+        }));
+    }
+    None
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn collect_battery() -> Option<Value> { None }
 
 // ---------------------------------------------------------------------------
@@ -664,7 +927,50 @@ fn collect_system_events() -> Value {
     json!(events)
 }
 
-#[cfg(not(target_os = "windows"))]
+/// macOS system errors via `log show --last 24h --predicate 'messageType ==
+/// "error" OR messageType == "fault"'`. Unified log is chatty, so cap at
+/// 200 lines and take head; we're not shipping the whole log.
+#[cfg(target_os = "macos")]
+fn collect_system_events() -> Value {
+    let out = match Command::new("/usr/bin/log")
+        .args([
+            "show",
+            "--last", "24h",
+            "--style", "compact",
+            "--predicate", "messageType == \"error\" OR messageType == \"fault\"",
+            "--info",
+        ])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return json!([]),
+    };
+    if !out.status.success() { return json!([]); }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut events = Vec::new();
+    for line in text.lines().take(50) {
+        // Compact style: "2026-09-02 12:34:56.789 Df kernel [msg]" — try to
+        // pull timestamp + subsystem + message.
+        let trimmed = line.trim();
+        if trimmed.is_empty() { continue; }
+        let (time, rest) = match trimmed.split_once(' ') {
+            Some(pair) => pair, None => ("", trimmed),
+        };
+        let (_flags, msg) = match rest.trim_start().split_once(' ') {
+            Some(pair) => pair, None => ("", rest),
+        };
+        events.push(json!({
+            "time": time,
+            "event_id": serde_json::Value::Null,
+            "level": if trimmed.contains("<Fault>") { "critical" } else { "error" },
+            "source": "macOS log",
+            "message": msg.chars().take(400).collect::<String>(),
+        }));
+    }
+    json!(events)
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn collect_system_events() -> Value {
     json!([])
 }
@@ -708,6 +1014,7 @@ fn build_summary(hardware: &Value, battery: &Option<Value>, events: &Value) -> V
         .unwrap_or((false, String::new()));
 
     json!({
+        "os_type": std::env::consts::OS,
         "disk_predict_fail": disk_predict_fail,
         "event_error_count_24h": event_error_count,
         "battery_health_low": battery_health_low,

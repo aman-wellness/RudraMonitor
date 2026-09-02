@@ -151,6 +151,7 @@ export default function AgentInventoryTab({ agentId }: { agentId: string }) {
 
   const hw = row.hardware ?? {};
   const s = (row.summary ?? {}) as {
+    os_type?: string;
     disk_predict_fail?: boolean;
     event_error_count_24h?: number;
     battery_health_low?: boolean;
@@ -158,6 +159,16 @@ export default function AgentInventoryTab({ agentId }: { agentId: string }) {
     windows_licensed?: boolean;
     windows_edition?: string;
   };
+  // Prefer summary.os_type, then fall back to hardware.os_type, then
+  // hardware.os.name for the very first inventory rows that predate the
+  // os_type addition.
+  const osType = (
+    s.os_type
+    ?? (hw as { os_type?: string }).os_type
+    ?? ((hw as { os?: { name?: string } }).os?.name?.toLowerCase().includes('mac') ? 'macos' : undefined)
+    ?? 'windows'
+  ).toLowerCase();
+  const isMac = osType === 'macos' || osType === 'darwin';
   const battery = row.battery as {
     health_pct?: number | null;
     full_capacity_mwh?: number | null;
@@ -236,7 +247,21 @@ export default function AgentInventoryTab({ agentId }: { agentId: string }) {
           <Chip label="Disk" value={s.disk_predict_fail ? 'Predict fail' : 'OK'} tone={s.disk_predict_fail ? 'bad' : 'good'} />
           <Chip label="Battery" value={s.battery_health_pct != null ? `${s.battery_health_pct}%` : '—'} tone={s.battery_health_low ? 'warn' : s.battery_health_pct != null ? 'good' : 'muted'} />
           <Chip label="Errors 24h" value={String(s.event_error_count_24h ?? 0)} tone={(s.event_error_count_24h ?? 0) >= 10 ? 'warn' : 'muted'} />
-          <Chip label="Windows" value={s.windows_licensed ? 'Licensed' : 'Not activated'} tone={s.windows_licensed ? 'good' : 'warn'} />
+          {isMac ? (
+            <Chip
+              label="macOS"
+              value={
+                (hw as { os?: { version?: string } }).os?.version ?? 'macOS'
+              }
+              tone="good"
+            />
+          ) : (
+            <Chip
+              label="Windows"
+              value={s.windows_licensed ? 'Licensed' : 'Not activated'}
+              tone={s.windows_licensed ? 'good' : 'warn'}
+            />
+          )}
         </div>
       </div>
 
@@ -244,7 +269,12 @@ export default function AgentInventoryTab({ agentId }: { agentId: string }) {
       <Card title="Hardware">
         {!cpu && !memory && !os && !motherboard && !bios && gpus.length === 0 && disks.length === 0 && (
           <p className="text-xs text-gray-500 py-2">
-            Hardware not collected on this agent yet. Older agent builds (before v0.7.38) used <code className="font-mono text-gray-400">wmic</code> which is deprecated on Windows 11 22H2+ and no longer ships by default — data will populate on the next daily cycle once the agent auto-updates.
+            Hardware not collected on this agent yet.{' '}
+            {isMac ? (
+              <>Mac inventory (system_profiler + pmset) lands in agent v0.7.39 — data will populate on the next daily cycle once the agent auto-updates, or click <strong>Refresh now</strong> above.</>
+            ) : (
+              <>Older Windows builds (before v0.7.38) used <code className="font-mono text-gray-400">wmic</code> which is deprecated on Windows 11 22H2+ — data will populate on the next daily cycle once the agent auto-updates, or click <strong>Refresh now</strong> above.</>
+            )}
           </p>
         )}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3">
@@ -329,8 +359,8 @@ export default function AgentInventoryTab({ agentId }: { agentId: string }) {
         )}
       </Card>
 
-      {/* Windows license */}
-      {license && (
+      {/* Windows license — hidden on Mac */}
+      {!isMac && license && (
         <Card title="Windows license">
           {license.oem_product_key ? (
             <div className="mb-3 px-3 py-2 rounded bg-emerald-500/5 border border-emerald-500/20">
@@ -361,8 +391,9 @@ export default function AgentInventoryTab({ agentId }: { agentId: string }) {
         </Card>
       )}
 
-      {/* Product licenses (Office / Visio / Project / non-Windows MS SKUs) */}
-      {(() => {
+      {/* Product licenses (Office / Visio / Project / non-Windows MS SKUs).
+          Hidden on Mac — Apple hosts don't expose Microsoft SPP keys. */}
+      {!isMac && (() => {
         const prod = ((hw as { product_licenses?: unknown[] }).product_licenses ?? []) as Array<{
           name?: string;
           partial_product_key?: string;
