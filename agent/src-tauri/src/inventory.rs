@@ -447,7 +447,16 @@ fn collect_system_events() -> Value {
     ]);
     cmd.stdout(Stdio::piped()).stderr(Stdio::null());
     crate::win_proc::no_window(&mut cmd);
-    let out = cmd.output().ok()?;
+    // Return early on any wevtutil failure with an empty array — never
+    // fatal for the inventory cycle. Prior code tried `?` on the .ok()
+    // which doesn't compile because the fn returns `Value`, not `Option`.
+    let out = match cmd.output() {
+        Ok(o) => o,
+        Err(e) => {
+            log::warn!("inventory: wevtutil spawn failed: {e}");
+            return json!([]);
+        }
+    };
     let text = String::from_utf8_lossy(&out.stdout);
     // Very light XML pull — one entry per <Event>...</Event>. No dependency
     // on an XML crate; the schema is stable and we only need five fields.
