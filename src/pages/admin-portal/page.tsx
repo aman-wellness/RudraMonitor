@@ -1752,33 +1752,139 @@ function AppAccessPicker({
         </label>
       </div>
       {!all && !disabled && (
-        <div className="bg-dark-900 border border-dark-700 rounded-lg p-3 max-h-72 overflow-y-auto space-y-1.5">
-          {APP_ACCESS_CODES.map((c) => {
-            const ticked = selected.has(c.code);
-            const level = selected.get(c.code) ?? 'view';
+        <div className="bg-dark-900 border border-dark-700 rounded-lg p-3 max-h-96 overflow-y-auto space-y-1.5">
+          {APP_ACCESS_CODES
+            .filter((c) => !(c as { parent?: string }).parent)
+            .map((c) => {
+              const children = (APP_ACCESS_CODES as ReadonlyArray<{ code: AppAccessCode; label: string; hint: string; parent?: string }>)
+                .filter((x) => x.parent === c.code);
+              return (
+                <FeatureRow
+                  key={c.code}
+                  code={c.code}
+                  label={c.label}
+                  hint={c.hint}
+                  children={children}
+                  ticked={selected.has(c.code)}
+                  level={selected.get(c.code) ?? 'view'}
+                  selected={selected}
+                  onToggle={toggle}
+                  onLevel={setLevel}
+                />
+              );
+            })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* Feature-access row with expandable sub-features.
+   Parents render as a normal checkbox + level dropdown; when they have
+   children, a chevron next to the label expands a nested block with the
+   sub-feature checkboxes. Ticking the parent grants ALL children the same
+   level (implicitly — useAppAccess auto-expands parent→children); ticking
+   a child grants just that sub-feature. Admins who want the strictest
+   scope leave the parent unticked and only tick specific children. */
+function FeatureRow({
+  code, label, hint, children, ticked, level,
+  selected, onToggle, onLevel,
+}: {
+  code: AppAccessCode;
+  label: string;
+  hint: string;
+  children: ReadonlyArray<{ code: AppAccessCode; label: string; hint: string }>;
+  ticked: boolean;
+  level: AccessLevel;
+  selected: Map<AppAccessCode, AccessLevel>;
+  onToggle: (code: AppAccessCode) => void;
+  onLevel: (code: AppAccessCode, lv: AccessLevel) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const anyChildTicked = children.some((c) => selected.has(c.code));
+  const allChildrenTicked = children.length > 0 && children.every((c) => selected.has(c.code));
+  return (
+    <div className="border-b border-dark-700/40 last:border-b-0 pb-1.5 mb-1.5">
+      <div className="flex items-center gap-2 hover:bg-dark-700/40 rounded px-1.5 py-1">
+        {children.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setOpen(!open)}
+            className="w-4 h-4 flex items-center justify-center text-gray-500 hover:text-white text-[10px]"
+            aria-label={open ? 'Collapse sub-features' : 'Expand sub-features'}
+          >
+            {open ? '▾' : '▸'}
+          </button>
+        )}
+        {children.length === 0 && <span className="w-4" />}
+        <label className="flex items-start gap-2 text-[11px] text-gray-300 cursor-pointer flex-1 min-w-0">
+          <input
+            type="checkbox"
+            checked={ticked}
+            onChange={() => onToggle(code)}
+            className="mt-0.5 accent-emerald-500"
+            title={children.length > 0 && !ticked && anyChildTicked ? 'Some sub-features selected' : undefined}
+          />
+          <span className="min-w-0">
+            <span className="text-white font-medium">
+              {label}
+              {children.length > 0 && (
+                <span className="text-[10px] text-gray-500 font-normal ml-1.5">
+                  ({allChildrenTicked ? `all ${children.length}` : anyChildTicked ? `${children.filter((c) => selected.has(c.code)).length}/${children.length}` : children.length} sub-features)
+                </span>
+              )}
+            </span>
+            <span className="block text-[10px] text-gray-500 leading-tight">{hint}</span>
+          </span>
+        </label>
+        <select
+          value={level}
+          onChange={(e) => onLevel(code, e.target.value as AccessLevel)}
+          disabled={!ticked}
+          className="bg-dark-800 border border-dark-700 rounded px-1.5 py-1 text-[10px] text-white disabled:opacity-30 disabled:cursor-not-allowed focus:outline-none focus:border-emerald-500/50"
+        >
+          <option value="view">View only</option>
+          <option value="edit">Edit</option>
+          <option value="full">Full (delete)</option>
+        </select>
+      </div>
+      {open && children.length > 0 && (
+        <div className="ml-6 mt-1 pl-2 border-l border-dark-700/60 space-y-1">
+          {children.map((child) => {
+            const childTicked = selected.has(child.code);
+            const childLevel = selected.get(child.code) ?? 'view';
+            const inheritedFromParent = ticked && !childTicked;
             return (
-              <div key={c.code} className="flex items-center gap-2 hover:bg-dark-700/40 rounded px-1.5 py-1">
-                <label className="flex items-start gap-2 text-[11px] text-gray-300 cursor-pointer flex-1 min-w-0">
+              <div
+                key={child.code}
+                className={`flex items-center gap-2 rounded px-1.5 py-1 ${inheritedFromParent ? 'opacity-60' : 'hover:bg-dark-700/40'}`}
+                title={inheritedFromParent ? 'Granted via parent — untick parent to control individually' : undefined}
+              >
+                <span className="w-4" />
+                <label className={`flex items-start gap-2 text-[11px] cursor-pointer flex-1 min-w-0 ${inheritedFromParent ? 'text-gray-500' : 'text-gray-300'}`}>
                   <input
                     type="checkbox"
-                    checked={ticked}
-                    onChange={() => toggle(c.code)}
+                    checked={childTicked || inheritedFromParent}
+                    disabled={inheritedFromParent}
+                    onChange={() => onToggle(child.code)}
                     className="mt-0.5 accent-emerald-500"
                   />
                   <span className="min-w-0">
-                    <span className="text-white font-medium">{c.label}</span>
-                    <span className="block text-[10px] text-gray-500 leading-tight">{c.hint}</span>
+                    <span className={`${inheritedFromParent ? 'text-gray-400' : 'text-white'} text-[11px]`}>
+                      {child.label.replace(`${label} · `, '')}
+                    </span>
+                    <span className="block text-[10px] text-gray-500 leading-tight">{child.hint}</span>
                   </span>
                 </label>
                 <select
-                  value={level}
-                  onChange={(e) => setLevel(c.code, e.target.value as AccessLevel)}
-                  disabled={!ticked}
+                  value={inheritedFromParent ? level : childLevel}
+                  disabled={inheritedFromParent || !childTicked}
+                  onChange={(e) => onLevel(child.code, e.target.value as AccessLevel)}
                   className="bg-dark-800 border border-dark-700 rounded px-1.5 py-1 text-[10px] text-white disabled:opacity-30 disabled:cursor-not-allowed focus:outline-none focus:border-emerald-500/50"
                 >
-                  <option value="view">View only</option>
+                  <option value="view">View</option>
                   <option value="edit">Edit</option>
-                  <option value="full">Full (delete)</option>
+                  <option value="full">Full</option>
                 </select>
               </div>
             );

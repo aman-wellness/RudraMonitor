@@ -21,16 +21,48 @@ import { useAuth } from '../context/AuthContext';
 // Canonical list of feature codes the dashboard knows about. Keep in
 // lock-step with sidebarLinks in DashboardLayout.tsx + RequireFeature.
 // The Admin Portal "Add / Edit User" UI uses this for the checkbox grid.
+//
+// The `parent` field groups sub-features under a parent code. Checking a
+// PARENT grants access to all its children; children can also be checked
+// individually. useAppAccess expands parent → children automatically so
+// old grants (only the parent code stored) continue to work.
 export const APP_ACCESS_CODES = [
+  // Top-level pages ---------------------------------------------------------
   { code: 'dashboard',           label: 'Dashboard',              hint: 'Org overview, summary cards' },
+
+  // Agents — the detail page has many tabs; sub-codes gate each tab so an
+  // admin can, say, give a Viewer per-agent access without exposing Endpoint
+  // Tools' silent-script buttons.
   { code: 'agents',              label: 'Agents',                 hint: 'Agent list + per-agent detail' },
+  { code: 'agents.list',         label: 'Agents · list grid',     hint: 'Main /agents page (fleet grid)',                 parent: 'agents' },
+  { code: 'agents.detail',       label: 'Agents · detail page',   hint: 'Per-agent header + activity summary',            parent: 'agents' },
+  { code: 'agents.applications', label: 'Agents · Applications',  hint: 'Applications tab — per-app time-per-day',        parent: 'agents' },
+  { code: 'agents.browser',      label: 'Agents · Browser',       hint: 'Browser tab — per-URL time',                     parent: 'agents' },
+  { code: 'agents.videos',       label: 'Agents · Videos',        hint: 'Videos tab — recorded clips',                    parent: 'agents' },
+  { code: 'agents.screenshots',  label: 'Agents · Screenshots',   hint: 'Screenshots tab — periodic captures',            parent: 'agents' },
+  { code: 'agents.timeline',     label: 'Agents · Timeline',      hint: 'Timeline tab — active vs idle bands',            parent: 'agents' },
+  { code: 'agents.alerts',       label: 'Agents · Alerts',        hint: 'Alerts tab — per-agent alert feed',              parent: 'agents' },
+  { code: 'agents.system_health',label: 'Agents · System Health', hint: 'System Health tab — CPU/RAM/disk history',       parent: 'agents' },
+  { code: 'agents.inventory',    label: 'Agents · Inventory',     hint: 'Inventory tab — hardware/software/license/events',parent: 'agents' },
+  { code: 'agents.capture',      label: 'Agents · Capture Controls', hint: 'Capture Controls tab — toggle screenshots/videos/DLP', parent: 'agents' },
+  { code: 'agents.tools',        label: 'Agents · Endpoint Tools',hint: 'Endpoint Tools tab — silent Driver Update / Optimizer', parent: 'agents' },
+
   { code: 'monitoring',          label: 'Live Monitoring',        hint: 'Apps, Browser, Live, Remote, Screenshots, Idle' },
+  { code: 'monitoring.apps',     label: 'Monitoring · Applications', hint: 'Applications tab (fleet-wide)',                parent: 'monitoring' },
+  { code: 'monitoring.browser',  label: 'Monitoring · Browser',   hint: 'Browser tab (fleet-wide)',                        parent: 'monitoring' },
+  { code: 'monitoring.live',     label: 'Monitoring · Live view', hint: 'Live view — real-time WHIP stream',               parent: 'monitoring' },
+  { code: 'monitoring.remote',   label: 'Monitoring · Remote',    hint: 'Remote Desktop — take control',                   parent: 'monitoring' },
+  { code: 'monitoring.screenshots', label: 'Monitoring · Screenshots', hint: 'Screenshots tab (fleet-wide)',                parent: 'monitoring' },
+  { code: 'monitoring.idle',     label: 'Monitoring · Idle',      hint: 'Idle tab (fleet-wide)',                           parent: 'monitoring' },
+
   { code: 'alerts',              label: 'Alerts',                 hint: 'AI-classified alerts feed' },
   { code: 'dlp',                 label: 'DLP',                    hint: 'Data-loss-prevention events' },
   { code: 'system_health',       label: 'System Health',          hint: 'CPU / RAM / disk telemetry' },
   { code: 'performance',         label: 'Performance Reports',    hint: 'Productivity rollups' },
   { code: 'reports',             label: 'Reports',                hint: 'Activity reports / exports' },
   { code: 'setup',               label: 'Agent Setup',            hint: 'Download installers, license keys' },
+
+  // Employees / People & HR ------------------------------------------------
   { code: 'employees',           label: 'Employees',              hint: 'Employee directory + provisioning' },
   { code: 'groups',              label: 'Groups & Teams',         hint: 'Manage M365/Google groups' },
   { code: 'managers',            label: 'Managers',               hint: 'Manager → reports relationships' },
@@ -138,15 +170,37 @@ export function useAppAccess(): AppAccessState {
     // also means "no restriction" (inherit org default = every paid
     // feature, full level).
     const unrestricted = role === 'owner' || role === 'admin' || row?.app_access == null;
-    const allowed: Set<AppAccessCode> = unrestricted
+    const allowedRaw = unrestricted
       ? new Set(ALL_CODES)
       : new Set((row?.app_access ?? []).filter((c): c is AppAccessCode => ALL_CODES.has(c as AppAccessCode)));
+    // Parent → children expansion. Legacy grants stored only the parent
+    // code (e.g. 'agents') — new sub-codes ('agents.inventory' etc.) didn't
+    // exist yet. Expanding the parent to cover all its children keeps
+    // existing users seeing everything they saw before this migration.
+    const allowed: Set<AppAccessCode> = new Set(allowedRaw);
+    for (const c of APP_ACCESS_CODES) {
+      const parent = (c as { parent?: string }).parent;
+      if (parent && allowedRaw.has(parent as AppAccessCode)) {
+        allowed.add(c.code as AppAccessCode);
+      }
+    }
     const levels = new Map<AppAccessCode, AccessLevel>();
     if (!unrestricted && row?.app_access_levels && typeof row.app_access_levels === 'object') {
-      for (const [k, v] of Object.entries(row.app_access_levels)) {
+      const rawLevels = row.app_access_levels;
+      for (const [k, v] of Object.entries(rawLevels)) {
         if (ALL_CODES.has(k as AppAccessCode) && allowed.has(k as AppAccessCode) && isLevel(v)) {
           levels.set(k as AppAccessCode, v);
         }
+      }
+      // Inherit parent's level to any child code that was auto-expanded
+      // (no explicit level entry). Keeps semantics simple: unless the
+      // admin picks a different level for the sub-feature, it takes the
+      // parent's level.
+      for (const c of APP_ACCESS_CODES) {
+        const parent = (c as { parent?: string }).parent;
+        if (!parent || levels.has(c.code as AppAccessCode)) continue;
+        const parentLevel = levels.get(parent as AppAccessCode);
+        if (parentLevel) levels.set(c.code as AppAccessCode, parentLevel);
       }
     }
     const h = buildHelpers(allowed, levels, unrestricted);
