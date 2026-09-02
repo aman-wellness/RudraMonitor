@@ -55,6 +55,12 @@ pub fn collect() -> InventoryPayload {
 
 fn collect_hardware() -> Value {
     let mut out = json!({});
+    // System serial FIRST — this is the string that's printed on the
+    // sticker on the back of every laptop/desktop and what admins type
+    // into the IT Hardware register's device_serial field. Ship it at
+    // the top-level of hardware so the join into hardware_assets is one
+    // hop: hardware->>'system_serial' = hardware_assets.device_serial.
+    if let Some(sn) = probe_system_serial() { out["system_serial"] = sn; }
     if let Some(cpu) = probe_cpu() { out["cpu"] = cpu; }
     if let Some(memory) = probe_memory() { out["memory"] = memory; }
     if let Some(disks) = probe_disks() { out["disks"] = disks; }
@@ -141,6 +147,40 @@ fn license_status_text(code: i32) -> &'static str {
 
 #[cfg(not(target_os = "windows"))]
 fn probe_windows_license() -> Option<Value> { None }
+
+/// System serial (SMBIOS "Chassis" serial) — the string an admin sees on
+/// the OEM sticker and puts into hardware_assets.device_serial. Tried in
+/// this order until we get a non-empty, non-placeholder value:
+///   1. wmic bios get SerialNumber  (canonical SMBIOS chassis serial)
+///   2. wmic csproduct get IdentifyingNumber  (fallback on some OEMs
+///      where BIOS returns the string 'To be filled by O.E.M.')
+///   3. wmic systemenclosure get SerialNumber
+/// Placeholder OEM strings and Dell/HP defaults are filtered out.
+#[cfg(target_os = "windows")]
+fn probe_system_serial() -> Option<Value> {
+    let candidates = [
+        (&["bios", "get", "SerialNumber", "/format:csv"][..], "SerialNumber"),
+        (&["csproduct", "get", "IdentifyingNumber", "/format:csv"][..], "IdentifyingNumber"),
+        (&["systemenclosure", "get", "SerialNumber", "/format:csv"][..], "SerialNumber"),
+    ];
+    let bad = ["", "None", "Default string", "To be filled by O.E.M.", "System Serial Number", "Not Specified", "0"];
+    for (args, col) in candidates {
+        if let Some(out) = wmic(args) {
+            if let Some(row) = parse_csv(&out).into_iter().next() {
+                if let Some(v) = row.get(col) {
+                    let trimmed = v.trim().to_string();
+                    if !bad.iter().any(|b| b.eq_ignore_ascii_case(&trimmed)) {
+                        return Some(Value::String(trimmed));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+fn probe_system_serial() -> Option<Value> { None }
 
 #[cfg(target_os = "windows")]
 fn probe_cpu() -> Option<Value> {

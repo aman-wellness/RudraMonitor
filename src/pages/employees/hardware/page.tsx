@@ -45,6 +45,27 @@ type OrgUser = {
   lwd?: string | null;
 };
 
+type InventoryMatch = {
+  matched_agent_id: string | null;
+  matched_agent_name: string | null;
+  matched_machine_name: string | null;
+  matched_agent_version: string | null;
+  inventory_collected_at: string | null;
+  inventory_hardware: Record<string, unknown> | null;
+  inventory_software: unknown[] | null;
+  inventory_battery: Record<string, unknown> | null;
+  inventory_system_events: Array<Record<string, unknown>> | null;
+  inventory_summary: {
+    disk_predict_fail?: boolean;
+    event_error_count_24h?: number;
+    battery_health_low?: boolean;
+    battery_health_pct?: number | null;
+    windows_licensed?: boolean;
+    windows_edition?: string;
+    agent_version?: string;
+  } | null;
+};
+
 type AssignmentHistory = {
   id: string;
   asset_id: string;
@@ -86,10 +107,16 @@ export default function HardwareInventory() {
   const [historyFor, setHistoryFor] = useState<Asset | null>(null);
   const [historyRows, setHistoryRows] = useState<AssignmentHistory[]>([]);
   const [assetHistoryCounts, setAssetHistoryCounts] = useState<Record<string, number>>({});
+  // Per-asset inventory match. Populated from hardware_assets_with_agent VIEW
+  // (see migration 0154). Keyed by asset.id so each row can render a compact
+  // "Agent" badge + a details popover. Empty when no agent has ever reported
+  // that device_serial as its SMBIOS chassis serial.
+  const [inventoryByAsset, setInventoryByAsset] = useState<Record<string, InventoryMatch>>({});
+  const [inventoryFor, setInventoryFor] = useState<{ asset: Asset; match: InventoryMatch } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [a, u, e, h] = await Promise.all([
+    const [a, u, e, h, inv] = await Promise.all([
       // Explicit range so we get every device (PostgREST defaults to 1000;
       // setting a high range up-front avoids hitting the cap on bigger fleets).
       supabase.from('hardware_assets').select('*').order('created_at', { ascending: false }).range(0, 9999),
@@ -99,8 +126,28 @@ export default function HardwareInventory() {
         .order('display_name').range(0, 9999),
       supabase.from('employees').select('id, doj, lwd, status').range(0, 9999),
       supabase.from('hardware_assignments').select('asset_id').range(0, 9999),
+      // Latest agent inventory joined onto each asset by SMBIOS serial.
+      // View: hardware_assets_with_agent (migration 0154). We only need the
+      // id + augment columns — full inventory rows can be big, so the row-
+      // level "click for details" popover re-queries the specific asset.
+      supabase.from('hardware_assets_with_agent')
+        .select('id, matched_agent_id, matched_agent_name, matched_machine_name, matched_agent_version, inventory_collected_at, inventory_hardware, inventory_battery, inventory_system_events, inventory_summary')
+        .range(0, 9999),
     ]);
     setRows((a.data ?? []) as Asset[]);
+
+    // Build the per-asset inventory-match map. Only entries where an agent
+    // actually reported the serial land here — assets with no agent match
+    // stay out so the badge doesn't render on them.
+    const invMap: Record<string, InventoryMatch> = {};
+    for (const row of (inv.data ?? []) as Array<InventoryMatch & { id: string }>) {
+      if (row.matched_agent_id) {
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { id, ...rest } = row;
+        invMap[id] = rest;
+      }
+    }
+    setInventoryByAsset(invMap);
 
     // Stitch employee.doj / lwd onto org-user rows so the inventory table can
     // render Join / Exit dates inline.
@@ -263,11 +310,36 @@ export default function HardwareInventory() {
                     </td></tr>
                   ) : pageRows.map((r) => {
                     const u = r.assigned_employee_id ? userByEmpId.get(r.assigned_employee_id) : null;
+                    const inv = inventoryByAsset[r.id];
+                    const atRisk = !!inv?.inventory_summary && (
+                      inv.inventory_summary.disk_predict_fail === true
+                      || inv.inventory_summary.battery_health_low === true
+                      || (inv.inventory_summary.event_error_count_24h ?? 0) >= 10
+                      || inv.inventory_summary.windows_licensed === false
+                    );
                     return (
                       <tr key={r.id} className="border-b border-dark-700/50 hover:bg-dark-700/30">
                         <td className="px-4 py-3">
                           <p className="text-white text-xs">{r.device_tag ?? '—'}</p>
                           <p className="text-gray-500 text-xs font-mono">{r.device_serial}</p>
+                          {inv && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); setInventoryFor({ asset: r, match: inv }); }}
+                              className={`mt-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border transition ${
+                                atRisk
+                                  ? 'bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20'
+                                  : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20'
+                              }`}
+                              title="Live inventory from installed agent — click for details"
+                            >
+                              <span className="relative flex h-1.5 w-1.5">
+                                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-60 ${atRisk ? 'bg-amber-400' : 'bg-emerald-400'}`}></span>
+                                <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${atRisk ? 'bg-amber-400' : 'bg-emerald-400'}`}></span>
+                              </span>
+                              {atRisk ? 'Agent · at risk' : 'Agent linked'}
+                            </button>
+                          )}
                         </td>
                         <td className="px-4 py-3 text-gray-300">{r.device_type}</td>
                         <td className="px-4 py-3 text-gray-300">{[r.brand, r.model].filter(Boolean).join(' · ') || '—'}</td>
@@ -384,6 +456,13 @@ export default function HardwareInventory() {
           rows={historyRows}
           users={users}
           onClose={() => { setHistoryFor(null); setHistoryRows([]); }}
+        />
+      )}
+      {inventoryFor && (
+        <InventoryDrawer
+          asset={inventoryFor.asset}
+          match={inventoryFor.match}
+          onClose={() => setInventoryFor(null)}
         />
       )}
 
@@ -888,6 +967,260 @@ function exportHardwareCsv(rows: Asset[], userByEmpId: Map<string, OrgUser>) {
   });
   const stamp = new Date().toISOString().slice(0, 10);
   downloadCsv(`wellness-extract-hardware-.csv`, headers, data);
+}
+
+/* Live inventory drawer — surfaces the agent-collected hardware + license +
+   event-log info matched to a hardware_assets row by SMBIOS serial. This
+   is the "same user ke sath map hona chahiye" surface: the drawer opens
+   from the asset row, so whoever is assigned to that asset in the register
+   IS whose live agent data shows up here. Read-only. */
+function InventoryDrawer({
+  asset,
+  match,
+  onClose,
+}: {
+  asset: Asset;
+  match: InventoryMatch;
+  onClose: () => void;
+}) {
+  const hw = match.inventory_hardware ?? {};
+  const s = match.inventory_summary ?? {};
+  const battery = match.inventory_battery as {
+    health_pct?: number | null;
+    full_capacity_mwh?: number | null;
+    design_capacity_mwh?: number | null;
+  } | null;
+  const license = (hw as { license?: unknown }).license as {
+    oem_product_key?: string | null;
+    active_skus?: Array<{
+      sku_name?: string;
+      activation_channel?: string;
+      partial_product_key?: string;
+      license_status?: string;
+      license_status_code?: number;
+    }>;
+  } | undefined;
+  const disks = ((hw as { disks?: unknown[] }).disks ?? []) as Array<{
+    model?: string;
+    size_gb?: number;
+    status?: string;
+    predict_failure?: boolean;
+    interface?: string;
+  }>;
+  const cpu = (hw as { cpu?: { name?: string; cores?: number; logical_processors?: number } }).cpu;
+  const memory = (hw as { memory?: { total_gb?: number; slots?: Array<{ capacity_gb?: number; speed_mhz?: number; manufacturer?: string }> } }).memory;
+  const os = (hw as { os?: { name?: string; version?: string; build?: string; architecture?: string } }).os;
+  const motherboard = (hw as { motherboard?: { manufacturer?: string; model?: string; serial_number?: string } }).motherboard;
+  const events = (match.inventory_system_events ?? []) as Array<{
+    time?: string;
+    event_id?: number;
+    level?: string;
+    source?: string;
+    message?: string;
+  }>;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={onClose}>
+      <div
+        className="bg-dark-800 border border-dark-700 rounded-2xl w-full max-w-4xl max-h-[85vh] flex flex-col shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-5 py-4 border-b border-dark-700 flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h3 className="text-lg font-semibold text-white truncate">
+                {asset.device_tag || asset.device_serial}
+              </h3>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                Live agent
+              </span>
+            </div>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Serial <span className="font-mono text-gray-300">{asset.device_serial}</span>
+              {match.matched_agent_name && (
+                <>
+                  {' '}· matched to agent{' '}
+                  <Link
+                    to={`/agents/${match.matched_agent_id}`}
+                    className="text-emerald-400 hover:underline"
+                  >
+                    {match.matched_agent_name}
+                  </Link>
+                  {match.matched_machine_name && match.matched_machine_name !== match.matched_agent_name && (
+                    <span className="text-gray-500"> · {match.matched_machine_name}</span>
+                  )}
+                </>
+              )}
+            </p>
+            {match.inventory_collected_at && (
+              <p className="text-[11px] text-gray-500 mt-0.5">
+                Last collected {new Date(match.inventory_collected_at).toLocaleString()} · agent v{match.matched_agent_version}
+              </p>
+            )}
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-xl leading-none">×</button>
+        </div>
+
+        {/* At-risk header row */}
+        <div className="px-5 py-3 border-b border-dark-700/60 grid grid-cols-2 md:grid-cols-4 gap-3">
+          <RiskChip
+            label="Disk"
+            value={s.disk_predict_fail ? 'Predict fail' : 'OK'}
+            tone={s.disk_predict_fail ? 'bad' : 'good'}
+          />
+          <RiskChip
+            label="Battery"
+            value={s.battery_health_pct != null ? `${s.battery_health_pct}%` : '—'}
+            tone={s.battery_health_low ? 'warn' : s.battery_health_pct != null ? 'good' : 'muted'}
+          />
+          <RiskChip
+            label="Errors 24h"
+            value={String(s.event_error_count_24h ?? 0)}
+            tone={(s.event_error_count_24h ?? 0) >= 10 ? 'warn' : 'muted'}
+          />
+          <RiskChip
+            label="Windows"
+            value={s.windows_licensed ? 'Licensed' : 'Not activated'}
+            tone={s.windows_licensed ? 'good' : 'warn'}
+          />
+        </div>
+
+        {/* Scrollable body */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-5 text-sm">
+          {/* Hardware */}
+          <Section title="Hardware">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {cpu && <KV k="CPU" v={`${cpu.name ?? '—'}${cpu.cores ? ` · ${cpu.cores}c / ${cpu.logical_processors ?? '?'}t` : ''}`} />}
+              {memory && (
+                <KV k="Memory" v={`${memory.total_gb ?? '—'} GB total · ${(memory.slots ?? []).length} slot${(memory.slots ?? []).length === 1 ? '' : 's'}`} />
+              )}
+              {os && <KV k="OS" v={`${os.name ?? '—'} · build ${os.build ?? '?'} · ${os.architecture ?? ''}`} />}
+              {motherboard && (
+                <KV k="Motherboard" v={`${motherboard.manufacturer ?? ''} ${motherboard.model ?? ''}${motherboard.serial_number ? ` · s/n ${motherboard.serial_number}` : ''}`} />
+              )}
+            </div>
+            {disks.length > 0 && (
+              <div className="mt-3">
+                <div className="text-[11px] uppercase text-gray-500 mb-1">Disks</div>
+                <div className="space-y-1.5">
+                  {disks.map((d, i) => (
+                    <div key={i} className={`flex items-center justify-between gap-3 px-2.5 py-1.5 rounded border ${d.predict_failure ? 'bg-rose-500/10 border-rose-500/30' : 'bg-dark-900 border-dark-700'}`}>
+                      <div className="min-w-0">
+                        <p className="text-white text-xs truncate">{d.model ?? '—'}</p>
+                        <p className="text-[10px] text-gray-500">{d.size_gb ?? '—'} GB · {d.interface ?? '—'}</p>
+                      </div>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${d.predict_failure ? 'bg-rose-500/20 text-rose-300' : 'bg-emerald-500/15 text-emerald-300'}`}>
+                        {d.status ?? '—'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {battery?.health_pct != null && (
+              <div className="mt-3">
+                <div className="text-[11px] uppercase text-gray-500 mb-1">Battery health</div>
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 h-1.5 bg-dark-950 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full ${battery.health_pct < 75 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                      style={{ width: `${Math.max(3, battery.health_pct)}%` }}
+                    />
+                  </div>
+                  <span className="text-xs text-gray-300 tabular-nums whitespace-nowrap">{battery.health_pct}%</span>
+                </div>
+                {battery.full_capacity_mwh != null && battery.design_capacity_mwh != null && (
+                  <p className="text-[10px] text-gray-500 mt-1">
+                    Full charge {battery.full_capacity_mwh} mWh · Design {battery.design_capacity_mwh} mWh
+                  </p>
+                )}
+              </div>
+            )}
+          </Section>
+
+          {/* License */}
+          {license && (
+            <Section title="Windows license">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <KV k="OEM key (BIOS)" v={license.oem_product_key ? <span className="font-mono text-emerald-300">{license.oem_product_key}</span> : <span className="text-gray-500">Not present in UEFI</span>} />
+              </div>
+              {(license.active_skus ?? []).map((sku, i) => (
+                <div key={i} className="mt-2 px-3 py-2 rounded bg-dark-900 border border-dark-700">
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div>
+                      <p className="text-white text-sm">{sku.sku_name ?? '—'}</p>
+                      <p className="text-[11px] text-gray-500">Channel {sku.activation_channel ?? '—'}</p>
+                    </div>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${sku.license_status_code === 1 ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>
+                      {sku.license_status ?? '—'}
+                    </span>
+                  </div>
+                  {sku.partial_product_key && (
+                    <p className="text-[11px] text-gray-500 mt-1">
+                      Installed key ends in <span className="font-mono text-gray-300">…{sku.partial_product_key}</span>
+                    </p>
+                  )}
+                </div>
+              ))}
+            </Section>
+          )}
+
+          {/* Recent system errors */}
+          {events.length > 0 && (
+            <Section title={`Recent errors (${events.length})`}>
+              <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+                {events.slice(0, 20).map((ev, i) => (
+                  <div key={i} className={`px-2.5 py-1.5 rounded border text-xs ${ev.level === 'critical' ? 'bg-rose-500/10 border-rose-500/30' : 'bg-amber-500/5 border-amber-500/20'}`}>
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <span className="text-white">{ev.source ?? '—'} · #{ev.event_id ?? '?'}</span>
+                      <span className="text-[10px] text-gray-500">{ev.time ? new Date(ev.time).toLocaleString() : ''}</span>
+                    </div>
+                    {ev.message && (
+                      <p className="text-[11px] text-gray-400 mt-0.5 line-clamp-3">{ev.message}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </Section>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RiskChip({ label, value, tone }: { label: string; value: string; tone: 'good' | 'warn' | 'bad' | 'muted' }) {
+  const cls = {
+    good: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30',
+    warn: 'bg-amber-500/10 text-amber-300 border-amber-500/30',
+    bad: 'bg-rose-500/10 text-rose-300 border-rose-500/30',
+    muted: 'bg-dark-900 text-gray-400 border-dark-700',
+  }[tone];
+  return (
+    <div className={`px-3 py-2 rounded-lg border ${cls}`}>
+      <p className="text-[10px] uppercase tracking-wide opacity-70">{label}</p>
+      <p className="text-sm font-medium mt-0.5">{value}</p>
+    </div>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <h4 className="text-xs uppercase tracking-wider text-gray-500 mb-2">{title}</h4>
+      {children}
+    </div>
+  );
+}
+
+function KV({ k, v }: { k: string; v: React.ReactNode }) {
+  return (
+    <div className="text-xs">
+      <p className="text-gray-500">{k}</p>
+      <div className="text-gray-200 mt-0.5">{v}</div>
+    </div>
+  );
 }
 
 function downloadCsv(filename: string, headers: string[], rows: Record<string, unknown>[]) {
