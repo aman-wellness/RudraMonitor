@@ -110,6 +110,20 @@ fn collect_hardware() -> Value {
     // OS family — read by the dashboard so it can render Mac chips vs
     // Windows chips instead of pretending every agent is Windows.
     out["os_type"] = Value::String(std::env::consts::OS.to_string());
+    // Machine identity — hostname + Dell/Latitude style manufacturer/model
+    // (this is what admins recognise from Intune / Endpoint Manager). The
+    // motherboard section carries a DIFFERENT manufacturer string (often
+    // just "Dell Inc."); this reads Win32_ComputerSystem which is the
+    // consumer-facing brand + model.
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(sys) = probe_computer_system() { out["computer_system"] = sys; }
+        if let Some(vols) = probe_volumes() { out["volumes"] = vols; }
+        if let Some(tpm) = probe_tpm() { out["tpm"] = tpm; }
+        if let Some(patch) = probe_last_patch() { out["last_patch"] = patch; }
+        if let Some(aad) = probe_aad_join() { out["aad_join"] = aad; }
+        if let Some(bl) = probe_bitlocker() { out["bitlocker"] = bl; }
+    }
     // System serial FIRST — this is the string that's printed on the
     // sticker on the back of every laptop/desktop and what admins type
     // into the IT Hardware register's device_serial field. Ship it at
@@ -623,31 +637,238 @@ fn probe_os() -> Option<Value> {
         #[serde(default)] BuildNumber: String,
         #[serde(default)] OSArchitecture: String,
         #[serde(default)] InstallDate: String,
+        OperatingSystemSKU: Option<i32>,
+        #[serde(default)] MUILanguages: Vec<String>,
+        #[serde(default)] Locale: String,
     }
     let r = ps_rows::<Row>(
-        "Get-CimInstance Win32_OperatingSystem | Select Caption, Version, BuildNumber, OSArchitecture, InstallDate"
+        "Get-CimInstance Win32_OperatingSystem | Select Caption, Version, BuildNumber, OSArchitecture, InstallDate, OperatingSystemSKU, MUILanguages, Locale"
     )?.into_iter().next()?;
+    let sku_code = r.OperatingSystemSKU.unwrap_or(0);
+    let sku_name = match sku_code {
+        4 => "Enterprise", 27 => "Enterprise N", 48 => "Professional",
+        49 => "Professional N", 98 => "Home", 100 => "Home N",
+        101 => "Home Single Language", 103 => "Professional with Media Center",
+        121 => "Education", 125 => "Enterprise LTSB",
+        161 => "Pro for Workstations", _ => "Other",
+    };
     Some(json!({
         "name": r.Caption,
         "version": r.Version,
         "build": r.BuildNumber,
         "architecture": r.OSArchitecture,
         "install_date": r.InstallDate,
+        "sku_code": sku_code,
+        "sku_name": sku_name,
+        "languages": r.MUILanguages,
+        "locale": r.Locale,
+    }))
+}
+
+/// Win32_ComputerSystem: hostname + brand + model + user + domain +
+/// PC-system-type. This is the Intune "Manufacturer / Model / Name" row.
+#[cfg(target_os = "windows")]
+fn probe_computer_system() -> Option<Value> {
+    #[derive(Deserialize)]
+    struct Row {
+        #[serde(default)] DNSHostName: String,
+        #[serde(default)] Manufacturer: String,
+        #[serde(default)] Model: String,
+        #[serde(default)] UserName: String,
+        #[serde(default)] Domain: String,
+        PCSystemType: Option<i32>,
+        TotalPhysicalMemory: Option<serde_json::Value>,
+    }
+    let r = ps_rows::<Row>(
+        "Get-CimInstance Win32_ComputerSystem | Select DNSHostName, Manufacturer, Model, UserName, Domain, PCSystemType, TotalPhysicalMemory"
+    )?.into_iter().next()?;
+    let sys_type = match r.PCSystemType {
+        Some(1) => "Desktop", Some(2) => "Mobile", Some(3) => "Workstation",
+        Some(4) => "Enterprise server", Some(5) => "SOHO server",
+        Some(6) => "Appliance PC", Some(7) => "Performance server",
+        Some(8) => "Maximum", _ => "Unknown",
+    };
+    Some(json!({
+        "hostname": r.DNSHostName,
+        "manufacturer": r.Manufacturer,
+        "model": r.Model,
+        "current_user": r.UserName,
+        "domain": r.Domain,
+        "system_type": sys_type,
+    }))
+}
+
+/// Per-volume storage stats — total + free bytes for each fixed drive
+/// (DriveType=3). Matches Intune's "Total storage space / Free storage
+/// space" but broken down per letter so an admin can see WHICH drive is
+/// full without RDPing in.
+#[cfg(target_os = "windows")]
+fn probe_volumes() -> Option<Value> {
+    #[derive(Deserialize)]
+    struct Row {
+        #[serde(default)] DeviceID: String,
+        #[serde(default)] VolumeName: String,
+        Size: Option<serde_json::Value>,
+        FreeSpace: Option<serde_json::Value>,
+        #[serde(default)] FileSystem: String,
+    }
+    fn as_u64(v: &Option<serde_json::Value>) -> u64 {
+        match v {
+            Some(serde_json::Value::Number(n)) => n.as_u64().or_else(|| n.as_f64().map(|f| f as u64)).unwrap_or(0),
+            Some(serde_json::Value::String(s)) => s.parse::<u64>().unwrap_or(0),
+            _ => 0,
+        }
+    }
+    let rows = ps_rows::<Row>(
+        "Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Select DeviceID, VolumeName, Size, FreeSpace, FileSystem"
+    )?;
+    let vols: Vec<Value> = rows.into_iter().filter_map(|r| {
+        let size = as_u64(&r.Size);
+        let free = as_u64(&r.FreeSpace);
+        if size == 0 { return None; }
+        let gb = 1_073_741_824.0;
+        Some(json!({
+            "device_id": r.DeviceID,
+            "label": r.VolumeName,
+            "file_system": r.FileSystem,
+            "size_gb": (size as f64 / gb * 100.0).round() / 100.0,
+            "free_gb": (free as f64 / gb * 100.0).round() / 100.0,
+            "used_pct": if size > 0 { (((size - free) as f64 / size as f64) * 100.0).round() as i32 } else { 0 },
+        }))
+    }).collect();
+    if vols.is_empty() { None } else { Some(json!(vols)) }
+}
+
+/// TPM (Trusted Platform Module) health. Same set of fields Intune shows
+/// on its Hardware tab. The Win32_Tpm class lives in the special namespace
+/// root\CIMV2\Security\MicrosoftTpm.
+#[cfg(target_os = "windows")]
+fn probe_tpm() -> Option<Value> {
+    #[derive(Deserialize)]
+    struct Row {
+        IsActivated_InitialValue: Option<bool>,
+        IsEnabled_InitialValue: Option<bool>,
+        IsOwned_InitialValue: Option<bool>,
+        #[serde(default)] SpecVersion: String,
+        #[serde(default)] ManufacturerIdTxt: String,
+        #[serde(default)] ManufacturerVersion: String,
+        #[serde(default)] PhysicalPresenceVersionInfo: String,
+    }
+    let r = ps_rows::<Row>(
+        "Get-CimInstance -Namespace 'root\\CIMV2\\Security\\MicrosoftTpm' Win32_Tpm -ErrorAction SilentlyContinue | Select IsActivated_InitialValue, IsEnabled_InitialValue, IsOwned_InitialValue, SpecVersion, ManufacturerIdTxt, ManufacturerVersion, PhysicalPresenceVersionInfo"
+    )?.into_iter().next()?;
+    Some(json!({
+        "activated": r.IsActivated_InitialValue,
+        "enabled": r.IsEnabled_InitialValue,
+        "owned": r.IsOwned_InitialValue,
+        "spec_version": r.SpecVersion,
+        "manufacturer_id": r.ManufacturerIdTxt,
+        "manufacturer_version": r.ManufacturerVersion,
+        "physical_presence_version": r.PhysicalPresenceVersionInfo,
+    }))
+}
+
+/// Last Windows Update installed — the "Security patch level" row on Intune.
+/// Get-Hotfix is fast (< 500 ms) and covers KB IDs, install dates, and
+/// descriptions across every history-carrying source.
+#[cfg(target_os = "windows")]
+fn probe_last_patch() -> Option<Value> {
+    #[derive(Deserialize)]
+    struct Row {
+        #[serde(default)] HotFixID: String,
+        InstalledOn: Option<serde_json::Value>,
+        #[serde(default)] Description: String,
+    }
+    let rows = ps_rows::<Row>(
+        "Get-Hotfix | Sort-Object -Property InstalledOn -Descending | Select-Object -First 5 HotFixID, InstalledOn, Description"
+    )?;
+    let mut items = Vec::new();
+    for r in rows {
+        // InstalledOn arrives as either an ISO string or a CIM datetime
+        // object; ConvertTo-Json flattens to a string field with DateTime.
+        let installed = match r.InstalledOn {
+            Some(serde_json::Value::String(s)) => s,
+            Some(v) => v.to_string(),
+            None => String::new(),
+        };
+        items.push(json!({
+            "kb": r.HotFixID,
+            "installed_on": installed,
+            "description": r.Description,
+        }));
+    }
+    if items.is_empty() { None } else { Some(json!(items)) }
+}
+
+/// Microsoft Entra (Azure AD) join status. dsregcmd /status is the
+/// authoritative source; we scrape the AzureAdJoined / DomainJoined /
+/// TenantId / TenantName lines. Runs unprivileged.
+#[cfg(target_os = "windows")]
+fn probe_aad_join() -> Option<Value> {
+    let mut cmd = Command::new("dsregcmd");
+    cmd.args(["/status"]);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
+    crate::win_proc::no_window(&mut cmd);
+    let out = cmd.output().ok()?;
+    if !out.status.success() { return None; }
+    let text = String::from_utf8_lossy(&out.stdout);
+    fn field(text: &str, key: &str) -> String {
+        for line in text.lines() {
+            let t = line.trim();
+            if let Some(rest) = t.strip_prefix(key) {
+                return rest.trim_start_matches(':').trim().to_string();
+            }
+        }
+        String::new()
+    }
+    let aad_joined = field(&text, "AzureAdJoined");
+    let domain_joined = field(&text, "DomainJoined");
+    let workplace_joined = field(&text, "WorkplaceJoined");
+    if aad_joined.is_empty() && domain_joined.is_empty() { return None; }
+    Some(json!({
+        "azure_ad_joined": aad_joined.eq_ignore_ascii_case("YES"),
+        "domain_joined": domain_joined.eq_ignore_ascii_case("YES"),
+        "workplace_joined": workplace_joined.eq_ignore_ascii_case("YES"),
+        "tenant_name": field(&text, "TenantName"),
+        "tenant_id": field(&text, "TenantId"),
+        "device_id": field(&text, "DeviceId"),
     }))
 }
 
 #[cfg(target_os = "windows")]
 fn probe_network_adapters() -> Option<Value> {
+    // Join Win32_NetworkAdapter (physical row + MAC) with
+    // Win32_NetworkAdapterConfiguration (per-index IPAddress). Powershell
+    // one-liner does the join by Index so we get MAC + IPv4 + subnet on
+    // the same row — that's what admins expect from Intune's Wi-Fi/wired
+    // IP columns.
     #[derive(Deserialize)]
     struct Row {
         #[serde(default)] Name: String,
+        #[serde(default)] NetConnectionID: String,
         #[serde(default)] MACAddress: String,
         Speed: Option<serde_json::Value>,
         #[serde(default)] AdapterType: String,
+        #[serde(default)] IPv4: Vec<String>,
+        #[serde(default)] IPSubnet: Vec<String>,
+        #[serde(default)] Gateway: Vec<String>,
     }
-    let rows = ps_rows::<Row>(
-        "Get-CimInstance Win32_NetworkAdapter -Filter 'PhysicalAdapter=true' | Select Name, MACAddress, Speed, AdapterType"
-    )?;
+    let script = "\
+Get-CimInstance Win32_NetworkAdapter -Filter 'PhysicalAdapter=true' | ForEach-Object { \
+  $idx = $_.InterfaceIndex; \
+  $cfg = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter (\"InterfaceIndex=\" + $idx) | Select-Object -First 1; \
+  [PSCustomObject]@{ \
+    Name = $_.Name; \
+    NetConnectionID = $_.NetConnectionID; \
+    MACAddress = $_.MACAddress; \
+    Speed = $_.Speed; \
+    AdapterType = $_.AdapterType; \
+    IPv4 = @($cfg.IPAddress | Where-Object { $_ -match '^\\d+\\.\\d+\\.\\d+\\.\\d+$' }); \
+    IPSubnet = @($cfg.IPSubnet | Where-Object { $_ -match '^\\d+\\.\\d+\\.\\d+\\.\\d+$' }); \
+    Gateway = @($cfg.DefaultIPGateway | Where-Object { $_ -match '^\\d+\\.\\d+\\.\\d+\\.\\d+$' }); \
+  } \
+}";
+    let rows = ps_rows::<Row>(script)?;
     let nics: Vec<Value> = rows.into_iter().filter_map(|r| {
         if r.Name.trim().is_empty() { return None; }
         let speed = match r.Speed {
@@ -655,14 +876,61 @@ fn probe_network_adapters() -> Option<Value> {
             Some(serde_json::Value::String(s)) => s.parse::<u64>().ok(),
             _ => None,
         };
+        let conn = r.NetConnectionID.to_lowercase();
+        let kind = if conn.contains("wi-fi") || conn.contains("wifi") || conn.contains("wireless") {
+            "wifi"
+        } else if conn.contains("ethernet") || conn.contains("local area") {
+            "ethernet"
+        } else { "other" };
         Some(json!({
             "name": r.Name,
+            "connection_name": r.NetConnectionID,
+            "kind": kind,
             "mac_address": r.MACAddress,
             "speed_bps": speed,
             "adapter_type": r.AdapterType,
+            "ipv4": r.IPv4,
+            "subnet": r.IPSubnet,
+            "gateway": r.Gateway,
         }))
     }).collect();
     if nics.is_empty() { None } else { Some(json!(nics)) }
+}
+
+/// BitLocker encryption status per volume. Get-BitLockerVolume is the
+/// canonical source (ships with Windows since 8/8.1/10). Non-fatal on
+/// SKUs that lack BitLocker (Home) — returns None quietly.
+#[cfg(target_os = "windows")]
+fn probe_bitlocker() -> Option<Value> {
+    #[derive(Deserialize)]
+    struct Row {
+        #[serde(default)] MountPoint: String,
+        #[serde(default)] VolumeType: String,
+        #[serde(default)] EncryptionMethod: String,
+        VolumeStatus: Option<i32>,
+        EncryptionPercentage: Option<i32>,
+        ProtectionStatus: Option<i32>,
+    }
+    let rows = ps_rows::<Row>(
+        "Get-BitLockerVolume -ErrorAction SilentlyContinue | Select MountPoint, VolumeType, EncryptionMethod, VolumeStatus, EncryptionPercentage, ProtectionStatus"
+    )?;
+    let vols: Vec<Value> = rows.into_iter().map(|r| {
+        let vol_status_text = match r.VolumeStatus {
+            Some(0) => "FullyDecrypted", Some(1) => "FullyEncrypted",
+            Some(2) => "EncryptionInProgress", Some(3) => "DecryptionInProgress",
+            Some(4) => "EncryptionPaused", Some(5) => "DecryptionPaused",
+            _ => "Unknown",
+        };
+        json!({
+            "mount": r.MountPoint,
+            "volume_type": r.VolumeType,
+            "encryption_method": r.EncryptionMethod,
+            "encryption_pct": r.EncryptionPercentage,
+            "volume_status": vol_status_text,
+            "protection_on": matches!(r.ProtectionStatus, Some(1)),
+        })
+    }).collect();
+    if vols.is_empty() { None } else { Some(json!(vols)) }
 }
 
 // -----------------------------------------------------------------------------

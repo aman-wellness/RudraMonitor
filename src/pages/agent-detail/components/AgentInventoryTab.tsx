@@ -203,6 +203,51 @@ export default function AgentInventoryTab({ agentId }: { agentId: string }) {
   const gpus = ((hw as { gpu?: unknown[] }).gpu ?? []) as Array<{ name?: string; vram_bytes?: number; driver_version?: string }>;
   const nics = ((hw as { network_adapters?: unknown[] }).network_adapters ?? []) as Array<{ name?: string; mac_address?: string; speed_bps?: number }>;
   const systemSerial = (hw as { system_serial?: string }).system_serial;
+  const compSys = (hw as { computer_system?: {
+    hostname?: string;
+    manufacturer?: string;
+    model?: string;
+    current_user?: string;
+    domain?: string;
+    system_type?: string;
+  } }).computer_system;
+  const volumes = ((hw as { volumes?: unknown[] }).volumes ?? []) as Array<{
+    device_id?: string;
+    label?: string;
+    file_system?: string;
+    size_gb?: number;
+    free_gb?: number;
+    used_pct?: number;
+  }>;
+  const tpm = (hw as { tpm?: {
+    activated?: boolean;
+    enabled?: boolean;
+    owned?: boolean;
+    spec_version?: string;
+    manufacturer_id?: string;
+    manufacturer_version?: string;
+  } }).tpm;
+  const lastPatch = ((hw as { last_patch?: unknown[] }).last_patch ?? []) as Array<{
+    kb?: string;
+    installed_on?: string;
+    description?: string;
+  }>;
+  const aad = (hw as { aad_join?: {
+    azure_ad_joined?: boolean;
+    domain_joined?: boolean;
+    workplace_joined?: boolean;
+    tenant_name?: string;
+    tenant_id?: string;
+    device_id?: string;
+  } }).aad_join;
+  const bitlocker = ((hw as { bitlocker?: unknown[] }).bitlocker ?? []) as Array<{
+    mount?: string;
+    encryption_method?: string;
+    encryption_pct?: number;
+    volume_status?: string;
+    protection_on?: boolean;
+  }>;
+  const osExt = os as { sku_name?: string; sku_code?: number; locale?: string; languages?: string[] } | undefined;
   const events = row.system_events ?? [];
 
   return (
@@ -360,6 +405,124 @@ export default function AgentInventoryTab({ agentId }: { agentId: string }) {
           </details>
         )}
       </Card>
+
+      {/* System identity */}
+      {(compSys || aad || osExt?.sku_name) && (
+        <Card title="System identity">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3">
+            {compSys?.hostname && <KV k="Hostname" v={compSys.hostname} />}
+            {compSys?.manufacturer && compSys?.model && (
+              <KV k="Manufacturer · Model" v={`${compSys.manufacturer} · ${compSys.model}`} />
+            )}
+            {compSys?.current_user && <KV k="Current user" v={compSys.current_user} />}
+            {compSys?.domain && <KV k="Domain" v={compSys.domain} />}
+            {compSys?.system_type && <KV k="System type" v={compSys.system_type} />}
+            {osExt?.sku_name && <KV k="OS edition" v={`${osExt.sku_name}${osExt.sku_code ? ` (SKU ${osExt.sku_code})` : ''}`} />}
+            {osExt?.locale && <KV k="Locale · language" v={`${osExt.locale}${osExt.languages && osExt.languages.length > 0 ? ' · ' + osExt.languages.join(', ') : ''}`} />}
+            {aad && (
+              <>
+                <KV k="Microsoft Entra joined" v={aad.azure_ad_joined ? 'Yes' : 'No'} />
+                {aad.domain_joined !== undefined && <KV k="Domain joined" v={aad.domain_joined ? 'Yes' : 'No'} />}
+                {aad.tenant_name && <KV k="Tenant" v={`${aad.tenant_name}${aad.tenant_id ? ` (${aad.tenant_id.slice(0, 8)}…)` : ''}`} />}
+              </>
+            )}
+          </div>
+        </Card>
+      )}
+
+      {/* Storage per volume */}
+      {volumes.length > 0 && (
+        <Card title="Storage">
+          <div className="space-y-2">
+            {volumes.map((v, i) => (
+              <div key={i} className="px-3 py-2 rounded bg-dark-900 border border-dark-700">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div>
+                    <p className="text-white text-sm font-mono">{v.device_id ?? '—'}{v.label ? ` · ${v.label}` : ''}</p>
+                    <p className="text-[11px] text-gray-500">{v.file_system ?? '—'}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-white text-sm tabular-nums">{v.free_gb?.toFixed(1) ?? '—'} GB free</p>
+                    <p className="text-[11px] text-gray-500 tabular-nums">of {v.size_gb?.toFixed(1) ?? '—'} GB</p>
+                  </div>
+                </div>
+                <div className="mt-2 h-1.5 bg-dark-950 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full ${(v.used_pct ?? 0) >= 90 ? 'bg-rose-500' : (v.used_pct ?? 0) >= 75 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                    style={{ width: `${Math.max(2, v.used_pct ?? 0)}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* Security: TPM + BitLocker */}
+      {(tpm || bitlocker.length > 0) && (
+        <Card title="Security">
+          {tpm && (
+            <div className="mb-3">
+              <div className="text-[11px] uppercase text-gray-500 mb-1.5">TPM</div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2 px-3 py-2 rounded bg-dark-900 border border-dark-700">
+                <KV k="Spec version" v={tpm.spec_version || '—'} />
+                <KV k="Manufacturer" v={`${tpm.manufacturer_id || '—'}${tpm.manufacturer_version ? ` · ${tpm.manufacturer_version}` : ''}`} />
+                <KV
+                  k="Status"
+                  v={
+                    <span className="inline-flex gap-1">
+                      {tpm.enabled && <span className="text-emerald-300 text-[11px]">Enabled</span>}
+                      {tpm.activated && <span className="text-emerald-300 text-[11px]">Activated</span>}
+                      {tpm.owned && <span className="text-emerald-300 text-[11px]">Owned</span>}
+                      {!tpm.enabled && !tpm.activated && <span className="text-amber-300 text-[11px]">Not ready</span>}
+                    </span>
+                  }
+                />
+              </div>
+            </div>
+          )}
+          {bitlocker.length > 0 && (
+            <div>
+              <div className="text-[11px] uppercase text-gray-500 mb-1.5">BitLocker encryption</div>
+              <div className="space-y-1.5">
+                {bitlocker.map((b, i) => (
+                  <div key={i} className={`flex items-center justify-between gap-3 px-3 py-2 rounded border ${b.protection_on ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-amber-500/5 border-amber-500/20'}`}>
+                    <div>
+                      <p className="text-white text-sm font-mono">{b.mount ?? '—'}</p>
+                      <p className="text-[11px] text-gray-500">
+                        {b.encryption_method ?? '—'}
+                        {b.encryption_pct != null && <> · {b.encryption_pct}% encrypted</>}
+                      </p>
+                    </div>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${b.protection_on ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>
+                      {b.protection_on ? 'Protection ON' : b.volume_status ?? 'Off'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* Patch level */}
+      {lastPatch.length > 0 && (
+        <Card title="Latest Windows updates">
+          <div className="space-y-1.5">
+            {lastPatch.map((p, i) => (
+              <div key={i} className="flex items-center justify-between gap-3 px-3 py-2 rounded bg-dark-900 border border-dark-700">
+                <div>
+                  <p className="text-white text-sm font-mono">{p.kb ?? '—'}</p>
+                  <p className="text-[11px] text-gray-500">{p.description ?? '—'}</p>
+                </div>
+                <p className="text-[11px] text-gray-400 tabular-nums whitespace-nowrap">
+                  {p.installed_on ? new Date(p.installed_on).toLocaleDateString() : '—'}
+                </p>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {/* Windows license — hidden on Mac */}
       {!isMac && license && (
