@@ -47,6 +47,16 @@ const TOOL_DESC: Record<ToolKind, string> = {
     'Clears temp/prefetch/Windows-Update-cache/browser caches, runs DISM + sfc + chkdsk + Optimize-Volume. Produces Cleanup_Report.txt. Typically 20-30 min.',
 };
 
+// Typical wall-clock duration for a healthy run, used to build a progress
+// bar and an ETA hint while the run is in-flight. Windows Optimizer's 45-min
+// upper bound is what the agent-side RUN_TIMEOUT enforces; we render the
+// bar filling toward that so the admin can see "we're at 40% of the hard
+// cap" instead of just a spinner that could mean stuck or working.
+const TOOL_TYPICAL: Record<ToolKind, { typicalMin: number; typicalMax: number; hardCap: number }> = {
+  driver_updater:    { typicalMin: 2,  typicalMax: 5,  hardCap: 10 },
+  windows_optimizer: { typicalMin: 20, typicalMax: 30, hardCap: 45 },
+};
+
 export default function EndpointToolsTab({ agentId, agentName, osType }: Props) {
   const [runs, setRuns] = useState<ToolRun[]>([]);
   const [busy, setBusy] = useState<ToolKind | null>(null);
@@ -56,6 +66,16 @@ export default function EndpointToolsTab({ agentId, agentName, osType }: Props) 
   // rendered under the run — that's the only place the "why did it fail"
   // text lives, and prior UI hid it entirely.
   const [expanded, setExpanded] = useState<string | null>(null);
+  // Live-ticking clock so the in-flight row's elapsed timer + progress bar
+  // update every second without a re-fetch. Only ticks while at least one
+  // run is pending/running — no wasted renders once the table is idle.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const hasLiveRun = runs.some((r) => r.state === 'pending' || r.state === 'running');
+  useEffect(() => {
+    if (!hasLiveRun) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [hasLiveRun]);
 
   const isWindows = osType.toLowerCase().includes('windows');
 
@@ -227,6 +247,12 @@ export default function EndpointToolsTab({ agentId, agentName, osType }: Props) 
                 {runs.map((r) => {
                   const isOpen = expanded === r.id;
                   const failed = r.state === 'failed' || r.state === 'timed_out' || r.state === 'cancelled';
+                  const live = r.state === 'pending' || r.state === 'running';
+                  const elapsedMs = live ? Math.max(0, nowMs - new Date(r.created_at).getTime()) : 0;
+                  const typ = TOOL_TYPICAL[r.tool_kind];
+                  const hardCapMs = typ.hardCap * 60_000;
+                  const progressPct = live ? Math.min(100, Math.round((elapsedMs / hardCapMs) * 100)) : 0;
+                  const overExpected = live && elapsedMs / 60_000 > typ.typicalMax;
                   return (
                     <>
                       <tr
@@ -243,14 +269,30 @@ export default function EndpointToolsTab({ agentId, agentName, osType }: Props) 
                           </span>
                         </td>
                         <td className="p-2.5">
-                          <StatePill state={r.state} />
-                          {failed && r.stdout_tail && !isOpen && (
-                            <span className="ml-2 text-[10px] text-gray-500">click for details</span>
+                          {live ? (
+                            <span className="inline-flex items-center gap-2 text-xs text-blue-400">
+                              <span className="relative flex h-2 w-2">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-60"></span>
+                                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-400"></span>
+                              </span>
+                              <span>{r.state === 'pending' ? 'Waiting for agent…' : 'Running on agent'}</span>
+                            </span>
+                          ) : (
+                            <>
+                              <StatePill state={r.state} />
+                              {failed && r.stdout_tail && !isOpen && (
+                                <span className="ml-2 text-[10px] text-gray-500">click for details</span>
+                              )}
+                            </>
                           )}
                         </td>
                         <td className="p-2.5 text-gray-400 text-xs">{new Date(r.created_at).toLocaleString()}</td>
                         <td className="p-2.5 text-right text-gray-400 text-xs tnum">
-                          {r.duration_ms === null ? '—' : fmtDuration(r.duration_ms)}
+                          {live ? (
+                            <span className={overExpected ? 'text-amber-400' : 'text-blue-400'}>
+                              {fmtDuration(elapsedMs)}
+                            </span>
+                          ) : r.duration_ms === null ? '—' : fmtDuration(r.duration_ms)}
                         </td>
                         <td className="p-2.5 text-right text-gray-400 text-xs tnum">
                           {r.exit_code === null ? '—' : r.exit_code}
@@ -265,6 +307,29 @@ export default function EndpointToolsTab({ agentId, agentName, osType }: Props) 
                           ) : <span className="text-xs text-gray-500">—</span>}
                         </td>
                       </tr>
+                      {live && (
+                        <tr key={`${r.id}-progress`} className="bg-dark-900/40">
+                          <td colSpan={6} className="px-2.5 pb-2 pt-0">
+                            <div className="flex items-center gap-3">
+                              <div className="flex-1 h-1.5 bg-dark-950 rounded-full overflow-hidden">
+                                <div
+                                  className={`h-full transition-all duration-500 ${overExpected ? 'bg-amber-500' : 'bg-blue-500'} ${r.state === 'pending' ? 'animate-pulse' : ''}`}
+                                  style={{ width: `${Math.max(3, progressPct)}%` }}
+                                />
+                              </div>
+                              <span className="text-[10px] text-gray-500 tabular-nums whitespace-nowrap">
+                                typical {typ.typicalMin}-{typ.typicalMax} min · hard cap {typ.hardCap} min
+                              </span>
+                            </div>
+                            {overExpected && (
+                              <div className="mt-1.5 text-[10px] text-amber-400">
+                                Taking longer than usual — likely working through chkdsk or Windows Update queue.
+                                Will be killed at the hard cap ({typ.hardCap} min) if it doesn't finish first.
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )}
                       {isOpen && r.stdout_tail && (
                         <tr key={`${r.id}-details`} className="bg-dark-900/60">
                           <td colSpan={6} className="p-3">
