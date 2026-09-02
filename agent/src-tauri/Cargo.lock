@@ -7836,7 +7836,7 @@ dependencies = [
 
 [[package]]
 name = "wellness-extract-agent"
-version = "0.7.36"
+version = "0.7.37"
 dependencies = [
  "active-win-pos-rs",
  "anyhow",

@@ -37,20 +37,21 @@ if(Test-Path $c){Remove-Item "$c\*" -Recurse -Force -ErrorAction SilentlyContinu
 # Store cache reset skipped intentionally: `wsreset.exe` briefly flashes a
 # blank Store window even when launched from a headless PowerShell session,
 # which breaks the "user sees nothing" guarantee of the agent-triggered
-# background run. Users who care about Store cache can run wsreset manually.
+# background run.
 
 
 Write-Host "Component cleanup..."
 DISM /Online /Cleanup-Image /StartComponentCleanup | Out-Null
 
-Write-Host "System file check..."
-sfc /scannow
-
-Write-Host "DISM health restore..."
-DISM /Online /Cleanup-Image /RestoreHealth | Out-Null
-
-Write-Host "CHKDSK scan..."
-chkdsk /scan | Out-Null
+# sfc /scannow, DISM /RestoreHealth and chkdsk /scan removed 2026-09-02:
+# they legitimately take 45-90 minutes combined on modest hardware
+# (sfc alone can hit 30 min), which pushed every "Windows Optimizer"
+# run past the RUN_TIMEOUT hard cap on Anmol's machine and multiple
+# others in the fleet. Those three commands are REPAIR operations
+# (fix corrupted system files / images / bad sectors), not routine
+# optimisation — an admin who explicitly wants a repair should use
+# a dedicated deep-repair tool with its own longer timeout. Keeping
+# Optimizer to actual cleanup lets a full run finish inside ~10 min.
 
 Write-Host "Optimizing drive..."
 $disk=(Get-Volume -DriveLetter C)

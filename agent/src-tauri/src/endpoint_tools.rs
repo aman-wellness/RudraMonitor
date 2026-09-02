@@ -24,12 +24,15 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 
-/// Hard cap on a single tool run. Optimize.ps1 does `sfc /scannow` +
-/// `chkdsk /scan` + `DISM /RestoreHealth` which combined can hit
-/// ~30 minutes on a well-used SSD, longer on a slow HDD. 45 minutes gives
-/// a comfortable buffer without pinning powershell.exe forever if the
-/// script hangs.
-const RUN_TIMEOUT: Duration = Duration::from_secs(45 * 60);
+/// Hard cap on a single tool run. Optimize.ps1 now sticks to cleanup +
+/// DISM /StartComponentCleanup + Optimize-Volume — the repair-oriented
+/// sfc / DISM /RestoreHealth / chkdsk block was removed 2026-09-02 after
+/// Anmol Sangwan's machine kept blowing past 45 minutes on sfc alone.
+/// A healthy Optimizer run now finishes in 5-10 minutes; 20 gives us
+/// headroom on a slow HDD or an unusually large Windows Update backlog.
+/// Driver Update path is unaffected (its own preflight is well under
+/// this cap).
+const RUN_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
 /// Only the last 8 KB of the script's stdout goes back to the dashboard —
 /// enough for the "Cleanup summary" block Optimize.ps1 prints at the end,
