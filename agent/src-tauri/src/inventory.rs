@@ -21,6 +21,58 @@ use serde_json::{json, Value};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+// -----------------------------------------------------------------------------
+// PowerShell + CIM. Replacement for wmic across the board.
+//
+// wmic.exe is deprecated in Windows 10 21H1 and no longer shipped by default on
+// Windows 11 22H2 and Server 2025. On those machines the wmic-backed probes
+// silently returned None and the inventory row landed with hardware={} — that's
+// what Umang Goyal's 2026-09-02 12:48 UTC snapshot looked like: 53 software
+// entries, 50 event rows, and an empty hardware blob. PowerShell + Get-CimInstance
+// speaks the same underlying WMI provider on every Windows version we support
+// (7 through 11) and is present regardless of the wmic feature-on-demand state.
+// -----------------------------------------------------------------------------
+
+/// ConvertTo-Json in PowerShell emits a JSON OBJECT for a single row and a
+/// JSON ARRAY for multiple rows — a real ergonomic footgun when we don't
+/// know the row count ahead of time. This wrapper always sees an array by
+/// asking PowerShell for one explicitly with @().
+#[cfg(target_os = "windows")]
+fn ps_rows<T: for<'de> Deserialize<'de>>(select_pipeline: &str) -> Option<Vec<T>> {
+    // `-Compress` shrinks payload, `-Depth 5` covers the nested SoftwareLicensingProduct.
+    let script = format!(
+        "$ProgressPreference='SilentlyContinue'; @({}) | ConvertTo-Json -Compress -Depth 5",
+        select_pipeline
+    );
+    // If the wrapped pipeline emitted 0 or 1 rows PowerShell serialises differently
+    // even inside @(). @() forces an array for the empty case; a single row still
+    // arrives as a bare object. Try both.
+    let text_out = {
+        let mut cmd = Command::new("powershell.exe");
+        cmd.args([
+            "-NoProfile", "-NonInteractive",
+            "-ExecutionPolicy", "Bypass",
+            "-OutputFormat", "Text",
+            "-Command", &script,
+        ]);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::null());
+        crate::win_proc::no_window(&mut cmd);
+        cmd.output().ok()?
+    };
+    if !text_out.status.success() { return None; }
+    let text = String::from_utf8_lossy(&text_out.stdout);
+    let trimmed = text.trim();
+    if trimmed.is_empty() { return None; }
+    if let Ok(v) = serde_json::from_str::<Vec<T>>(trimmed) {
+        return Some(v);
+    }
+    // Single row case — PowerShell dropped the array wrapper.
+    if let Ok(v) = serde_json::from_str::<T>(trimmed) {
+        return Some(vec![v]);
+    }
+    None
+}
+
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct InventoryPayload {
     pub hardware: Value,
@@ -70,6 +122,10 @@ fn collect_hardware() -> Value {
     if let Some(os) = probe_os() { out["os"] = os; }
     if let Some(nics) = probe_network_adapters() { out["network_adapters"] = nics; }
     if let Some(lic) = probe_windows_license() { out["license"] = lic; }
+    #[cfg(target_os = "windows")]
+    {
+        out["product_licenses"] = probe_product_licenses();
+    }
     out
 }
 
@@ -94,42 +150,75 @@ fn collect_hardware() -> Value {
 /// probes are read-only and only require standard user context.
 #[cfg(target_os = "windows")]
 fn probe_windows_license() -> Option<Value> {
-    // 1. OEM key from BIOS.
-    let oem_key = wmic(&[
-        "path", "SoftwareLicensingService", "get", "OA3xOriginalProductKey", "/format:csv",
-    ]).and_then(|out| {
-        parse_csv(&out).into_iter().next()
-            .and_then(|r| r.get("OA3xOriginalProductKey").cloned())
-            .filter(|s| !s.is_empty())
-    });
+    // 1. OEM key from BIOS via SLS.
+    #[derive(Deserialize)]
+    struct Oem { #[serde(default)] OA3xOriginalProductKey: String }
+    let oem_key = ps_rows::<Oem>(
+        "Get-CimInstance SoftwareLicensingService | Select OA3xOriginalProductKey"
+    )
+    .and_then(|v| v.into_iter().next())
+    .map(|o| o.OA3xOriginalProductKey.trim().to_string())
+    .filter(|s| !s.is_empty());
 
-    // 2. Active SKU: LicenseStatus + PartialProductKey + Name + Channel.
-    let sku_out = wmic(&[
-        "path", "SoftwareLicensingProduct",
-        "where", "PartialProductKey <> null",
-        "get", "Name,LicenseStatus,PartialProductKey,ProductKeyChannel,GenuineStatus",
-        "/format:csv",
-    ])?;
-    let rows = parse_csv(&sku_out);
+    // 2. Windows SKU (PartialProductKey is the last 5 chars of the installed key).
+    #[derive(Deserialize)]
+    struct WinSku {
+        #[serde(default)] Name: String,
+        #[serde(default)] PartialProductKey: String,
+        #[serde(default)] ProductKeyChannel: String,
+        LicenseStatus: Option<i32>,
+        GenuineStatus: Option<serde_json::Value>,
+    }
+    let win_rows = ps_rows::<WinSku>(
+        "Get-CimInstance SoftwareLicensingProduct -Filter \"Name LIKE 'Windows%'\" | Where-Object { $_.PartialProductKey } | Select Name, PartialProductKey, ProductKeyChannel, LicenseStatus, GenuineStatus"
+    ).unwrap_or_default();
     let mut skus: Vec<Value> = Vec::new();
-    for r in rows {
-        let name = r.get("Name").cloned().unwrap_or_default();
-        if !name.contains("Windows") { continue; }
-        let status_code = r.get("LicenseStatus").and_then(|s| s.parse::<i32>().ok());
+    for r in win_rows {
+        let sc = r.LicenseStatus;
         skus.push(json!({
-            "sku_name": name,
-            "activation_channel": r.get("ProductKeyChannel").cloned().unwrap_or_default(),
-            "partial_product_key": r.get("PartialProductKey").cloned().unwrap_or_default(),
-            "license_status_code": status_code,
-            "license_status": license_status_text(status_code.unwrap_or(-1)),
-            "genuine_status_code": r.get("GenuineStatus").and_then(|s| s.parse::<i32>().ok()),
+            "sku_name": r.Name,
+            "activation_channel": r.ProductKeyChannel,
+            "partial_product_key": r.PartialProductKey,
+            "license_status_code": sc,
+            "license_status": license_status_text(sc.unwrap_or(-1)),
         }));
     }
-
     Some(json!({
         "oem_product_key": oem_key,
         "active_skus": skus,
     }))
+}
+
+/// Any OTHER SPP-tracked product with a PartialProductKey — Microsoft Office
+/// (all editions), Visio, Project, some Server SKUs. Anti-piracy limit means
+/// we get the last 5 chars only, never the full key, but that's still enough
+/// to prove which key an admin allocated to which endpoint. Non-Windows
+/// license coverage was zero before this — third-party product keys (Adobe,
+/// AutoCAD, IDM…) live in encrypted vendor-specific stores and are out of
+/// scope; a Product Keys section that just lists MS SPP is honest.
+#[cfg(target_os = "windows")]
+fn probe_product_licenses() -> Value {
+    #[derive(Deserialize)]
+    struct Sku {
+        #[serde(default)] Name: String,
+        #[serde(default)] PartialProductKey: String,
+        #[serde(default)] ProductKeyChannel: String,
+        LicenseStatus: Option<i32>,
+    }
+    let rows = ps_rows::<Sku>(
+        "Get-CimInstance SoftwareLicensingProduct -Filter \"NOT Name LIKE 'Windows%'\" | Where-Object { $_.PartialProductKey } | Select Name, PartialProductKey, ProductKeyChannel, LicenseStatus"
+    ).unwrap_or_default();
+    let items: Vec<Value> = rows.into_iter().map(|r| {
+        let sc = r.LicenseStatus;
+        json!({
+            "name": r.Name,
+            "partial_product_key": r.PartialProductKey,
+            "activation_channel": r.ProductKeyChannel,
+            "license_status_code": sc,
+            "license_status": license_status_text(sc.unwrap_or(-1)),
+        })
+    }).collect();
+    json!(items)
 }
 
 fn license_status_text(code: i32) -> &'static str {
@@ -148,26 +237,23 @@ fn license_status_text(code: i32) -> &'static str {
 #[cfg(not(target_os = "windows"))]
 fn probe_windows_license() -> Option<Value> { None }
 
-/// System serial (SMBIOS "Chassis" serial) — the string an admin sees on
-/// the OEM sticker and puts into hardware_assets.device_serial. Tried in
-/// this order until we get a non-empty, non-placeholder value:
-///   1. wmic bios get SerialNumber  (canonical SMBIOS chassis serial)
-///   2. wmic csproduct get IdentifyingNumber  (fallback on some OEMs
-///      where BIOS returns the string 'To be filled by O.E.M.')
-///   3. wmic systemenclosure get SerialNumber
-/// Placeholder OEM strings and Dell/HP defaults are filtered out.
+/// System serial (SMBIOS "Chassis" serial). Same admin-visible string that
+/// goes into hardware_assets.device_serial. Tries three CIM classes in
+/// order until we get a real value — OEM defaults ("Default string", "To be
+/// filled by O.E.M.", …) filtered.
 #[cfg(target_os = "windows")]
 fn probe_system_serial() -> Option<Value> {
-    let candidates = [
-        (&["bios", "get", "SerialNumber", "/format:csv"][..], "SerialNumber"),
-        (&["csproduct", "get", "IdentifyingNumber", "/format:csv"][..], "IdentifyingNumber"),
-        (&["systemenclosure", "get", "SerialNumber", "/format:csv"][..], "SerialNumber"),
-    ];
+    #[derive(Deserialize)] struct One { #[serde(rename = "V")] v: Option<String> }
     let bad = ["", "None", "Default string", "To be filled by O.E.M.", "System Serial Number", "Not Specified", "0"];
-    for (args, col) in candidates {
-        if let Some(out) = wmic(args) {
-            if let Some(row) = parse_csv(&out).into_iter().next() {
-                if let Some(v) = row.get(col) {
+    let queries = [
+        "Get-CimInstance Win32_BIOS | Select-Object @{n='V';e={$_.SerialNumber}}",
+        "Get-CimInstance Win32_ComputerSystemProduct | Select-Object @{n='V';e={$_.IdentifyingNumber}}",
+        "Get-CimInstance Win32_SystemEnclosure | Select-Object @{n='V';e={$_.SerialNumber}}",
+    ];
+    for q in queries {
+        if let Some(rows) = ps_rows::<One>(q) {
+            for r in rows {
+                if let Some(v) = r.v {
                     let trimmed = v.trim().to_string();
                     if !bad.iter().any(|b| b.eq_ignore_ascii_case(&trimmed)) {
                         return Some(Value::String(trimmed));
@@ -184,37 +270,62 @@ fn probe_system_serial() -> Option<Value> { None }
 
 #[cfg(target_os = "windows")]
 fn probe_cpu() -> Option<Value> {
-    let out = wmic(&["cpu", "get", "Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed,SocketDesignation", "/format:csv"])?;
-    let rows = parse_csv(&out);
-    let first = rows.into_iter().next()?;
+    #[derive(Deserialize)]
+    struct Row {
+        #[serde(default)] Name: String,
+        NumberOfCores: Option<i64>,
+        NumberOfLogicalProcessors: Option<i64>,
+        MaxClockSpeed: Option<i64>,
+        #[serde(default)] SocketDesignation: String,
+    }
+    let row: Row = ps_rows::<Row>(
+        "Get-CimInstance Win32_Processor | Select Name, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed, SocketDesignation"
+    )?.into_iter().next()?;
     Some(json!({
-        "name": first.get("Name").cloned().unwrap_or_default(),
-        "cores": first.get("NumberOfCores").and_then(|s| s.parse::<i64>().ok()),
-        "logical_processors": first.get("NumberOfLogicalProcessors").and_then(|s| s.parse::<i64>().ok()),
-        "max_clock_mhz": first.get("MaxClockSpeed").and_then(|s| s.parse::<i64>().ok()),
-        "socket": first.get("SocketDesignation").cloned().unwrap_or_default(),
+        "name": row.Name,
+        "cores": row.NumberOfCores,
+        "logical_processors": row.NumberOfLogicalProcessors,
+        "max_clock_mhz": row.MaxClockSpeed,
+        "socket": row.SocketDesignation,
     }))
 }
 
 #[cfg(target_os = "windows")]
 fn probe_memory() -> Option<Value> {
-    let out = wmic(&["memorychip", "get", "Capacity,Manufacturer,Speed,PartNumber,DeviceLocator", "/format:csv"])?;
-    let rows = parse_csv(&out);
+    #[derive(Deserialize)]
+    struct Row {
+        Capacity: Option<serde_json::Value>, // uint64 → JSON number or string; be lenient
+        #[serde(default)] Manufacturer: String,
+        Speed: Option<i64>,
+        #[serde(default)] PartNumber: String,
+        #[serde(default)] DeviceLocator: String,
+    }
+    fn as_u64(v: &Option<serde_json::Value>) -> Option<u64> {
+        match v {
+            Some(serde_json::Value::Number(n)) => n.as_u64().or_else(|| n.as_f64().map(|f| f as u64)),
+            Some(serde_json::Value::String(s)) => s.parse::<u64>().ok(),
+            _ => None,
+        }
+    }
+    let rows = ps_rows::<Row>(
+        "Get-CimInstance Win32_PhysicalMemory | Select Capacity, Manufacturer, Speed, PartNumber, DeviceLocator"
+    )?;
     let mut slots = Vec::new();
     let mut total_bytes: u64 = 0;
-    for row in rows {
-        if let Some(cap) = row.get("Capacity").and_then(|s| s.parse::<u64>().ok()) {
+    for r in rows {
+        if let Some(cap) = as_u64(&r.Capacity) {
             total_bytes = total_bytes.saturating_add(cap);
             slots.push(json!({
                 "capacity_bytes": cap,
                 "capacity_gb": (cap as f64 / 1_073_741_824.0 * 100.0).round() / 100.0,
-                "manufacturer": row.get("Manufacturer").cloned().unwrap_or_default(),
-                "speed_mhz": row.get("Speed").and_then(|s| s.parse::<i64>().ok()),
-                "part_number": row.get("PartNumber").cloned().unwrap_or_default(),
-                "slot": row.get("DeviceLocator").cloned().unwrap_or_default(),
+                "manufacturer": r.Manufacturer.trim().to_string(),
+                "speed_mhz": r.Speed,
+                "part_number": r.PartNumber.trim().to_string(),
+                "slot": r.DeviceLocator,
             }));
         }
     }
+    if slots.is_empty() { return None; }
     Some(json!({
         "total_bytes": total_bytes,
         "total_gb": (total_bytes as f64 / 1_073_741_824.0 * 100.0).round() / 100.0,
@@ -224,24 +335,37 @@ fn probe_memory() -> Option<Value> {
 
 #[cfg(target_os = "windows")]
 fn probe_disks() -> Option<Value> {
-    // Status column returns "OK" normally, "Pred Fail" when SMART's
-    // predict-failure flag is set. This is the single most actionable
-    // hardware-health signal we can get without a real SMART library.
-    let out = wmic(&["diskdrive", "get", "Model,Size,SerialNumber,Status,MediaType,InterfaceType", "/format:csv"])?;
-    let rows = parse_csv(&out);
+    // Status returns "OK" normally, "Pred Fail" when SMART's predict-failure
+    // flag is set. Single most actionable disk-health signal available
+    // without a real SMART library.
+    #[derive(Deserialize)]
+    struct Row {
+        #[serde(default)] Model: String,
+        Size: Option<serde_json::Value>,
+        #[serde(default)] SerialNumber: String,
+        #[serde(default)] Status: String,
+        #[serde(default)] MediaType: String,
+        #[serde(default)] InterfaceType: String,
+    }
+    let rows = ps_rows::<Row>(
+        "Get-CimInstance Win32_DiskDrive | Select Model, Size, SerialNumber, Status, MediaType, InterfaceType"
+    )?;
     let disks: Vec<Value> = rows.into_iter().filter_map(|r| {
-        let size_bytes = r.get("Size").and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        let size_bytes: u64 = match r.Size {
+            Some(serde_json::Value::Number(n)) => n.as_u64().or_else(|| n.as_f64().map(|f| f as u64))?,
+            Some(serde_json::Value::String(s)) => s.parse::<u64>().ok()?,
+            _ => return None,
+        };
         if size_bytes == 0 { return None; }
-        let status = r.get("Status").cloned().unwrap_or_default();
         Some(json!({
-            "model": r.get("Model").cloned().unwrap_or_default(),
+            "model": r.Model.trim().to_string(),
             "size_bytes": size_bytes,
             "size_gb": (size_bytes as f64 / 1_073_741_824.0).round(),
-            "serial_number": r.get("SerialNumber").cloned().unwrap_or_default(),
-            "status": status.clone(),
-            "predict_failure": !status.eq_ignore_ascii_case("OK"),
-            "media_type": r.get("MediaType").cloned().unwrap_or_default(),
-            "interface": r.get("InterfaceType").cloned().unwrap_or_default(),
+            "serial_number": r.SerialNumber.trim().to_string(),
+            "status": r.Status.clone(),
+            "predict_failure": !r.Status.eq_ignore_ascii_case("OK") && !r.Status.is_empty(),
+            "media_type": r.MediaType,
+            "interface": r.InterfaceType,
         }))
     }).collect();
     if disks.is_empty() { None } else { Some(json!(disks)) }
@@ -249,16 +373,28 @@ fn probe_disks() -> Option<Value> {
 
 #[cfg(target_os = "windows")]
 fn probe_gpu() -> Option<Value> {
-    let out = wmic(&["path", "win32_videocontroller", "get", "Name,AdapterRAM,DriverVersion,VideoProcessor", "/format:csv"])?;
-    let rows = parse_csv(&out);
+    #[derive(Deserialize)]
+    struct Row {
+        #[serde(default)] Name: String,
+        AdapterRAM: Option<serde_json::Value>,
+        #[serde(default)] DriverVersion: String,
+        #[serde(default)] VideoProcessor: String,
+    }
+    let rows = ps_rows::<Row>(
+        "Get-CimInstance Win32_VideoController | Select Name, AdapterRAM, DriverVersion, VideoProcessor"
+    )?;
     let gpus: Vec<Value> = rows.into_iter().filter_map(|r| {
-        let name = r.get("Name").cloned().unwrap_or_default();
-        if name.is_empty() { return None; }
+        if r.Name.trim().is_empty() { return None; }
+        let vram = match r.AdapterRAM {
+            Some(serde_json::Value::Number(n)) => n.as_u64().or_else(|| n.as_f64().map(|f| f as u64)),
+            Some(serde_json::Value::String(s)) => s.parse::<u64>().ok(),
+            _ => None,
+        };
         Some(json!({
-            "name": name,
-            "vram_bytes": r.get("AdapterRAM").and_then(|s| s.parse::<u64>().ok()),
-            "driver_version": r.get("DriverVersion").cloned().unwrap_or_default(),
-            "processor": r.get("VideoProcessor").cloned().unwrap_or_default(),
+            "name": r.Name,
+            "vram_bytes": vram,
+            "driver_version": r.DriverVersion,
+            "processor": r.VideoProcessor,
         }))
     }).collect();
     if gpus.is_empty() { None } else { Some(json!(gpus)) }
@@ -266,56 +402,90 @@ fn probe_gpu() -> Option<Value> {
 
 #[cfg(target_os = "windows")]
 fn probe_motherboard() -> Option<Value> {
-    let out = wmic(&["baseboard", "get", "Manufacturer,Product,SerialNumber,Version", "/format:csv"])?;
-    let rows = parse_csv(&out);
-    let first = rows.into_iter().next()?;
+    #[derive(Deserialize)]
+    struct Row {
+        #[serde(default)] Manufacturer: String,
+        #[serde(default)] Product: String,
+        #[serde(default)] SerialNumber: String,
+        #[serde(default)] Version: String,
+    }
+    let r = ps_rows::<Row>(
+        "Get-CimInstance Win32_BaseBoard | Select Manufacturer, Product, SerialNumber, Version"
+    )?.into_iter().next()?;
     Some(json!({
-        "manufacturer": first.get("Manufacturer").cloned().unwrap_or_default(),
-        "model": first.get("Product").cloned().unwrap_or_default(),
-        "serial_number": first.get("SerialNumber").cloned().unwrap_or_default(),
-        "version": first.get("Version").cloned().unwrap_or_default(),
+        "manufacturer": r.Manufacturer,
+        "model": r.Product,
+        "serial_number": r.SerialNumber,
+        "version": r.Version,
     }))
 }
 
 #[cfg(target_os = "windows")]
 fn probe_bios() -> Option<Value> {
-    let out = wmic(&["bios", "get", "Manufacturer,Version,SMBIOSBIOSVersion,ReleaseDate", "/format:csv"])?;
-    let rows = parse_csv(&out);
-    let first = rows.into_iter().next()?;
+    #[derive(Deserialize)]
+    struct Row {
+        #[serde(default)] Manufacturer: String,
+        #[serde(default)] Version: String,
+        #[serde(default)] SMBIOSBIOSVersion: String,
+        #[serde(default)] ReleaseDate: String,
+    }
+    let r = ps_rows::<Row>(
+        "Get-CimInstance Win32_BIOS | Select Manufacturer, Version, SMBIOSBIOSVersion, ReleaseDate"
+    )?.into_iter().next()?;
     Some(json!({
-        "manufacturer": first.get("Manufacturer").cloned().unwrap_or_default(),
-        "version": first.get("Version").cloned().unwrap_or_default(),
-        "smbios_version": first.get("SMBIOSBIOSVersion").cloned().unwrap_or_default(),
-        "release_date": first.get("ReleaseDate").cloned().unwrap_or_default(),
+        "manufacturer": r.Manufacturer,
+        "version": r.Version,
+        "smbios_version": r.SMBIOSBIOSVersion,
+        "release_date": r.ReleaseDate,
     }))
 }
 
 #[cfg(target_os = "windows")]
 fn probe_os() -> Option<Value> {
-    let out = wmic(&["os", "get", "Caption,Version,BuildNumber,OSArchitecture,InstallDate", "/format:csv"])?;
-    let rows = parse_csv(&out);
-    let first = rows.into_iter().next()?;
+    #[derive(Deserialize)]
+    struct Row {
+        #[serde(default)] Caption: String,
+        #[serde(default)] Version: String,
+        #[serde(default)] BuildNumber: String,
+        #[serde(default)] OSArchitecture: String,
+        #[serde(default)] InstallDate: String,
+    }
+    let r = ps_rows::<Row>(
+        "Get-CimInstance Win32_OperatingSystem | Select Caption, Version, BuildNumber, OSArchitecture, InstallDate"
+    )?.into_iter().next()?;
     Some(json!({
-        "name": first.get("Caption").cloned().unwrap_or_default(),
-        "version": first.get("Version").cloned().unwrap_or_default(),
-        "build": first.get("BuildNumber").cloned().unwrap_or_default(),
-        "architecture": first.get("OSArchitecture").cloned().unwrap_or_default(),
-        "install_date": first.get("InstallDate").cloned().unwrap_or_default(),
+        "name": r.Caption,
+        "version": r.Version,
+        "build": r.BuildNumber,
+        "architecture": r.OSArchitecture,
+        "install_date": r.InstallDate,
     }))
 }
 
 #[cfg(target_os = "windows")]
 fn probe_network_adapters() -> Option<Value> {
-    let out = wmic(&["nic", "where", "PhysicalAdapter=true", "get", "Name,MACAddress,Speed,AdapterType", "/format:csv"])?;
-    let rows = parse_csv(&out);
+    #[derive(Deserialize)]
+    struct Row {
+        #[serde(default)] Name: String,
+        #[serde(default)] MACAddress: String,
+        Speed: Option<serde_json::Value>,
+        #[serde(default)] AdapterType: String,
+    }
+    let rows = ps_rows::<Row>(
+        "Get-CimInstance Win32_NetworkAdapter -Filter 'PhysicalAdapter=true' | Select Name, MACAddress, Speed, AdapterType"
+    )?;
     let nics: Vec<Value> = rows.into_iter().filter_map(|r| {
-        let name = r.get("Name").cloned().unwrap_or_default();
-        if name.is_empty() { return None; }
+        if r.Name.trim().is_empty() { return None; }
+        let speed = match r.Speed {
+            Some(serde_json::Value::Number(n)) => n.as_u64().or_else(|| n.as_f64().map(|f| f as u64)),
+            Some(serde_json::Value::String(s)) => s.parse::<u64>().ok(),
+            _ => None,
+        };
         Some(json!({
-            "name": name,
-            "mac_address": r.get("MACAddress").cloned().unwrap_or_default(),
-            "speed_bps": r.get("Speed").and_then(|s| s.parse::<u64>().ok()),
-            "adapter_type": r.get("AdapterType").cloned().unwrap_or_default(),
+            "name": r.Name,
+            "mac_address": r.MACAddress,
+            "speed_bps": speed,
+            "adapter_type": r.AdapterType,
         }))
     }).collect();
     if nics.is_empty() { None } else { Some(json!(nics)) }
@@ -405,22 +575,25 @@ fn collect_software() -> Value {
 
 #[cfg(target_os = "windows")]
 fn collect_battery() -> Option<Value> {
-    let out = wmic(&["path", "Win32_Battery", "get", "EstimatedChargeRemaining,BatteryStatus,DesignCapacity,FullChargeCapacity", "/format:csv"])?;
-    let rows = parse_csv(&out);
-    let first = rows.into_iter().next()?;
-    let design = first.get("DesignCapacity").and_then(|s| s.parse::<i64>().ok());
-    let full = first.get("FullChargeCapacity").and_then(|s| s.parse::<i64>().ok());
-    // Not every OEM populates DesignCapacity via WMI; when both are present
-    // the ratio is the classic laptop-battery "health %" the tools report.
-    let health_pct = match (design, full) {
+    #[derive(Deserialize)]
+    struct Row {
+        EstimatedChargeRemaining: Option<i32>,
+        BatteryStatus: Option<i32>,
+        DesignCapacity: Option<i64>,
+        FullChargeCapacity: Option<i64>,
+    }
+    let r = ps_rows::<Row>(
+        "Get-CimInstance Win32_Battery | Select EstimatedChargeRemaining, BatteryStatus, DesignCapacity, FullChargeCapacity"
+    )?.into_iter().next()?;
+    let health_pct = match (r.DesignCapacity, r.FullChargeCapacity) {
         (Some(d), Some(f)) if d > 0 => Some(((f as f64 / d as f64) * 100.0).round() as i32),
         _ => None,
     };
     Some(json!({
-        "estimated_charge_pct": first.get("EstimatedChargeRemaining").and_then(|s| s.parse::<i32>().ok()),
-        "status_code": first.get("BatteryStatus").and_then(|s| s.parse::<i32>().ok()),
-        "design_capacity_mwh": design,
-        "full_capacity_mwh": full,
+        "estimated_charge_pct": r.EstimatedChargeRemaining,
+        "status_code": r.BatteryStatus,
+        "design_capacity_mwh": r.DesignCapacity,
+        "full_capacity_mwh": r.FullChargeCapacity,
         "health_pct": health_pct,
     }))
 }
@@ -576,44 +749,11 @@ pub async fn post(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// wmic helpers.
-// ---------------------------------------------------------------------------
-
-#[cfg(target_os = "windows")]
-fn wmic(args: &[&str]) -> Option<String> {
-    let mut cmd = Command::new("wmic");
-    cmd.args(args);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
-    crate::win_proc::no_window(&mut cmd);
-    let out = cmd.output().ok()?;
-    if !out.status.success() { return None; }
-    let s = String::from_utf8_lossy(&out.stdout).into_owned();
-    Some(s)
-}
-
-/// Parse wmic /format:csv output. Header row + N data rows separated by
-/// CRLF; commas inside quoted fields are handled minimally (wmic never
-/// emits quoted commas in practice for the columns we probe).
-#[cfg(target_os = "windows")]
-fn parse_csv(text: &str) -> Vec<std::collections::HashMap<String, String>> {
-    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
-    let header = match lines.next() {
-        Some(h) => h.split(',').map(|s| s.trim().to_string()).collect::<Vec<_>>(),
-        None => return Vec::new(),
-    };
-    let mut rows = Vec::new();
-    for line in lines {
-        let parts: Vec<&str> = line.split(',').collect();
-        if parts.len() < header.len() { continue; }
-        let mut map = std::collections::HashMap::new();
-        for (i, h) in header.iter().enumerate() {
-            map.insert(h.clone(), parts[i].trim().to_string());
-        }
-        rows.push(map);
-    }
-    rows
-}
+// wmic() and parse_csv() were removed 2026-09-02: every hardware probe
+// now goes through ps_rows / ps_json above (Get-CimInstance | ConvertTo-
+// Json). See the CIM comment at the top of the file for why. The one
+// site that still needed a plain-string wmic-style call — probe_system_
+// serial — moved to CIM at the same time.
 
 #[cfg(target_os = "windows")]
 fn reg_query_recursive(hive: &str) -> Option<String> {

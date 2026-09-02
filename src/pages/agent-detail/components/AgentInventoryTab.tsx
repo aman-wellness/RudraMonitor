@@ -162,6 +162,11 @@ export default function AgentInventoryTab({ agentId }: { agentId: string }) {
 
       {/* Hardware */}
       <Card title="Hardware">
+        {!cpu && !memory && !os && !motherboard && !bios && gpus.length === 0 && disks.length === 0 && (
+          <p className="text-xs text-gray-500 py-2">
+            Hardware not collected on this agent yet. Older agent builds (before v0.7.38) used <code className="font-mono text-gray-400">wmic</code> which is deprecated on Windows 11 22H2+ and no longer ships by default — data will populate on the next daily cycle once the agent auto-updates.
+          </p>
+        )}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3">
           {cpu && <KV k="CPU" v={`${cpu.name ?? '—'} · ${cpu.cores ?? '?'}c / ${cpu.logical_processors ?? '?'}t${cpu.max_clock_mhz ? ` · ${(cpu.max_clock_mhz / 1000).toFixed(1)} GHz` : ''}`} />}
           {memory && <KV k="Memory" v={`${memory.total_gb ?? '—'} GB total · ${(memory.slots ?? []).length} slot${(memory.slots ?? []).length === 1 ? '' : 's'}`} />}
@@ -275,6 +280,45 @@ export default function AgentInventoryTab({ agentId }: { agentId: string }) {
           ))}
         </Card>
       )}
+
+      {/* Product licenses (Office / Visio / Project / non-Windows MS SKUs) */}
+      {(() => {
+        const prod = ((hw as { product_licenses?: unknown[] }).product_licenses ?? []) as Array<{
+          name?: string;
+          partial_product_key?: string;
+          activation_channel?: string;
+          license_status?: string;
+          license_status_code?: number;
+        }>;
+        if (prod.length === 0) return null;
+        return (
+          <Card title={`Software product keys (${prod.length})`}>
+            <p className="text-[11px] text-gray-500 mb-2">
+              Microsoft product keys tracked by SPP (Office, Visio, Project, etc.). Only the last 5 characters of each installed key are exposed by the OS.
+            </p>
+            <div className="space-y-1.5">
+              {prod.map((sku, i) => (
+                <div key={i} className="px-3 py-2 rounded bg-dark-900 border border-dark-700">
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div className="min-w-0">
+                      <p className="text-white text-sm truncate">{sku.name ?? '—'}</p>
+                      <p className="text-[11px] text-gray-500">Channel {sku.activation_channel ?? '—'}</p>
+                    </div>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${sku.license_status_code === 1 ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>
+                      {sku.license_status ?? '—'}
+                    </span>
+                  </div>
+                  {sku.partial_product_key && (
+                    <p className="text-[11px] text-gray-500 mt-1">
+                      Key ends in <span className="font-mono text-gray-300">…{sku.partial_product_key}</span>
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </Card>
+        );
+      })()}
 
       {/* Installed software */}
       {row.software && row.software.length > 0 && (
