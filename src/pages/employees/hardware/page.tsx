@@ -143,8 +143,14 @@ export default function HardwareInventory() {
       // to it_hardware_inventory — no wasted round-trip, no risk of the
       // augment leaking through a stale useState.
       invAddon
-        ? supabase.from('hardware_assets_with_agent')
-            .select('id, matched_agent_id, matched_agent_name, matched_machine_name, matched_agent_version, inventory_collected_at, inventory_hardware, inventory_battery, inventory_system_events, inventory_summary')
+        ? // Lightweight augment — id + agent link + summary flags only.
+          // The heavy JSONB fields (inventory_hardware / _software /
+          // _battery / _system_events) can each be 100-200 KB per asset;
+          // fetching all of them for 30+ assets at page load was the
+          // "app slow" symptom. Drawer-open now lazy-loads the full row
+          // for the one asset the admin actually clicked on.
+          supabase.from('hardware_assets_with_agent')
+            .select('id, matched_agent_id, matched_agent_name, matched_machine_name, matched_agent_version, inventory_collected_at, inventory_summary')
             .range(0, 9999)
         : Promise.resolve({ data: [] as Array<InventoryMatch & { id: string }>, error: null }),
     ]);
@@ -339,7 +345,21 @@ export default function HardwareInventory() {
                           {inv && (
                             <button
                               type="button"
-                              onClick={(e) => { e.stopPropagation(); setInventoryFor({ asset: r, match: inv }); }}
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                // Lazy-load the heavy JSONBs for this ONE
+                                // asset; the list view only holds the
+                                // summary flags to keep page load snappy.
+                                setInventoryFor({ asset: r, match: inv });
+                                const { data: full } = await supabase
+                                  .from('hardware_assets_with_agent')
+                                  .select('inventory_hardware, inventory_software, inventory_battery, inventory_system_events')
+                                  .eq('id', r.id)
+                                  .maybeSingle();
+                                if (full) {
+                                  setInventoryFor((cur) => cur ? { ...cur, match: { ...cur.match, ...(full as Partial<InventoryMatch>) } } : cur);
+                                }
+                              }}
                               className={`mt-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border transition ${
                                 atRisk
                                   ? 'bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20'
@@ -997,6 +1017,7 @@ function InventoryDrawer({
   match: InventoryMatch;
   onClose: () => void;
 }) {
+  const loading = !match.inventory_hardware; // heavy fields not yet lazy-loaded
   const hw = match.inventory_hardware ?? {};
   const s = match.inventory_summary ?? {};
   const battery = match.inventory_battery as {
@@ -1099,6 +1120,13 @@ function InventoryDrawer({
             tone={s.windows_licensed ? 'good' : 'warn'}
           />
         </div>
+
+        {loading && (
+          <div className="px-5 py-8 text-center text-sm text-gray-400 flex items-center justify-center gap-2">
+            <span className="w-4 h-4 border-2 border-emerald-500/40 border-t-emerald-500 rounded-full animate-spin" />
+            Loading full inventory…
+          </div>
+        )}
 
         {/* Scrollable body */}
         <div className="flex-1 overflow-y-auto p-5 space-y-5 text-sm">
