@@ -22,6 +22,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+use tokio::io::AsyncReadExt;
 
 /// Hard cap on a single tool run. Optimize.ps1 does `sfc /scannow` +
 /// `chkdsk /scan` + `DISM /RestoreHealth` which combined can hit
@@ -225,12 +226,24 @@ pub async fn run_tool(kind: ToolKind, run_id: String) -> Result<ToolResult> {
     };
     let script_dir = script.parent().map(|p| p.to_path_buf());
 
-    // 3. Spawn powershell.exe with the exact flag set that guarantees no
-    // window flash on Windows 11 + Windows Terminal — same combo used
-    // by usb_block.rs and signature_deploy.rs. -NonInteractive prevents
-    // the script from ever pausing on Read-Host in a headless session.
+    // 3. Spawn powershell.exe with tokio::process::Command so we can
+    // actually kill the child when the timeout fires. Prior code used
+    // std::process::Command inside tokio::task::spawn_blocking + a
+    // tokio::time::timeout wrapping the JoinHandle — the timeout DID
+    // fire on the outer future, but spawn_blocking tasks are
+    // NON-CANCELLABLE: the powershell child kept running past the
+    // 45-min timeout, the tokio-side "timed_out" result was constructed
+    // and returned, but only after the join actually settled — which
+    // for a script wedged on chkdsk or Get-WindowsUpdate could be an
+    // hour or more. Result: DB row stays 'running' until the 60-min
+    // reaper. Anmol Sangwan hit exactly this on 2026-09-02.
+    //
+    // tokio::process::Command owns a Child handle we can kill on
+    // timeout; the child dies within a second and the completion POST
+    // fires immediately after. -NonInteractive still prevents Read-Host
+    // pauses.
     let started = Instant::now();
-    let mut cmd = Command::new("powershell.exe");
+    let mut cmd = tokio::process::Command::new("powershell.exe");
     cmd.args([
         "-NoProfile", "-NonInteractive",
         "-ExecutionPolicy", "Bypass",
@@ -238,33 +251,69 @@ pub async fn run_tool(kind: ToolKind, run_id: String) -> Result<ToolResult> {
         "-File", &script.to_string_lossy(),
     ])
     .stdout(Stdio::piped())
-    .stderr(Stdio::piped());
-    crate::win_proc::no_window(&mut cmd);
+    .stderr(Stdio::piped())
+    .kill_on_drop(true);
+    // CREATE_NO_WINDOW: prevent the child from briefly popping a
+    // console window when spawned from a service context. Mirrors what
+    // win_proc::no_window does for std::process::Command.
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
 
-    // 4. Run inside a tokio timeout so a wedged sfc/chkdsk doesn't pin the
-    // agent thread forever. spawn_blocking so we don't block the async
-    // runtime for the (possibly 30-min) run.
-    let output_res = tokio::time::timeout(
-        RUN_TIMEOUT,
-        tokio::task::spawn_blocking(move || cmd.output()),
-    )
-    .await;
-    let duration_ms = started.elapsed().as_millis() as u64;
-
-    let (exit_code, stdout_tail, state) = match output_res {
-        Ok(Ok(Ok(out))) => {
-            let mut combined = out.stdout;
-            combined.extend_from_slice(&out.stderr);
-            let start = combined.len().saturating_sub(STDOUT_TAIL_BYTES);
-            let tail = String::from_utf8_lossy(&combined[start..]).into_owned();
-            let code = out.status.code().unwrap_or(-1);
-            let state = if out.status.success() { "succeeded" } else { "failed" };
-            (code, tail, state)
+    let (exit_code, stdout_tail, state) = match cmd.spawn() {
+        Ok(mut child) => {
+            let mut stdout = child.stdout.take();
+            let mut stderr = child.stderr.take();
+            match tokio::time::timeout(RUN_TIMEOUT, child.wait()).await {
+                Ok(Ok(status)) => {
+                    let mut combined = Vec::new();
+                    if let Some(mut s) = stdout.take() {
+                        let _ = s.read_to_end(&mut combined).await;
+                    }
+                    if let Some(mut s) = stderr.take() {
+                        let _ = s.read_to_end(&mut combined).await;
+                    }
+                    let start = combined.len().saturating_sub(STDOUT_TAIL_BYTES);
+                    let tail = String::from_utf8_lossy(&combined[start..]).into_owned();
+                    let code = status.code().unwrap_or(-1);
+                    let state = if status.success() { "succeeded" } else { "failed" };
+                    (code, tail, state)
+                }
+                Ok(Err(e)) => (-1, format!("wait error: {e}"), "failed"),
+                Err(_) => {
+                    // Kill the child so the process doesn't linger. wait()
+                    // above already borrowed &mut child so we can only kill
+                    // once the future is dropped by the Err match arm.
+                    let _ = child.start_kill();
+                    // Give powershell a beat to actually die, then drain
+                    // whatever it managed to print before the axe fell.
+                    let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+                    let mut combined = Vec::new();
+                    if let Some(mut s) = stdout.take() {
+                        let _ = tokio::time::timeout(
+                            Duration::from_secs(2),
+                            s.read_to_end(&mut combined),
+                        ).await;
+                    }
+                    if let Some(mut s) = stderr.take() {
+                        let _ = tokio::time::timeout(
+                            Duration::from_secs(2),
+                            s.read_to_end(&mut combined),
+                        ).await;
+                    }
+                    let notice = format!("[timeout] killed powershell.exe after {}s.\n\n", RUN_TIMEOUT.as_secs());
+                    let start = combined.len().saturating_sub(STDOUT_TAIL_BYTES - notice.len());
+                    let tail = format!("{notice}{}", String::from_utf8_lossy(&combined[start..]));
+                    (-1, tail, "timed_out")
+                }
+            }
         }
-        Ok(Ok(Err(e))) => (-1, format!("spawn error: {e}"), "failed"),
-        Ok(Err(e)) => (-1, format!("join error: {e}"), "failed"),
-        Err(_) => (-1, format!("timeout after {}s", RUN_TIMEOUT.as_secs()), "timed_out"),
+        Err(e) => (-1, format!("spawn error: {e}"), "failed"),
     };
+    let duration_ms = started.elapsed().as_millis() as u64;
 
     // 5. Read the report artifact if it exists. Non-fatal — some runs
     // produce nothing (e.g. Optimize.ps1 aborted before writing the log).
