@@ -1,6 +1,6 @@
 // Pricing cards for the public marketing /pricing page.
 //
-// Rows live in public.site_plans (migration 0153) and are managed from the
+// Rows live in public.site_plans (migration 0157) and are managed from the
 // super-admin portal (/admin/plans → "Website pricing cards"). RLS exposes
 // is_active rows to anon, so the unauthenticated marketing page reads them
 // with the normal browser client — no edge function needed.

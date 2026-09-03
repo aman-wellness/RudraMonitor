@@ -105,7 +105,7 @@ export default function SitePlansTab() {
       {loadError && (
         <p className="text-amber-400 text-xs mb-3">
           Could not load website pricing cards: {loadError}
-          {loadError.includes('site_plans') ? ' — has migration 0153_site_pricing_cards.sql been applied?' : ''}
+          {loadError.includes('site_plans') ? ' — has migration 0157_site_pricing_cards.sql been applied?' : ''}
         </p>
       )}
 
