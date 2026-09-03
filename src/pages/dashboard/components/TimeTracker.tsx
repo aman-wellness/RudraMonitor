@@ -134,7 +134,7 @@ export default function TimeTracker({ index = 0 }: { index?: number }) {
           hint="Login and logout events appear once agents start reporting."
         />
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4">
           {/* Today */}
           <div className="min-w-0">
             <MicroLabel className="mb-2">Today · login &amp; logout</MicroLabel>

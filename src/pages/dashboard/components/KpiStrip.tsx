@@ -158,9 +158,9 @@ export default function KpiStrip() {
       label: 'Fleet',
       value: String(total),
       sub: scoped ? 'selected agent' : seats > 0 ? `${total} of ${seats} seats` : `${total} enrolled`,
-      spark: scoped ? undefined : { points: fleetSeries, color: C.accent },
+      spark: scoped ? undefined : { points: fleetSeries, color: C.success },
       to: '/agents',
-      icon: 'ri-server-line',
+      icon: 'ri-computer-line',
     },
     {
       label: 'Live now',
@@ -168,7 +168,7 @@ export default function KpiStrip() {
       sub: total > 0 ? `${onlinePct}% reachable now` : 'no agents yet',
       bar: { pct: onlinePct, color: onlinePct >= 50 ? C.success : C.warning },
       to: '/monitoring',
-      icon: 'ri-radar-line',
+      icon: 'ri-wifi-line',
     },
     {
       label: 'Productivity',
@@ -190,7 +190,7 @@ export default function KpiStrip() {
       label: 'Open alerts',
       value: String(openAlerts),
       sub: openAlerts === 0 ? `all clear · ${w.label}` : `to review · ${w.label}`,
-      spark: { points: alertSeries, color: openAlerts > 0 ? C.warning : C.neutral },
+      spark: { points: alertSeries, color: C.warning },
       to: '/alerts',
       tone: openAlerts > 0 ? 't-warning' : undefined,
       icon: 'ri-notification-3-line',
@@ -216,48 +216,62 @@ export default function KpiStrip() {
     },
   ];
 
+  // Each metric is its own card rather than a cell in one hairline-divided
+  // panel. Seven cards, one per metric — nothing merged, nothing dropped.
   return (
-    <div className="panel rise overflow-hidden" style={{ ['--i' as string]: 0 }}>
-      <div className="kpi-grid">
-        {cells.map((cell) => {
-          const body = (
-            <span className="px-3.5 py-2.5 min-w-0 h-full flex flex-col gap-1.5">
-              <span className="flex items-center gap-1.5 min-w-0">
-                <i className={`${cell.icon} text-[12px] t3 flex-shrink-0`} />
-                <span className="label truncate">{cell.label}</span>
-              </span>
-
-              {/* Figure and sub-line get the full cell width — sharing the row
-                  with the sparkline truncated the sub-line at six columns. */}
-              <span className="block min-w-0">
-                <span className={`num num-xl block ${cell.tone ?? ''}`}>{cell.value}</span>
-                {cell.sub && <span className="block text-[10px] t3 mt-1 truncate">{cell.sub}</span>}
-              </span>
-
-              {/* Bottom slot, freed up by dropping the comparison line: the
-                  share bar where a cell has one, otherwise its sparkline. Always
-                  rendered so the figures stay on one baseline across the six. */}
-              <span className="mt-auto flex items-end justify-end h-[14px]">
-                {cell.bar ? (
-                  <Bar pct={cell.bar.pct} color={cell.bar.color} height={3} />
-                ) : cell.spark && cell.spark.points.length > 1 ? (
-                  <Sparkline points={cell.spark.points} color={cell.spark.color} w={44} h={14} />
-                ) : null}
-              </span>
+    <div className="kpi-cards">
+      {cells.map((cell, i) => {
+        const body = (
+          <>
+            <span className="kpi-card-top">
+              <i className={`${cell.icon} text-[13px] flex-shrink-0`} />
+              <span className="label truncate">{cell.label}</span>
             </span>
-          );
 
-          return cell.to ? (
-            <Link key={cell.label} to={cell.to} className="cell min-w-0">
-              {body}
-            </Link>
-          ) : (
-            <div key={cell.label} className="min-w-0">
-              {body}
-            </div>
-          );
-        })}
-      </div>
+            <span className="block min-w-0">
+              <span className={`num num-xl block ${cell.tone ?? ''}`}>{cell.value}</span>
+              {cell.sub && (
+                <span className="block text-[10.5px] t3 mt-1 truncate">{cell.sub}</span>
+              )}
+            </span>
+
+            {/* Bottom slot: the share bar where a cell has one, otherwise its
+                sparkline. Always rendered so the figures stay on one optical
+                baseline across the row. */}
+            <span className="kpi-card-foot">
+              {cell.bar ? (
+                <Bar pct={cell.bar.pct} color={cell.bar.color} height={3} />
+              ) : cell.spark && cell.spark.points.length > 1 ? (
+                <Sparkline
+                  points={cell.spark.points}
+                  color={cell.spark.color}
+                  w={120}
+                  h={22}
+                />
+              ) : null}
+            </span>
+          </>
+        );
+
+        return cell.to ? (
+          <Link
+            key={cell.label}
+            to={cell.to}
+            className="panel rise kpi-card"
+            style={{ ['--i' as string]: i }}
+          >
+            {body}
+          </Link>
+        ) : (
+          <div
+            key={cell.label}
+            className="panel rise kpi-card"
+            style={{ ['--i' as string]: i }}
+          >
+            {body}
+          </div>
+        );
+      })}
     </div>
   );
 }
