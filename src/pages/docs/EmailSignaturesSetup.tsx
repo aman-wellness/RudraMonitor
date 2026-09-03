@@ -112,12 +112,23 @@ export default function EmailSignaturesSetup() {
 
         <section id="verify" className="mb-10">
           <h2 className="text-xl font-semibold text-white mb-3">4. Verify per user</h2>
+
+          <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 mb-4 text-sm text-amber-100">
+            <p className="font-semibold mb-1">Do NOT check OWA <em>Settings → Account → Signatures</em> — it will always show "No signature yet".</p>
+            <p className="text-amber-100/80 text-xs leading-relaxed">
+              That panel manages OWA's native <strong>Roaming Signatures</strong> store, which no third-party add-in
+              (ours, Exclaimer, CodeTwo, …) can write to — Microsoft has not shipped a Graph API for it yet. Our
+              add-in instead injects the signature <strong>into the compose body when the user clicks "New mail"</strong>.
+              The correct verification is to compose a new message and look at the body — never the Signatures panel.
+            </p>
+          </div>
+
           <ol className="text-gray-300 text-sm space-y-2 list-decimal ml-5">
-            <li>Wait ~30 minutes after Deploy (Microsoft's rollout window).</li>
-            <li>Sign in to a target user's OWA at <a href="https://outlook.office.com" target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline">outlook.office.com</a>. Click <strong>New message</strong>.</li>
-            <li>The signature should appear in the compose body within 1-2 s after the empty draft loads.</li>
+            <li>Wait ~30 minutes after Deploy (Microsoft's rollout window — occasionally up to 6 h for a brand-new install).</li>
+            <li>Sign in to a target user's OWA at <a href="https://outlook.office.com" target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline">outlook.office.com</a>. Click <strong>New mail</strong>.</li>
+            <li>The signature should appear in the <strong>compose body</strong> within 1-2 s after the empty draft loads. This is where you verify — not the Signatures panel.</li>
             <li>Repeat for <em>Reply</em> and <em>Forward</em> — the same launch event covers all three.</li>
-            <li>In the Wellness Extract dashboard's <em>Email Signatures</em> page, click <strong>Verify</strong> on the user's row: the Exchange-side signature should show as "Stored" too (that's what Classic Outlook Desktop reads).</li>
+            <li>In the Wellness Extract dashboard's <em>Email Signatures</em> page, click <strong>Verify</strong> on the user's row: the Exchange-side signature should show as "Stored" (that's what Classic Outlook Desktop reads).</li>
           </ol>
         </section>
 
