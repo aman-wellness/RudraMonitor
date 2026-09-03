@@ -1,16 +1,16 @@
-# Wellness Extract — Full deploy from scratch
+# Rudrans — Full deploy from scratch
 
 Zero → running production stack on a **new server**, mirroring the existing
-`ems.wellnessextract.com` / `api-ems.wellnessextract.com` setup on EC2
+`app.rudrans.com` / `api.rudrans.com` setup on EC2
 `18.145.223.204`.
 
 > **Existing prod (do NOT touch when following this guide):**
-> - Dashboard: `https://ems.wellnessextract.com` — EC2 `18.145.223.204`
-> - API/Supabase: `https://api-ems.wellnessextract.com` — same box, Kong port 8100
-> - TURN: `turn.wellnessextract.com` — separate box, ports 3478/5349
+> - Dashboard: `https://app.rudrans.com` — EC2 `18.145.223.204`
+> - API/Supabase: `https://api.rudrans.com` — same box, Kong port 8100
+> - TURN: `turn.rudrans.com` — separate box, ports 3478/5349
 >
 > This guide is for **standing up a NEW customer or region**. Pick a new
-> subdomain pair (`ems-cx.wellnessextract.com` + `api-ems-cx.…`) or brand-new
+> subdomain pair (`app-cx.rudrans.com` + `api-cx.rudrans.com`) or brand-new
 > domain, and follow every step.
 
 ---
@@ -20,14 +20,14 @@ Zero → running production stack on a **new server**, mirroring the existing
 Paste this into a new Claude Code session to hand off the deploy:
 
 ```
-You are deploying the Wellness Extract stack (Rust/Tauri agent + React
+You are deploying the Rudrans stack (Rust/Tauri agent + React
 dashboard + self-hosted Supabase + coTURN) onto a NEW EC2 instance,
-mirroring the existing production at ems.wellnessextract.com /
-api-ems.wellnessextract.com on 18.145.223.204.
+mirroring the existing production at app.rudrans.com /
+api.rudrans.com on 18.145.223.204.
 
 Follow /Users/Aman/Desktop/track-force/DEPLOY.md verbatim, phase by
 phase. Do NOT deviate from the existing patterns — no Cloud Supabase,
-no rudrans.com URLs, no CORS changes, no destructive git commands.
+no CORS changes, no destructive git commands.
 
 Target subdomains for this deploy: <NEW-DASHBOARD-DOMAIN> and
 <NEW-API-DOMAIN>. Target EC2 IP: <NEW-EC2-IP>. Anon key + service
@@ -48,9 +48,9 @@ Before Phase 1 starts, gather:
 
 | Item | Where it comes from | Example |
 |---|---|---|
-| Domain (or subdomain pair) | Customer's DNS registrar (Route 53, Cloudflare, GoDaddy) | `wellnessextract.com` |
-| Dashboard subdomain | Pick one | `ems-cx.wellnessextract.com` |
-| API subdomain | Pick one — must be different, same registrar | `api-ems-cx.wellnessextract.com` |
+| Domain (or subdomain pair) | Customer's DNS registrar (Route 53, Cloudflare, GoDaddy) | `rudrans.com` |
+| Dashboard subdomain | Pick one | `app-cx.rudrans.com` |
+| API subdomain | Pick one — must be different, same registrar | `api-cx.rudrans.com` |
 | AWS account with permission to spin an EC2 in the region | AWS console | — |
 | SSH keypair (`.pem`) | Generated via EC2 console at first launch | `deploy.pem` |
 | SMTP creds for password-reset / signup emails | Customer's Google Workspace, Amazon SES, or Postmark | `smtp.gmail.com:587` + app password |
@@ -87,11 +87,11 @@ heading (this file is git-ignored — never commit).
 Add both subdomains pointing at the Elastic IP:
 
 ```
-ems-cx.wellnessextract.com          A   <EC2-EIP>   TTL 300
-api-ems-cx.wellnessextract.com      A   <EC2-EIP>   TTL 300
+app-cx.rudrans.com          A   <EC2-EIP>   TTL 300
+api-cx.rudrans.com      A   <EC2-EIP>   TTL 300
 ```
 
-Wait until `dig +short ems-cx.wellnessextract.com` returns the EIP before
+Wait until `dig +short app-cx.rudrans.com` returns the EIP before
 running certbot in Phase 3.
 
 ### 2.3. Base OS
@@ -148,9 +148,9 @@ VAULT_ENC_KEY=$(openssl rand -hex 32)
 ```
 
 Edit `.env` with values above, plus:
-- `SITE_URL=https://ems-cx.wellnessextract.com`
-- `API_EXTERNAL_URL=https://api-ems-cx.wellnessextract.com`
-- `SUPABASE_PUBLIC_URL=https://api-ems-cx.wellnessextract.com`
+- `SITE_URL=https://app-cx.rudrans.com`
+- `API_EXTERNAL_URL=https://api-cx.rudrans.com`
+- `SUPABASE_PUBLIC_URL=https://api-cx.rudrans.com`
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_SENDER_NAME`,
   `SMTP_ADMIN_EMAIL` — customer's SMTP account
 - `POSTGRES_PORT=5432` (internal only, do not expose)
@@ -196,16 +196,16 @@ Two sites: dashboard host and API host.
 ```nginx
 server {
   listen 80;
-  server_name ems-cx.wellnessextract.com;
+  server_name app-cx.rudrans.com;
   location /.well-known/acme-challenge/ { root /var/www/html; }
   location / { return 301 https://$host$request_uri; }
 }
 
 server {
   listen 443 ssl http2;
-  server_name ems-cx.wellnessextract.com;
-  ssl_certificate     /etc/letsencrypt/live/ems-cx.wellnessextract.com/fullchain.pem;
-  ssl_certificate_key /etc/letsencrypt/live/ems-cx.wellnessextract.com/privkey.pem;
+  server_name app-cx.rudrans.com;
+  ssl_certificate     /etc/letsencrypt/live/app-cx.rudrans.com/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/app-cx.rudrans.com/privkey.pem;
 
   root /var/www/rudrans-app;
   index index.html;
@@ -227,16 +227,16 @@ server {
 ```nginx
 server {
   listen 80;
-  server_name api-ems-cx.wellnessextract.com;
+  server_name api-cx.rudrans.com;
   location /.well-known/acme-challenge/ { root /var/www/html; }
   location / { return 301 https://$host$request_uri; }
 }
 
 server {
   listen 443 ssl http2;
-  server_name api-ems-cx.wellnessextract.com;
-  ssl_certificate     /etc/letsencrypt/live/api-ems-cx.wellnessextract.com/fullchain.pem;
-  ssl_certificate_key /etc/letsencrypt/live/api-ems-cx.wellnessextract.com/privkey.pem;
+  server_name api-cx.rudrans.com;
+  ssl_certificate     /etc/letsencrypt/live/api-cx.rudrans.com/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/api-cx.rudrans.com/privkey.pem;
 
   client_max_body_size 250M;   # match STORAGE_FILE_SIZE_LIMIT
 
@@ -267,8 +267,8 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ```bash
 sudo mkdir -p /var/www/rudrans-app /var/www/html
-sudo certbot --nginx -d ems-cx.wellnessextract.com -d api-ems-cx.wellnessextract.com \
-             -m ops@wellnessextract.com --agree-tos --non-interactive
+sudo certbot --nginx -d app-cx.rudrans.com -d api-cx.rudrans.com \
+             -m ops@rudrans.com --agree-tos --non-interactive
 # Certbot auto-adds the SSL blocks. If it fails on "already has SSL" —
 # ignore, our nginx configs already have the ssl_certificate lines.
 ```
@@ -312,7 +312,7 @@ next file.
 ```sql
 -- Super-admin org for the deploying operator
 insert into organizations (id, name, slug, plan)
-values (gen_random_uuid(), 'Wellness Extract Ops', 'we-ops', 'internal');
+values (gen_random_uuid(), 'Rudrans Ops', 'we-ops', 'internal');
 
 -- The operator's login email
 insert into org_members (org_id, user_id, role, full_name, email)
@@ -321,7 +321,7 @@ from organizations where slug = 'we-ops';
 ```
 
 Run via `docker exec -i supabase-db psql -U postgres` or Studio at
-`https://api-ems-cx.wellnessextract.com/project/default/sql/new`.
+`https://api-cx.rudrans.com/project/default/sql/new`.
 
 ---
 
@@ -382,9 +382,9 @@ so `docker compose up` re-exports them into the edge container.
 `.env.production.local` in the repo (git-ignored):
 
 ```
-VITE_SUPABASE_URL=https://api-ems-cx.wellnessextract.com
+VITE_SUPABASE_URL=https://api-cx.rudrans.com
 VITE_SUPABASE_ANON_KEY=<anon-key-from-Phase-2.3>
-VITE_SITE_URL=https://ems-cx.wellnessextract.com
+VITE_SITE_URL=https://app-cx.rudrans.com
 ```
 
 ### 7.2. Build + rsync
@@ -401,7 +401,7 @@ ssh -i deploy.pem ubuntu@<NEW-EC2-EIP> \
 ### 7.3. Verify
 
 ```bash
-curl -sI https://ems-cx.wellnessextract.com | head -2
+curl -sI https://app-cx.rudrans.com | head -2
 # HTTP/1.1 200 OK  ← dashboard is live
 ```
 
@@ -422,9 +422,9 @@ this phase. Otherwise:
 - t3.small, own Elastic IP.
 - Security group: `3478/udp`, `3478/tcp`, `5349/udp`, `5349/tcp`,
   `49152-65535/udp` (relay range).
-- DNS `A`: `turn-cx.wellnessextract.com` → EIP.
+- DNS `A`: `turn-cx.rudrans.com` → EIP.
 - SSL cert via certbot standalone: `sudo certbot certonly --standalone \
-  -d turn-cx.wellnessextract.com`.
+  -d turn-cx.rudrans.com`.
 
 ### 8.2. Install + configure
 
@@ -437,11 +437,11 @@ fingerprint
 lt-cred-mech
 use-auth-secret
 static-auth-secret=<32-byte-hex — save to SECRETS.local.md>
-realm=turn-cx.wellnessextract.com
-server-name=turn-cx.wellnessextract.com
+realm=turn-cx.rudrans.com
+server-name=turn-cx.rudrans.com
 external-ip=<EIP>
-cert=/etc/letsencrypt/live/turn-cx.wellnessextract.com/fullchain.pem
-pkey=/etc/letsencrypt/live/turn-cx.wellnessextract.com/privkey.pem
+cert=/etc/letsencrypt/live/turn-cx.rudrans.com/fullchain.pem
+pkey=/etc/letsencrypt/live/turn-cx.rudrans.com/privkey.pem
 no-cli
 no-multicast-peers
 denied-peer-ip=10.0.0.0-10.255.255.255
@@ -459,7 +459,7 @@ Update the `turn_relays` table in Postgres:
 
 ```sql
 insert into turn_relays (region, host, port, secret, enabled)
-values ('us-east', 'turn-cx.wellnessextract.com', 3478, '<same secret>', true);
+values ('us-east', 'turn-cx.rudrans.com', 3478, '<same secret>', true);
 ```
 
 Same static-auth-secret in DB and in `turnserver.conf` — otherwise HMAC
@@ -490,7 +490,7 @@ npm run tauri signer generate -- -p <passphrase>
 "plugins": {
   "updater": {
     "endpoints": [
-      "https://api-ems-cx.wellnessextract.com/storage/v1/object/public/releases/latest.json"
+      "https://api-cx.rudrans.com/storage/v1/object/public/releases/latest.json"
     ],
     "pubkey": "<from step 9.1>"
   }
@@ -513,7 +513,7 @@ git push origin v0.7.42-<customer-slug>
 After CI green:
 
 ```
-https://api-ems-cx.wellnessextract.com/storage/v1/object/public/releases/wellness-extract-agent_<version>_x64_en-US.msi
+https://api-cx.rudrans.com/storage/v1/object/public/releases/rudrans-agent_<version>_x64_en-US.msi
 ```
 
 ---
@@ -530,11 +530,11 @@ includes weekly marketing posts.
 
 Before handing over to the customer, all must be ✅:
 
-- [ ] `dig +short ems-cx.wellnessextract.com` resolves to EIP
-- [ ] `dig +short api-ems-cx.wellnessextract.com` resolves to EIP
-- [ ] `curl -sI https://ems-cx.wellnessextract.com` → `HTTP/1.1 200 OK`
-- [ ] `curl -sI https://api-ems-cx.wellnessextract.com` → Kong header present
-- [ ] `curl -s https://api-ems-cx.wellnessextract.com/rest/v1/` → 200 with anon key
+- [ ] `dig +short app-cx.rudrans.com` resolves to EIP
+- [ ] `dig +short api-cx.rudrans.com` resolves to EIP
+- [ ] `curl -sI https://app-cx.rudrans.com` → `HTTP/1.1 200 OK`
+- [ ] `curl -sI https://api-cx.rudrans.com` → Kong header present
+- [ ] `curl -s https://api-cx.rudrans.com/rest/v1/` → 200 with anon key
 - [ ] SSL Labs A+ on both hosts: https://www.ssllabs.com/ssltest/
 - [ ] `docker compose ps` inside `/opt/rudrans/supabase/docker/` — every
       service healthy
@@ -558,8 +558,8 @@ Before handing over to the customer, all must be ✅:
 Curated from actual incidents on the current prod:
 
 1. **`.supabase.co` in `.env` is stale/dev.** New deploys must use the
-   `api-ems-cx.…` self-hosted URL. See
-   `memory/reference_supabase_db.md`.
+   self-hosted `api-cx.rudrans.com` (or the customer's own API subdomain).
+   See `memory/reference_supabase_db.md`.
 2. **Nginx SPA fallback serves index.html for missing files.** Manifest
    files, sitemaps, and any static XML/text need explicit `location`
    blocks with `alias` — otherwise Microsoft admin center rejects
@@ -598,7 +598,7 @@ If a Phase fails past recovery on a fresh box, the safest rollback is:
 - Phase 1 — terminate the EC2, release the EIP, re-run.
 - Phase 2 — `docker compose down -v` (wipes Postgres volume), restart Phase 2.
 - Phase 3 — `sudo rm /etc/nginx/sites-enabled/{dashboard,api}` +
-  `sudo certbot delete --cert-name ems-cx.wellnessextract.com` + retry.
+  `sudo certbot delete --cert-name app-cx.rudrans.com` + retry.
 - Phase 4 onward — never destructive-rollback; fix the failing migration
   or function file, re-run only that piece.
 
@@ -612,10 +612,10 @@ recover a new deploy.** They share DNS root but nothing else.
 Once verification is clean:
 
 1. Send customer:
-   - Dashboard URL: `https://ems-cx.wellnessextract.com`
+   - Dashboard URL: `https://app-cx.rudrans.com`
    - Login: super-admin credentials seeded in Phase 5.2
    - Agent installer URL from Phase 9.4
-   - Docs: `https://ems-cx.wellnessextract.com/docs/user-guide`
+   - Docs: `https://app-cx.rudrans.com/docs/user-guide`
 2. Add the new box to the on-call runbook (`SECURITY-OPS.md`) so
    `certbot`, `docker`, and disk-space alerts get watched.
 3. Schedule the 30-day media purge timer.
