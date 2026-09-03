@@ -139,12 +139,51 @@ export default function AgentInventoryTab({ agentId }: { agentId: string }) {
   if (!row) {
     return (
       <div className="bg-dark-800 border border-dark-700 rounded-xl p-8 text-center text-sm text-gray-400">
-        <p className="text-white text-base mb-1">Inventory not yet collected</p>
-        <p>The agent posts a hardware + software + event-log snapshot within
-          ~30 s of first launch and then once every 24 hours.</p>
-        <p className="mt-2 text-xs text-gray-500">
-          Requires agent v0.7.33 or newer.
+        <p className="text-white text-base mb-1">No inventory snapshot yet for this agent</p>
+        <p className="max-w-lg mx-auto">
+          Once the agent posts even one hardware + software + event-log snapshot
+          it stays visible in this tab forever — even while the agent is offline.
+          You're seeing this empty state because <em>no snapshot has landed for
+          this agent yet.</em>
         </p>
+        <p className="mt-3 text-xs text-gray-500">
+          The agent posts one snapshot ~30 s after launch and then once every 24 h.
+          Requires agent v0.7.40 or newer (older Windows builds used <code className="font-mono text-gray-400">wmic</code>,
+          which doesn't ship by default on Windows 11 22H2+).
+        </p>
+        <div className="mt-4 flex flex-col items-center gap-2">
+          <button
+            type="button"
+            onClick={refreshNow}
+            disabled={refreshing}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed text-white shadow-md shadow-emerald-500/10 transition"
+            title="Ask the agent to collect a snapshot right now"
+          >
+            {refreshing ? (
+              <>
+                <span className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                Requesting…
+              </>
+            ) : (
+              <>
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="23 4 23 10 17 10" />
+                  <path d="M20.49 15A9 9 0 1 1 5.64 5.64L1 10" />
+                </svg>
+                Request snapshot now
+              </>
+            )}
+          </button>
+          {refreshMsg && (
+            <p className={`text-[11px] ${refreshMsg.startsWith('Failed') ? 'text-rose-400' : 'text-emerald-400'}`}>
+              {refreshMsg}
+            </p>
+          )}
+          <p className="text-[10px] text-gray-600">
+            If the agent is offline the request queues on the Realtime channel and
+            fires as soon as it reconnects.
+          </p>
+        </div>
       </div>
     );
   }
@@ -258,8 +297,25 @@ export default function AgentInventoryTab({ agentId }: { agentId: string }) {
           <div>
             <h3 className="text-white text-base font-semibold">System inventory</h3>
             <p className="text-xs text-gray-500 mt-0.5">
-              Last collected {new Date(row.collected_at).toLocaleString()}
-              {systemSerial && <> · Serial <span className="font-mono text-gray-400">{systemSerial}</span></>}
+              {(() => {
+                const collectedAt = new Date(row.collected_at);
+                const ageMs = Date.now() - collectedAt.getTime();
+                const ageHours = ageMs / 3_600_000;
+                const staleLabel = ageHours < 2
+                  ? 'just now'
+                  : ageHours < 26
+                    ? `${Math.round(ageHours)} h ago`
+                    : `${Math.round(ageHours / 24)} d ago`;
+                const isStale = ageHours > 30; // > 24h + a bit of jitter buffer
+                return (
+                  <>
+                    Last collected {collectedAt.toLocaleString()}
+                    {' '}<span className={isStale ? 'text-amber-400' : 'text-emerald-400'}>· {staleLabel}</span>
+                    {isStale && <span className="text-amber-400"> — agent may be offline; showing last known snapshot</span>}
+                    {systemSerial && <> · Serial <span className="font-mono text-gray-400">{systemSerial}</span></>}
+                  </>
+                );
+              })()}
             </p>
             {refreshMsg && (
               <p className={`text-[11px] mt-1 ${refreshMsg.startsWith('Failed') ? 'text-rose-400' : 'text-emerald-400'}`}>
