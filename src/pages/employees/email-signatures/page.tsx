@@ -576,9 +576,45 @@ export default function EmailSignaturesPage() {
           <ul className="space-y-2 text-sm text-gray-300">
             <li className="flex gap-2"><span className="text-emerald-400 font-bold shrink-0">✓</span><span><strong className="text-white">Classic Outlook Desktop (Windows)</strong> — the moment you click <em>Push signature now</em>, the Security Assistant agent v0.6.22+ receives a realtime notification and writes the signature under the user's own name to <code className="text-xs px-1 py-0.5 bg-dark-700 rounded text-gray-300">%APPDATA%\Microsoft\Signatures\</code> plus sets it as Outlook's default via registry.</span></li>
             <li className="flex gap-2"><span className="text-emerald-400 font-bold shrink-0">✓</span><span><strong className="text-white">Exchange mailbox (server-side)</strong> — <code className="text-xs px-1 py-0.5 bg-dark-700 rounded text-gray-300">Set-MailboxMessageConfiguration</code> writes the signature to the legacy mailbox field on push. Use the <strong>Verify</strong> button on any row to confirm the Exchange copy is in place.</span></li>
-            <li className="flex gap-2"><span className="text-amber-400 font-bold shrink-0">△</span><span><strong className="text-white">Outlook Web + New Outlook</strong> — modern OWA + New Outlook read from Microsoft's <em>Roaming Signatures</em> cloud store, which is separate from the legacy mailbox field. If Verify shows the signature IS stored in Exchange but the user's OWA is still empty, install our <strong>Outlook Add-in</strong> in the tenant — the add-in reads our signature endpoint and injects it via Office.js on compose. Microsoft doesn't yet ship a stable Graph API for the Roaming Signatures store, so the add-in is currently the only reliable path for OWA + New Outlook.</span></li>
+            <li className="flex gap-2"><span className="text-amber-400 font-bold shrink-0">△</span><span><strong className="text-white">Outlook Web + New Outlook</strong> — modern OWA + New Outlook read from Microsoft's <em>Roaming Signatures</em> cloud store which is separate from the legacy mailbox field, and Microsoft hasn't shipped a stable Graph API to write it. The workaround the whole industry uses is our free <strong>Wellness Extract Outlook Add-in</strong> — see the box below to install it once per tenant. Once installed, signatures inject automatically on every New / Reply / Forward compose event, exactly like the desktop path.</span></li>
             <li className="flex gap-2"><span className="text-amber-400 font-bold shrink-0">△</span><span><strong className="text-white">Outlook Mobile app</strong> — Microsoft doesn't expose a push API for mobile. Users must set the mobile signature manually once (Outlook mobile → Settings → Signature).</span></li>
           </ul>
+
+          {/* Add-in install callout — the actual answer to "OWA is empty" */}
+          <div className="mt-4 p-4 rounded-lg bg-blue-500/10 border border-blue-500/30">
+            <div className="flex items-start gap-3 mb-2">
+              <span className="text-2xl leading-none">🧩</span>
+              <div className="flex-1">
+                <p className="text-white font-semibold text-sm">Make OWA + New Outlook work — install the Outlook Add-in (one-time, tenant-wide)</p>
+                <p className="text-[11px] text-gray-400 mt-1">Every enterprise signature tool (Exclaimer, CodeTwo, …) works this way for OWA. Install once, works for every user in the tenant, no per-user setup.</p>
+              </div>
+            </div>
+            <ol className="text-xs text-gray-300 space-y-2 list-decimal ml-5 mt-3">
+              <li>Sign in to <a href="https://admin.microsoft.com/AdminPortal/Home#/Settings/IntegratedApps" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">Microsoft 365 admin center → Settings → Integrated apps</a> with a Global Admin account.</li>
+              <li>Click <strong className="text-white">Upload custom apps</strong> → choose <em>Office Add-in</em> → <em>Provide link to manifest file</em>.</li>
+              <li>
+                Paste this manifest URL:
+                <div className="mt-1.5 flex items-center gap-2">
+                  <code className="flex-1 px-2 py-1 bg-dark-950 border border-dark-700 rounded font-mono text-[11px] text-emerald-300 select-all break-all">
+                    https://ems.wellnessextract.com/outlook-addin/manifest.xml
+                  </code>
+                  <button
+                    type="button"
+                    onClick={() => navigator.clipboard.writeText('https://ems.wellnessextract.com/outlook-addin/manifest.xml')}
+                    className="px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-[10px]"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </li>
+              <li>On the <em>Assign users</em> step choose <strong>Entire organization</strong> (or a specific security group). Confirm the requested permissions (Read the composed email + inject a signature).</li>
+              <li>Click <strong>Deploy</strong>. Microsoft says allow up to 12 h for rollout; in practice most tenants see it within 20-30 minutes.</li>
+              <li>Test: open OWA → New message. The add-in runs silently and drops in the same signature this dashboard pushed. Reply and Forward the same way.</li>
+            </ol>
+            <p className="text-[11px] text-gray-500 mt-3">
+              The add-in only calls our <code className="text-emerald-300">/outlook-addin-signature</code> endpoint with the composing user's UPN and drops the rendered HTML into the email. No mailbox reads, no scope beyond the one active message. If a user's signature status here says <em>Applied</em> but their OWA is empty, this add-in is the piece that's missing.
+            </p>
+          </div>
         </div>
 
         {/* ─── One-time Azure setup callout ──────────────────────────── */}
