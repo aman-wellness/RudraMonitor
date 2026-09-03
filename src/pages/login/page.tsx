@@ -60,7 +60,7 @@ export default function Login() {
       accent="indigo"
       brandLabel="Wellness Extract"
       brandIcon="ri-shield-check-line"
-      illustrationUrl="https://illustrations.popsy.co/violet/work-from-home.svg"
+      illustrationUrl="/rudrans/rudrans-laptop.webp"
       illustrationCaption="Welcome back"
       illustrationSubtitle="Sign in to manage your team's productivity, track agents, and review insights — all from one place."
       title="Sign In"

@@ -1,0 +1,36 @@
+# rudrans.com — marketing pages are crawlable; the application, auth and
+# portal surfaces are not (they're gated and have no SEO value).
+
+User-agent: *
+Allow: /
+Disallow: /login
+Disallow: /signup
+Disallow: /signup-success
+Disallow: /complete-signup
+Disallow: /accept-invite
+Disallow: /reset-password
+Disallow: /post-login
+Disallow: /oauth-mobile-bridge
+Disallow: /dashboard
+Disallow: /monitoring
+Disallow: /agents
+Disallow: /setup
+Disallow: /alerts
+Disallow: /system-health
+Disallow: /admin-portal
+Disallow: /reports
+Disallow: /dlp
+Disallow: /employees
+Disallow: /governance
+Disallow: /subscription
+Disallow: /checkout
+Disallow: /addon-seats
+Disallow: /admin/
+Disallow: /partner/
+Disallow: /partner-signup
+Disallow: /super
+Disallow: /otp/
+Disallow: /r/
+Disallow: /invoices/
+
+Sitemap: https://rudrans.com/sitemap.xml

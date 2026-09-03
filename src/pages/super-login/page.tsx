@@ -66,7 +66,7 @@ export default function SuperLogin() {
       accent="purple"
       brandLabel="Super Admin"
       brandIcon="ri-shield-keyhole-line"
-      illustrationUrl="https://illustrations.popsy.co/violet/security.svg"
+      illustrationUrl="/rudrans/rudrans-mascot-hero10.webp"
       illustrationCaption="Internal access only"
       illustrationSubtitle="This portal is restricted to Wellness Extract engineers and support staff. All actions are logged to the audit trail."
       title="Super Admin"

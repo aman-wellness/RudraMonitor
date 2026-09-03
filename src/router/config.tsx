@@ -10,9 +10,16 @@ import type { AppAccessCode } from "../lib/useAppAccess";
 import type { FeatureCode } from "../lib/useFeatures";
 import { RequireSuperAdmin, RequirePartner } from "../lib/RequireRole";
 
-// Marketing pages: keep Home eager so the landing page paints instantly.
-import Home from "../pages/home/page";
 import NotFound from "../pages/NotFound";
+
+// Rudrans portfolio / marketing site (light "Rudrans" theme, scoped under
+// `.rd-site` in src/styles/rudrans-site.css). Ported pixel-for-pixel from the
+// Claude-Design exports. Lazy so the dashboard bundle stays lean.
+const SiteHome = lazy(() => import("../pages/site/home/page"));
+const SiteAbout = lazy(() => import("../pages/site/about/page"));
+const SitePricing = lazy(() => import("../pages/site/pricing/page"));
+const SiteContact = lazy(() => import("../pages/site/contact/page"));
+const SiteHowItWorks = lazy(() => import("../pages/site/how-it-works/page"));
 
 // Everything else: lazy-loaded so the initial bundle stays small.
 // Heavy form pages (employees/*) pull in country-state-city (~8 MB), which is
@@ -120,7 +127,11 @@ const requires = (code: FeatureCode, el: React.ReactNode, accessCode?: AppAccess
   protect(<RequireFeature code={code}>{accessCode ? access(accessCode, el) : el}</RequireFeature>);
 
 const routes: RouteObject[] = [
-  { path: "/", element: <Home /> },
+  { path: "/", element: wrap(<SiteHome />) },
+  { path: "/about", element: wrap(<SiteAbout />) },
+  { path: "/pricing", element: wrap(<SitePricing />) },
+  { path: "/contact", element: wrap(<SiteContact />) },
+  { path: "/how-it-works", element: wrap(<SiteHowItWorks />) },
   { path: "/login", element: wrap(<Login />) },
   { path: "/signup", element: wrap(<Signup />) },
   { path: "/signup-success",  element: wrap(<SignupSuccess />) },

@@ -91,8 +91,8 @@ export default function ResetPassword() {
       brandLabel={accent === 'violet' ? 'Wellness Extract Partners' : accent === 'purple' ? 'Super Admin' : 'Wellness Extract'}
       brandIcon={accent === 'violet' ? 'ri-team-line' : accent === 'purple' ? 'ri-shield-keyhole-line' : 'ri-shield-check-line'}
       illustrationUrl={accent === 'violet'
-        ? 'https://illustrations.popsy.co/violet/business-deal.svg'
-        : 'https://illustrations.popsy.co/violet/work-from-home.svg'}
+        ? '/rudrans/hero-mascot-v2.webp'
+        : '/rudrans/rudrans-laptop.webp'}
       illustrationCaption="Set a new password"
       illustrationSubtitle="Pick a strong password — at least 8 characters. We'll log you in to your portal as soon as you save."
       title={titleByAccent}

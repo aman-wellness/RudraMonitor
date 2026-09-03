@@ -1,0 +1,16 @@
+# Rudrans
+
+> Rudrans is an employee monitoring and workforce analytics platform by Yugma Soft Pvt. Ltd. (India). A lightweight agent for Windows, macOS and Ubuntu streams real-time activity — apps, websites, live screens, screenshots, working time — into one dashboard, with productivity insights, smart alerts, DLP and USB device control. Plans start at ₹199 per user per month with a 7-day free trial; Enterprise pricing is custom.
+
+## Pages
+
+- [Home](https://rudrans.com/): product overview — features, how it works, insights, pricing summary
+- [Pricing](https://rudrans.com/pricing): plans (Starter ₹199, Professional ₹299, Enterprise custom), billing FAQ
+- [How it works](https://rudrans.com/how-it-works): the collect → process → analyze → act pipeline and core capabilities
+- [About](https://rudrans.com/about): philosophy — monitoring without micromanaging; built by Yugma Soft
+- [Contact](https://rudrans.com/contact): book a demo or talk to sales
+
+## Company
+
+- Rudrans is a product of [Yugma Soft Pvt. Ltd.](https://yugmasoft.com) (Punjab, India), which also operates [Srvora](https://srvora.com), an on-demand IT services marketplace.
+- Contact: info@yugmasoft.com

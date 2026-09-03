@@ -1,0 +1,102 @@
+/* Rudrans marketing/portfolio site — design system.
+ *
+ * Ported verbatim from the Claude-Design exports (Downloads/S/*.dc.html).
+ * Everything is scoped under `.rd-site` so it CANNOT leak into the monitoring
+ * dashboard (which has its own dark theme). Each marketing page wraps its
+ * content in <div className="rd-site">…</div>. Keyframes + the font @import are
+ * global (harmless — animations are only referenced inside .rd-site markup).
+ */
+
+/* Fonts load via a parallel <link> in index.html (a CSS @import here would
+   chain serially behind the bundled stylesheet and block first render). */
+
+.rd-site {
+  --bg: #F6F8FB;
+  --bg2: #FFFFFF;
+  --ink: #0B1526;
+  --ink2: #42506B;
+  --ink3: #7C8AA5;
+  --line: #E3E9F2;
+  --line2: #D3DDEB;
+  --card: #FFFFFF;
+  --tint: #EDF2FA;
+  --blue: #0D9488;
+  --blue2: #14B8A6;
+  --blue-soft: rgba(13, 148, 136, 0.1);
+  --green: #16A34A;
+  --green-soft: rgba(22, 163, 74, 0.1);
+  --amber: #B45309;
+  --amber-soft: #FDEED3;
+  --shadow: 0 18px 44px rgba(13, 38, 84, 0.08);
+
+  font-family: 'IBM Plex Sans', sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  scroll-behavior: smooth;
+  min-height: 100vh;
+  /* Full-bleed sections use margin: calc(50% - 50vw); 100vw includes the
+     scrollbar width on desktop, so clip the few excess pixels here. */
+  overflow-x: clip;
+}
+
+.rd-site h1,
+.rd-site h2,
+.rd-site h3,
+.rd-site h4,
+.rd-site h5,
+.rd-site h6 {
+  font-family: 'Space Grotesk', sans-serif;
+  /* Override RudraMonitor's global `h1,h2,h3 { color: var(--text-strong) }`
+     (index.css) which sets a dark-theme color directly on the element and
+     would otherwise beat the inherited --ink here, rendering the marketing
+     headings near-invisible on the light background. The gradient "Rudrans."
+     span keeps its own -webkit-text-fill-color:transparent (inline wins). */
+  color: var(--ink);
+}
+
+.rd-site a {
+  color: var(--blue);
+  text-decoration: none;
+}
+.rd-site a:hover {
+  color: var(--blue2);
+}
+
+/* ---- shared header (SiteHeader.tsx) ---- */
+.rd-site .rd-hdr-nav-a { color: var(--ink2); font-weight: 600; text-decoration: none; }
+.rd-site .rd-hdr-nav-a:hover { color: var(--ink); }
+.rd-site .rd-hdr-nav-a.rd-active { color: var(--blue); }
+.rd-site .rd-hdr-partner { font-size: 14px; font-weight: 600; color: var(--blue); white-space: nowrap; }
+.rd-site .rd-hdr-partner:hover { color: var(--blue2); }
+.rd-site .rd-hdr-login {
+  display: inline-flex; align-items: center;
+  background: var(--card); border: 1.5px solid var(--line2); color: var(--ink);
+  font-weight: 700; font-size: 14px; padding: 10px 20px; border-radius: 10px;
+  white-space: nowrap; transition: all 0.25s ease; box-sizing: border-box;
+}
+.rd-site .rd-hdr-login:hover { border-color: var(--blue); color: var(--blue); }
+.rd-site .rd-hdr-cta {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: var(--blue); color: #FFFFFF;
+  font-weight: 700; font-size: 14px; padding: 11px 20px; border-radius: 10px;
+  white-space: nowrap; transition: all 0.25s ease; box-sizing: border-box;
+}
+.rd-site .rd-hdr-cta:hover { background: var(--blue2); color: #FFFFFF; transform: translateY(-1px); }
+
+/* Horizontal swipe container with an invisible scrollbar (wide graphics on
+   phones — content pans by touch, no bar shown). */
+.rd-hscroll { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; -ms-overflow-style: none; }
+.rd-hscroll::-webkit-scrollbar { display: none; width: 0; height: 0; }
+
+/* ---- animations (referenced by inline markup) ---- */
+@keyframes rd-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+@keyframes rd-count-glow { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+@keyframes rd-app-fill { 0%, 100% { transform: scaleX(0.55); } 50% { transform: scaleX(1); } }
+@keyframes rd-bell { 0%, 84%, 100% { transform: rotate(0); } 86% { transform: rotate(13deg); } 90% { transform: rotate(-11deg); } 94% { transform: rotate(7deg); } 98% { transform: rotate(-4deg); } }
+@keyframes rd-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@keyframes rd-cursor { 0% { transform: translate(0, 0); } 25% { transform: translate(38px, 14px); } 55% { transform: translate(12px, 30px); } 80% { transform: translate(46px, 6px); } 100% { transform: translate(0, 0); } }
+@keyframes rd-bar { 0%, 100% { transform: scaleY(0.55); } 50% { transform: scaleY(1); } }
+@keyframes rd-donut { 0% { transform: rotate(0); } 100% { transform: rotate(360deg); } }
+@keyframes rd-slide-in { 0% { opacity: 0; transform: translateY(10px); } 12% { opacity: 1; transform: translateY(0); } 82% { opacity: 1; transform: translateY(0); } 94%, 100% { opacity: 0; transform: translateY(-8px); } }
+@keyframes rd-scan { 0% { left: 4%; } 50% { left: 88%; } 100% { left: 4%; } }
+@keyframes rd-typing { 0%, 100% { width: 35%; } 50% { width: 78%; } }

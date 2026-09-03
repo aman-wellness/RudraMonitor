@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react';
 import AdminLayout from '../AdminLayout';
 import { supabase, type Plan } from '@/lib/supabase';
 import { notify, promptDialog } from '@/lib/notify';
+import SitePlansTab from './SitePlansTab';
 
 export default function AdminPlans() {
+  const [tab, setTab] = useState<'billing' | 'site'>('billing');
   const [rows, setRows] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<Partial<Plan> | null>(null);
@@ -73,6 +75,18 @@ export default function AdminPlans() {
 
   return (
     <AdminLayout title="Plans">
+      <div className="flex items-center gap-1 mb-5 bg-dark-800 border border-dark-700 rounded-lg p-1 w-fit">
+        {([['billing', 'Billing Plans'], ['site', 'Website Pricing Cards']] as const).map(([key, label]) => (
+          <button key={key} onClick={() => setTab(key)}
+            className={`px-4 py-1.5 text-xs rounded-md font-medium transition-colors ${tab === key ? 'bg-cyan-500 text-dark-950' : 'text-gray-400 hover:text-white'}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'site' && <SitePlansTab />}
+
+      {tab === 'billing' && (<>
       <div className="flex items-center justify-between mb-4">
         <p className="text-xs text-gray-500 max-w-2xl">
           Each plan stores three prices: <span className="text-emerald-400">List INR</span> (used for invoices &amp; GST),
@@ -289,6 +303,7 @@ export default function AdminPlans() {
           </div>
         </div>
       )}
+      </>)}
     </AdminLayout>
   );
 }

@@ -44,7 +44,7 @@ export default function PartnerLogin() {
       accent="violet"
       brandLabel="Wellness Extract Partners"
       brandIcon="ri-team-line"
-      illustrationUrl="https://illustrations.popsy.co/violet/business-deal.svg"
+      illustrationUrl="/rudrans/hero-mascot-v2.webp"
       illustrationCaption="Grow your channel"
       illustrationSubtitle="Sign in to your partner portal to manage customers, track licenses, and view commission earnings."
       title="Partner Portal"
