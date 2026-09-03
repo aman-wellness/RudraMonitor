@@ -1,6 +1,6 @@
 [package]
 name = "wellness-extract-agent"
-version = "0.7.31"
+version = "0.7.42"
 description = "Wellness Extract employee monitoring agent"
 edition = "2021"
 rust-version = "1.77"
@@ -140,7 +140,7 @@ objc2-foundation = "0.2"
 # per poll) and unreliable when PowerShell startup latency spiked.
 [target.'cfg(target_os = "windows")'.dependencies]
 uiautomation = "0.18"
-windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_System_Performance", "Win32_System_StationsAndDesktops"] }
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_System_Performance", "Win32_System_StationsAndDesktops", "Win32_System_Power"] }
 # Registry writes for the system-proxy setter (HKCU\...\Internet Settings\
 # ProxyEnable / ProxyServer).
 winreg = "0.52"

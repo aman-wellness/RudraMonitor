@@ -556,7 +556,10 @@ export default function EmailSignaturesPage() {
                         <td className="p-2.5 text-gray-400">{u.upn}</td>
                         <td className="p-2.5 text-gray-400">{u.job_title ?? '—'}</td>
                         <td className="p-2.5">
-                          <StatusPill status={s} />
+                          <div className="flex items-center gap-2">
+                            <StatusPill status={s} />
+                            <VerifyButton upn={u.upn} />
+                          </div>
                         </td>
                       </tr>
                     );
@@ -571,10 +574,52 @@ export default function EmailSignaturesPage() {
         <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
           <h2 className="text-sm font-semibold text-white mb-3">Where this signature shows up</h2>
           <ul className="space-y-2 text-sm text-gray-300">
-            <li className="flex gap-2"><span className="text-emerald-400 font-bold shrink-0">✓</span><span><strong className="text-white">Outlook Web + New Outlook</strong> — applied on New / Reply / Forward, immediately after push.</span></li>
-            <li className="flex gap-2"><span className="text-emerald-400 font-bold shrink-0">✓</span><span><strong className="text-white">Classic Outlook Desktop (Windows)</strong> — the moment you click <em>Push signature now</em>, the Security Assistant agent v0.6.22+ receives a realtime notification and writes the signature under the user's own name to <code className="text-xs px-1 py-0.5 bg-dark-700 rounded text-gray-300">%APPDATA%\Microsoft\Signatures\</code> plus sets it as Outlook's default via registry. No polling, no timer — pushes only when you push.</span></li>
+            <li className="flex gap-2"><span className="text-emerald-400 font-bold shrink-0">✓</span><span><strong className="text-white">Classic Outlook Desktop (Windows)</strong> — the moment you click <em>Push signature now</em>, the Security Assistant agent v0.6.22+ receives a realtime notification and writes the signature under the user's own name to <code className="text-xs px-1 py-0.5 bg-dark-700 rounded text-gray-300">%APPDATA%\Microsoft\Signatures\</code> plus sets it as Outlook's default via registry.</span></li>
+            <li className="flex gap-2"><span className="text-emerald-400 font-bold shrink-0">✓</span><span><strong className="text-white">Exchange mailbox (server-side)</strong> — <code className="text-xs px-1 py-0.5 bg-dark-700 rounded text-gray-300">Set-MailboxMessageConfiguration</code> writes the signature to the legacy mailbox field on push. Use the <strong>Verify</strong> button on any row to confirm the Exchange copy is in place.</span></li>
+            <li className="flex gap-2"><span className="text-amber-400 font-bold shrink-0">△</span><span><strong className="text-white">Outlook Web + New Outlook</strong> — modern OWA + New Outlook read from Microsoft's <em>Roaming Signatures</em> cloud store which is separate from the legacy mailbox field, and Microsoft hasn't shipped a stable Graph API to write it. The workaround the whole industry uses is our free <strong>Wellness Extract Outlook Add-in</strong> — see the box below to install it once per tenant. Once installed, signatures inject automatically on every New / Reply / Forward compose event, exactly like the desktop path.</span></li>
             <li className="flex gap-2"><span className="text-amber-400 font-bold shrink-0">△</span><span><strong className="text-white">Outlook Mobile app</strong> — Microsoft doesn't expose a push API for mobile. Users must set the mobile signature manually once (Outlook mobile → Settings → Signature).</span></li>
           </ul>
+
+          {/* Add-in install callout — the actual answer to "OWA is empty" */}
+          <div className="mt-4 p-4 rounded-lg bg-blue-500/10 border border-blue-500/30">
+            <div className="flex items-start gap-3 mb-2">
+              <span className="text-2xl leading-none">🧩</span>
+              <div className="flex-1">
+                <p className="text-white font-semibold text-sm">Make OWA + New Outlook work — install the Outlook Add-in (one-time, tenant-wide)</p>
+                <p className="text-[11px] text-gray-400 mt-1">
+                  Every enterprise signature tool (Exclaimer, CodeTwo, …) works this way for OWA.
+                  Install once, works for every user in the tenant, no per-user setup.
+                  {' '}
+                  <a href="/docs/email-signatures-setup" className="text-cyan-400 hover:underline">Full setup guide with troubleshooting →</a>
+                </p>
+              </div>
+            </div>
+            <ol className="text-xs text-gray-300 space-y-2 list-decimal ml-5 mt-3">
+              <li>Sign in to <a href="https://admin.microsoft.com/AdminPortal/Home#/Settings/IntegratedApps" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">Microsoft 365 admin center → Settings → Integrated apps</a> with a Global Admin account.</li>
+              <li>Click <strong className="text-white">Upload custom apps</strong> → choose <em>Office Add-in</em> → <em>Provide link to manifest file</em>.</li>
+              <li>
+                Paste this manifest URL:
+                <div className="mt-1.5 flex items-center gap-2">
+                  <code className="flex-1 px-2 py-1 bg-dark-950 border border-dark-700 rounded font-mono text-[11px] text-emerald-300 select-all break-all">
+                    https://ems.wellnessextract.com/outlook-addin/manifest.xml
+                  </code>
+                  <button
+                    type="button"
+                    onClick={() => navigator.clipboard.writeText('https://ems.wellnessextract.com/outlook-addin/manifest.xml')}
+                    className="px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-[10px]"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </li>
+              <li>On the <em>Assign users</em> step choose <strong>Entire organization</strong> (or a specific security group). Confirm the requested permissions (Read the composed email + inject a signature).</li>
+              <li>Click <strong>Deploy</strong>. Microsoft says allow up to 12 h for rollout; in practice most tenants see it within 20-30 minutes.</li>
+              <li>Test: open OWA → New message. The add-in runs silently and drops in the same signature this dashboard pushed. Reply and Forward the same way.</li>
+            </ol>
+            <p className="text-[11px] text-gray-500 mt-3">
+              The add-in only calls our <code className="text-emerald-300">/outlook-addin-signature</code> endpoint with the composing user's UPN and drops the rendered HTML into the email. No mailbox reads, no scope beyond the one active message. If a user's signature status here says <em>Applied</em> but their OWA is empty, this add-in is the piece that's missing.
+            </p>
+          </div>
         </div>
 
         {/* ─── One-time Azure setup callout ──────────────────────────── */}
@@ -603,6 +648,122 @@ export default function EmailSignaturesPage() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
+/* Verify — reads back the mailbox message configuration from Exchange
+   and shows the admin whether the signature IS stored server-side. This
+   is the disambiguator for "push says applied but user sees empty in
+   OWA" — nine times out of ten Exchange has the signature, and the
+   OWA/New Outlook client is looking at the Roaming Signatures store
+   instead of the legacy field. */
+function VerifyButton({ upn }: { upn: string }) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{
+    configured: boolean;
+    signature_name: string;
+    default_signature: string;
+    auto_add_new: boolean;
+    auto_add_reply: boolean;
+    html_preview: string;
+    diagnosis: string;
+  } | { error: string } | null>(null);
+
+  const run = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess.session?.access_token;
+      if (!token) throw new Error('not signed in');
+      const resp = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/signatures-verify`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ upn }),
+        },
+      );
+      const body = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${resp.status}`);
+      setResult(body as typeof result);
+    } catch (e) {
+      setResult({ error: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={run}
+        disabled={busy}
+        className="text-[10px] px-1.5 py-0.5 rounded border border-dark-600 bg-dark-800 text-gray-300 hover:bg-dark-700 disabled:opacity-60"
+        title="Read the signature Exchange currently has stored for this mailbox"
+      >
+        {busy ? '…verifying' : 'Verify'}
+      </button>
+      {result && (
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={() => setResult(null)}>
+          <div className="bg-dark-800 border border-dark-700 rounded-2xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-dark-700 flex items-start justify-between">
+              <div>
+                <h3 className="text-white text-base font-semibold">Verify signature — {upn}</h3>
+                <p className="text-[11px] text-gray-500 mt-0.5">Reads what Exchange currently has stored for this mailbox (via Get-MailboxMessageConfiguration).</p>
+              </div>
+              <button onClick={() => setResult(null)} className="text-gray-400 hover:text-white text-xl leading-none">×</button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5">
+              {'error' in result ? (
+                <div className="p-3 rounded bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm">
+                  Failed to read: {result.error}
+                </div>
+              ) : (
+                <>
+                  <div className={`p-3 rounded mb-3 border text-sm ${result.configured ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200' : 'bg-amber-500/10 border-amber-500/30 text-amber-200'}`}>
+                    <p className="font-medium mb-1">{result.configured ? '✅ Signature IS stored in Exchange for this user' : '⚠ Exchange has NO signature stored for this user'}</p>
+                    <p className="text-xs leading-relaxed">{result.diagnosis}</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 text-xs mb-3">
+                    <div>
+                      <p className="text-gray-500">Signature name</p>
+                      <p className="text-white font-mono">{result.signature_name || '—'}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">Default (new)</p>
+                      <p className="text-white font-mono">{result.default_signature || '—'}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">Auto-add new messages</p>
+                      <p className="text-white">{result.auto_add_new ? 'Yes' : 'No'}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">Auto-add replies/forwards</p>
+                      <p className="text-white">{result.auto_add_reply ? 'Yes' : 'No'}</p>
+                    </div>
+                  </div>
+                  {result.html_preview && (
+                    <div>
+                      <p className="text-[10px] uppercase text-gray-500 mb-1">HTML preview (first 1000 chars)</p>
+                      <div
+                        className="bg-white text-black p-3 rounded border border-dark-700 text-xs max-h-64 overflow-y-auto"
+                        dangerouslySetInnerHTML={{ __html: result.html_preview }}
+                      />
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function StatusPill({ status }: { status: PushStatus | undefined }) {
   if (!status) return <span className="text-xs text-gray-500">Not pushed</span>;
   if (status.state === 'applied') {

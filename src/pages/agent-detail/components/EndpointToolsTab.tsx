@@ -44,7 +44,7 @@ const TOOL_DESC: Record<ToolKind, string> = {
   driver_updater:
     'Scans installed drivers and installs Windows-Update-provided driver updates via PSWindowsUpdate. Produces InstalledDrivers.csv. Typically ~2-5 min.',
   windows_optimizer:
-    'Clears temp/prefetch/Windows-Update-cache/browser caches, runs DISM + sfc + chkdsk + Optimize-Volume. Produces Cleanup_Report.txt. Typically 20-30 min.',
+    'Clears temp/prefetch/Windows-Update-cache/browser caches, runs DISM component cleanup + Optimize-Volume. Produces Cleanup_Report.txt. Typically ~5-10 min.',
 };
 
 // Typical wall-clock duration for a healthy run, used to build a progress
@@ -53,8 +53,8 @@ const TOOL_DESC: Record<ToolKind, string> = {
 // bar filling toward that so the admin can see "we're at 40% of the hard
 // cap" instead of just a spinner that could mean stuck or working.
 const TOOL_TYPICAL: Record<ToolKind, { typicalMin: number; typicalMax: number; hardCap: number }> = {
-  driver_updater:    { typicalMin: 2,  typicalMax: 5,  hardCap: 10 },
-  windows_optimizer: { typicalMin: 20, typicalMax: 30, hardCap: 45 },
+  driver_updater:    { typicalMin: 2, typicalMax: 5,  hardCap: 10 },
+  windows_optimizer: { typicalMin: 5, typicalMax: 10, hardCap: 20 },
 };
 
 export default function EndpointToolsTab({ agentId, agentName, osType }: Props) {
@@ -205,7 +205,7 @@ export default function EndpointToolsTab({ agentId, agentName, osType }: Props) 
               This runs <strong className="text-white">silently in the background</strong> on {agentName}'s PC.
               The user will not see any window, popup, or notification.
               {confirm === 'windows_optimizer' && (
-                <> This particular tool typically takes <strong className="text-white">20-30 minutes</strong> to complete.</>
+                <> This particular tool typically takes <strong className="text-white">5-10 minutes</strong> to complete.</>
               )}
             </p>
             <div className="flex items-center justify-end gap-2 pt-2">

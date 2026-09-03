@@ -33,6 +33,7 @@ mod remote;
 mod capture;
 // mod encode;  // landing in v0.3.1 alongside Windows + Linux capture.
 
+mod inventory;
 mod session_lock;
 mod usb_block;
 mod wallpaper;
@@ -2005,6 +2006,11 @@ pub fn run() {
             // any new ones unless the agent is allowlisted. Always starts; the
             // loop itself reads settings.removable_disks_blocked each iteration.
             spawn_usb_block_loop(state.clone());
+            // Inventory loop: hardware + software + Windows event log tail,
+            // once at boot (after warmup) then every 24 h. Slow-changing so
+            // this doesn't share the 60 s metrics tick — sits in its own
+            // agent_inventory table.
+            inventory::spawn_inventory_loop(state.clone());
             // Wallpaper loop: polls every 60s for a server-side wallpaper URL
             // change; downloads + applies when one appears. Settings-gated by
             // wallpaper_enforced per-agent toggle.

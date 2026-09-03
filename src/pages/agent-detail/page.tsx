@@ -11,6 +11,7 @@ import BottomTabs from './components/BottomTabs';
 import TimePerApp from './components/TimePerApp';
 import CaptureControls from './components/CaptureControls';
 import EndpointToolsTab from './components/EndpointToolsTab';
+import AgentInventoryTab from './components/AgentInventoryTab';
 import { detailBottomTabs, type DetailTabId } from '@/mocks/agentDetail';
 import { useAgentDetail, type DateRange } from '@/lib/useAgentDetail';
 import { useSignedScreenshotUrls, useSignedVideoUrls } from '@/lib/dataHooks';
@@ -802,6 +803,8 @@ export default function AgentDetailPage() {
         })()}
 
         {activeTab === 'system' && <AgentSystemHealthPanel agentId={agentId!} />}
+
+        {activeTab === 'inventory' && <AgentInventoryTab agentId={agentId!} />}
 
         {activeTab === 'capture' && (
           <CaptureControls

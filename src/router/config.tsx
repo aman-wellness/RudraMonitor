@@ -92,6 +92,8 @@ const AdminFeatureFlags = lazy(() => import("../pages/admin/feature-flags/page")
 const DocsUserGuide = lazy(() => import("../pages/docs/UserGuide"));
 const DocsPartnerGuide = lazy(() => import("../pages/docs/PartnerGuide"));
 const DocsIntegrations = lazy(() => import("../pages/docs/IntegrationsGuide"));
+const DocsDeployment = lazy(() => import("../pages/docs/Deployment"));
+const DocsEmailSignaturesSetup = lazy(() => import("../pages/docs/EmailSignaturesSetup"));
 const DocsSuperAdmin = lazy(() => import("../pages/docs/SuperAdminGuide"));
 const DocsArchitecture = lazy(() => import("../pages/docs/Architecture"));
 const LegalPrivacy = lazy(() => import("../pages/legal/Privacy"));
@@ -247,6 +249,8 @@ const routes: RouteObject[] = [
   { path: "/docs/user-guide",    element: wrap(<DocsUserGuide />) },
   { path: "/docs/partner-guide", element: wrap(<DocsPartnerGuide />) },
   { path: "/docs/integrations",  element: wrap(<DocsIntegrations />) },
+  { path: "/docs/deployment",    element: wrap(<DocsDeployment />) },
+  { path: "/docs/email-signatures-setup", element: wrap(<DocsEmailSignaturesSetup />) },
 
   // Public legal pages
   { path: "/legal/privacy", element: wrap(<LegalPrivacy />) },
