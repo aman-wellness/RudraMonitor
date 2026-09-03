@@ -349,7 +349,7 @@ export default function AgentTable({ index = 0 }: { index?: number }) {
             <p className="text-[10.5px] t3 mb-3.5">
               Install the desktop agent on employee machines using your licence key.
             </p>
-            <button onClick={() => navigate('/setup')} className="chip chip-accent">
+            <button onClick={() => navigate('/setup')} className="chip chip-solid">
               <i className="ri-add-line" />
               Go to agent setup
             </button>

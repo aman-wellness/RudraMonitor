@@ -25,6 +25,8 @@ export const C = {
   track: 'var(--d-track)',
   panel: 'var(--d-panel)',
   t3: 'var(--d-t3)',
+  /** Muted — axis labels and other non-data chart text. */
+  t4: 'var(--d-t4)',
 } as const;
 
 export const formatHm = (seconds: number) => {

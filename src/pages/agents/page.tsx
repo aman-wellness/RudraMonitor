@@ -8,6 +8,9 @@ import { Bar, EmptyNote, Panel, Segmented } from '@/pages/dashboard/components/u
 import { C, formatHm } from '@/pages/dashboard/components/chartKit';
 import { confirmDialog, notify } from '@/lib/notify';
 import Pagination, { usePagination } from '@/pages/monitoring/components/Pagination';
+import KpiStrip from '@/pages/dashboard/components/KpiStrip';
+import FilterBar from '@/pages/dashboard/components/FilterBar';
+import { DashFilterContext, defaultFilter, type DashFilter } from '@/pages/dashboard/filterContext';
 
 /* All Agents.
 
@@ -122,7 +125,14 @@ export default function AgentsPage() {
   const [search, setSearch] = useState('');
   const [deptFilter, setDeptFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [viewMode, setViewMode] = useState<ViewMode>('grid');
+  // Table is the default view: it's the denser, more scannable one for a
+  // fleet, and it's what the reference design leads with. Cards stay one
+  // click away.
+  const [viewMode, setViewMode] = useState<ViewMode>('list');
+  // Agent + date scope for the KPI strip in the header. Held here and provided
+  // through DashFilterContext so the shared strip reacts to it exactly as it
+  // does on the dashboard.
+  const [dashFilter, setDashFilter] = useState<DashFilter>(defaultFilter);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -494,6 +504,7 @@ export default function AgentsPage() {
 
   return (
     <DashboardLayout>
+      <DashFilterContext.Provider value={dashFilter}>
       <div className="dash">
         {deptMenu}
         {/* ------------------------------------------------------- header ---- */}
@@ -526,40 +537,32 @@ export default function AgentsPage() {
           </div>
         )}
 
-        <div className="flex flex-wrap items-end justify-between gap-4 mb-4">
+        {/* Page title owns the row; the view controls move down to the filter
+            toolbar so the header reads as a title, not a control bar. */}
+        <div className="flex flex-wrap items-start justify-between gap-4 mb-4">
           <div className="min-w-0">
-            <h1 className="num" style={{ fontSize: 18 }}>
-              All agents
-            </h1>
+            <h1 className="page-title">Agents</h1>
             <p className="text-[11.5px] t3 mt-1">
-              {counts.all === 0 ? (
-                'No agents enrolled yet'
-              ) : (
-                <>
-                  <span className="t-success">{counts.online} online</span>
-                  {counts.idle > 0 && <> · {counts.idle} idle</>}
-                  {counts.offline > 0 && <> · {counts.offline} offline</>}
-                  <> · {counts.all} enrolled</>
-                </>
-              )}
+              {counts.all === 0
+                ? 'No agents enrolled yet'
+                : 'Monitor and manage all devices protected by the Rudrans agent.'}
             </p>
           </div>
 
-          <div className="flex items-center gap-2 flex-wrap">
-            <Segmented value={win} options={WINDOWS} onChange={setWin} />
-            <Segmented
-              value={viewMode}
-              options={[
-                { id: 'grid', label: 'Cards' },
-                { id: 'list', label: 'Table' },
-              ]}
-              onChange={setViewMode}
-            />
-            <button onClick={() => navigate('/setup')} className="chip chip-accent text-[11px]">
-              <i className="ri-add-line" />
-              Add agent
-            </button>
+          {/* Top-right controls, as in the reference: agent scope and date
+              range sit on the title row. "Add agent" is NOT here — it lives in
+              the toolbar row below, where the reference puts it. */}
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <FilterBar filter={dashFilter} onChange={setDashFilter} />
           </div>
+        </div>
+
+        {/* The same KPI strip the dashboard leads with. Shared component, so
+            the two pages cannot drift apart. The per-status fleet counts it
+            used to duplicate are still on the page, in the status segment
+            below (All / Online / Idle / Offline, each with its count). */}
+        <div className="mb-4">
+          <KpiStrip />
         </div>
 
         {/* ------------------------------------------------------ filters ----
@@ -582,17 +585,23 @@ export default function AgentsPage() {
             )}
           </span>
 
-          <div className="seg flex-shrink-0">
-            {STATUSES.map((s) => (
-              <button
-                key={s.id}
-                onClick={() => setStatusFilter(s.id)}
-                className={`seg-btn ${statusFilter === s.id ? 'is-on' : ''}`}
-              >
-                {s.label}
-                <span className="t3"> {counts[s.id]}</span>
-              </button>
-            ))}
+          {/* Reference order, left to right: window, view, primary action.
+              The status filter moves down to the second row, beside the
+              department chips it belongs with. */}
+          <div className="flex items-center gap-2 flex-wrap flex-shrink-0">
+            <Segmented value={win} options={WINDOWS} onChange={setWin} />
+            <Segmented
+              value={viewMode}
+              options={[
+                { id: 'grid', label: 'Cards' },
+                { id: 'list', label: 'Table' },
+              ]}
+              onChange={setViewMode}
+            />
+            <button onClick={() => navigate('/setup')} className="chip chip-outline">
+              <i className="ri-add-line" />
+              Add agent
+            </button>
           </div>
         </div>
 
@@ -605,7 +614,7 @@ export default function AgentsPage() {
             dead end. The one exception is a filter already active: dropping the
             chip mid-filter would strand the user on a selection they can see no
             way back out of. */}
-        <div className="flex items-center gap-2 flex-wrap mb-4">
+        <div className="flex items-start justify-between gap-3 flex-wrap mb-4">
           <div className="seg overflow-x-auto max-w-full">
             <button
               onClick={() => setDeptFilter('all')}
@@ -627,6 +636,21 @@ export default function AgentsPage() {
                   {d.name}
                   <span className="t3">{d.count}</span>
                 </span>
+              </button>
+            ))}
+          </div>
+
+          {/* Status filter sits opposite the department chips — same row,
+              right-aligned, as in the reference. */}
+          <div className="seg flex-shrink-0">
+            {STATUSES.map((s) => (
+              <button
+                key={s.id}
+                onClick={() => setStatusFilter(s.id)}
+                className={`seg-btn ${statusFilter === s.id ? 'is-on' : ''}`}
+              >
+                {s.label}
+                <span className="t3"> {counts[s.id]}</span>
               </button>
             ))}
           </div>
@@ -693,7 +717,7 @@ export default function AgentsPage() {
             />
             {counts.all === 0 && (
               <div className="flex justify-center pb-1">
-                <button onClick={() => navigate('/setup')} className="chip chip-accent text-[11px]">
+                <button onClick={() => navigate('/setup')} className="chip chip-solid text-[11px]">
                   <i className="ri-add-line" />
                   Add your first agent
                 </button>
@@ -814,9 +838,13 @@ export default function AgentsPage() {
           </div>
         )}
 
-        {/* --------------------------------------------------- table view ---- */}
+        {/* --------------------------------------------------- table view ----
+            No title bar: the reference runs the column headers straight off
+            the top of the card, with the stats window noted at the right of
+            that same row. An "Agents" title above a page already titled
+            "Agents" was a duplicated label anyway. */}
         {viewMode === 'list' && filtered.length > 0 && (
-          <Panel title="Agents" hint={`Stats over ${winLabel}`} flush>
+          <div className="panel rise overflow-hidden">
             <div className="overflow-x-auto">
               <table className="d-table min-w-[880px]">
                 <thead>
@@ -837,7 +865,11 @@ export default function AgentsPage() {
                     <th>Active</th>
                     <th>Department</th>
                     <th>Last seen</th>
-                    <th style={{ width: 40 }} />
+                    <th style={{ width: 130 }} className="text-right">
+                      <span className="inline-flex items-center gap-1 normal-case">
+                        Stats over {winLabel}
+                      </span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -853,6 +885,8 @@ export default function AgentsPage() {
                         </span>
                       </td>
 
+                      {/* Agent — name over IP, and Machine — machine id over
+                          OS, as the reference has them. */}
                       <td className="whitespace-nowrap">
                         <div className="flex items-center gap-2">
                           <span
@@ -862,22 +896,22 @@ export default function AgentsPage() {
                             {initials(agent.name)}
                           </span>
                           <span className="min-w-0">
-                            <span className="block text-[12px] t1 font-medium leading-tight">
+                            <span className="block text-[13px] t1 font-medium leading-tight">
                               {agent.name}
                             </span>
-                            <span className="block text-[10px] t3 mt-0.5">{agent.ipAddress}</span>
+                            <span className="block text-[11px] t3 mt-0.5">{agent.ipAddress}</span>
                           </span>
                         </div>
                       </td>
 
                       <td className="whitespace-nowrap">
                         <span className="flex items-center gap-2">
-                          <i className={`${OS_ICON(agent.os)} text-[13px] t3`} />
+                          <i className={`${OS_ICON(agent.os)} text-[14px] t3`} />
                           <span className="min-w-0">
-                            <span className="block text-[11.5px] t2 leading-tight">
+                            <span className="block text-[13px] t2 leading-tight">
                               {agent.machine}
                             </span>
-                            <span className="block text-[10px] t3 mt-0.5">{agent.os}</span>
+                            <span className="block text-[11px] t3 mt-0.5">{agent.os}</span>
                           </span>
                         </span>
                       </td>
@@ -899,11 +933,13 @@ export default function AgentsPage() {
                         )}
                       </td>
 
+                      {/* Active carries idle beneath it, and Department sits
+                          after it — the reference's ordering. */}
                       <td className="whitespace-nowrap">
-                        <span className="block text-[11.5px] t2 tnum leading-tight">
+                        <span className="block text-[13px] t2 tnum leading-tight">
                           {formatHm(agent.activeSeconds)}
                         </span>
-                        <span className="block text-[10px] t3 mt-0.5">
+                        <span className="block text-[11px] t3 mt-0.5">
                           idle {formatHm(agent.idleSeconds)}
                         </span>
                       </td>
@@ -936,13 +972,13 @@ export default function AgentsPage() {
               </table>
             </div>
 
-            <div className="px-3 py-2 hair-t">
+            <div className="px-4 py-3 hair-t">
               <Pagination
                 page={page} pageCount={pageCount} from={from} to={to} total={total}
                 onPage={setPage} unit={`of ${counts.all} agents`}
               />
             </div>
-          </Panel>
+          </div>
         )}
 
         {viewMode === 'grid' && filtered.length > 0 && (
@@ -957,6 +993,7 @@ export default function AgentsPage() {
           </div>
         )}
       </div>
+      </DashFilterContext.Provider>
     </DashboardLayout>
   );
 }

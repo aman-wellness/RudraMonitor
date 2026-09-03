@@ -75,7 +75,7 @@ type SidebarSection = {
 // Sidebar geometry. Collapsed shows an icon rail; expanded is user-draggable
 // between MIN and MAX. Kept here (not in CSS) because the drag handler clamps
 // against the same numbers.
-const SIDEBAR_DEFAULT_W = 256;
+const SIDEBAR_DEFAULT_W = 232;
 const SIDEBAR_MIN_W = 196;
 const SIDEBAR_MAX_W = 380;
 const SIDEBAR_RAIL_W = 60;
@@ -405,6 +405,10 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
   const badgeFor = (href: string) =>
     href === '/alerts' && unresolvedAlertCount > 0 ? unresolvedAlertCount : null;
 
+  // The dashboard is the root of this shell, so a back button there has
+  // nowhere useful to go — it's the destination the fallback already uses.
+  const isDashboardRoute = currentPath === '/dashboard';
+
   // Header title follows the route instead of being hardcoded, so the chrome
   // says "Dashboard" on /dashboard and "Reports" on /reports. Longest-prefix
   // match so detail routes (/agents/:id) inherit their section's title.
@@ -613,6 +617,19 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
             >
               <i className="ri-menu-line text-[18px]" />
             </button>
+            {/* Back — in the shell header so every page inside this layout
+                gets one, rather than each page adding its own. Hidden on the
+                dashboard itself, which is where back would land anyway. */}
+            {!isDashboardRoute && (
+              <button
+                onClick={() => (window.history.length > 1 ? navigate(-1) : navigate('/dashboard'))}
+                className="s-hbtn"
+                aria-label="Go back"
+                title="Back"
+              >
+                <i className="ri-arrow-left-line text-[17px]" />
+              </button>
+            )}
             <h2 className="s-title truncate">{pageTitle}</h2>
           </div>
 
@@ -696,8 +713,10 @@ function DashboardLayoutChrome({ children }: { children?: React.ReactNode }) {
         </header>
 
         {/* Page Content */}
-        <main className="flex-1 min-w-0 w-full p-2.5 md:p-3.5 lg:p-4 overflow-y-auto overflow-x-hidden">
-          <div className="w-full max-w-screen-2xl mx-auto">
+        {/* Spec page padding: 16px mobile, 24px tablet, 32px desktop.
+            Content caps at 1280px and centres beyond that. */}
+        <main className="s-content flex-1 min-w-0 w-full p-4 md:p-6 lg:p-8 overflow-y-auto overflow-x-hidden">
+          <div className="w-full mx-auto" style={{ maxWidth: 1280 }}>
             <ViewerBanner />
             <TrialGraceBanner />
             <OtpRequestBanner />

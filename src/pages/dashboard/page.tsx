@@ -12,7 +12,6 @@ import RiskPanel from './components/RiskPanel';
 import AgentTable from './components/AgentTable';
 import TimeTracker from './components/TimeTracker';
 import FilterBar from './components/FilterBar';
-import { SectionBand } from './components/ui';
 import { DashFilterContext, defaultFilter, type DashFilter } from './filterContext';
 
 /* Spacing is tiered on purpose: 10px between panels inside a row, 16px between
@@ -54,59 +53,53 @@ export default function Dashboard() {
         <div className="dash">
           <FilterBar filter={filter} onChange={setFilter} />
 
-          {/* ------------------------------------------------ right now ---- */}
-          <div className="space-y-2.5">
+          {/* Section bands are gone: each panel's own title carries the
+              structure, which is what stops the page reading as four labelled
+              slabs. Rows are sized by how much room the content needs, not
+              split evenly — that difference is most of the "spacious". */}
+          <div className="space-y-3">
             <KpiStrip />
 
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-2.5">
-              <div className="lg:col-span-8 min-w-0 flex">
+            {/* ----------------------------------- activity · split · health */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-12 gap-3">
+              <div className="xl:col-span-5 min-w-0 flex">
                 <WorkforceActivity index={1} />
               </div>
-              <div className="lg:col-span-4 min-w-0 flex">
+              <div className="xl:col-span-4 min-w-0 flex">
                 <ProductivityOverview index={2} />
               </div>
-            </div>
-          </div>
-
-          {/* ---------------------------------------------- attendance ---- */}
-          <div className="mt-4 space-y-2.5">
-            <SectionBand label="Attendance" />
-            <TimeTracker index={9} />
-          </div>
-
-          {/* -------------------------------------------- patterns / ops ---- */}
-          <div className="mt-4 space-y-2.5">
-            <SectionBand label="Patterns & operations" />
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-2.5">
-              <div className="lg:col-span-8 min-w-0 flex">
-                <WorkPatternHeatmap index={3} />
-              </div>
-              <div className="lg:col-span-4 min-w-0 flex">
-                <FleetHealthPanel index={4} />
+              <div className="lg:col-span-2 xl:col-span-3 min-w-0 flex">
+                <FleetHealthPanel index={3} />
               </div>
             </div>
-          </div>
 
-          {/* ------------------------------------------------ breakdowns ---- */}
-          <div className="mt-4 space-y-2.5">
-            <SectionBand label="Breakdowns" />
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5">
-              <div className="min-w-0 flex">
-                <DepartmentPanel index={5} />
+            {/* --------------------------------------- patterns · attendance */}
+            <div className="grid grid-cols-1 xl:grid-cols-12 gap-3">
+              <div className="xl:col-span-8 min-w-0 flex">
+                <WorkPatternHeatmap index={4} />
               </div>
-              <div className="min-w-0 flex">
-                <TopApplications index={6} />
-              </div>
-              <div className="min-w-0 flex">
-                <RiskPanel index={7} />
+              <div className="xl:col-span-4 min-w-0 flex">
+                <TimeTracker index={5} />
               </div>
             </div>
-          </div>
 
-          {/* ----------------------------------------------------- fleet ---- */}
-          <div className="mt-4 space-y-2.5">
-            <SectionBand label="Fleet" />
-            <AgentTable index={8} />
+            {/* ------------------------------------------------- breakdowns */}
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              <div className="min-w-0 flex">
+                <DepartmentPanel index={6} />
+              </div>
+              <div className="min-w-0 flex">
+                <TopApplications index={7} />
+              </div>
+              <div className="min-w-0 flex">
+                <RiskPanel index={8} />
+              </div>
+            </div>
+
+            {/* The reference stops here; the agents table has no equivalent in
+                it, so it keeps its full-width row at the foot rather than
+                being dropped. */}
+            <AgentTable index={9} />
           </div>
         </div>
         </DashFilterContext.Provider>
