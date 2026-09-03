@@ -61,6 +61,7 @@ export default function DocsLayout({
           <nav className="flex items-center gap-3 text-xs">
             <Link to="/docs/user-guide" className={loc.pathname === '/docs/user-guide' ? 'text-emerald-400' : 'text-gray-400 hover:text-white'}>User Guide</Link>
             <Link to="/docs/deployment" className={loc.pathname === '/docs/deployment' ? 'text-amber-400' : 'text-gray-400 hover:text-white'}>Deployment</Link>
+            <Link to="/docs/email-signatures-setup" className={loc.pathname === '/docs/email-signatures-setup' ? 'text-cyan-400' : 'text-gray-400 hover:text-white'}>Signatures setup</Link>
             <Link to="/docs/integrations" className={loc.pathname === '/docs/integrations' ? 'text-cyan-400' : 'text-gray-400 hover:text-white'}>Integrations</Link>
             <Link to="/docs/partner-guide" className={loc.pathname === '/docs/partner-guide' ? 'text-violet-400' : 'text-gray-400 hover:text-white'}>Partner Guide</Link>
             <Link to="/" className="text-gray-400 hover:text-white">← Back to Wellness Extract</Link>

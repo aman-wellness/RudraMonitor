@@ -586,7 +586,12 @@ export default function EmailSignaturesPage() {
               <span className="text-2xl leading-none">🧩</span>
               <div className="flex-1">
                 <p className="text-white font-semibold text-sm">Make OWA + New Outlook work — install the Outlook Add-in (one-time, tenant-wide)</p>
-                <p className="text-[11px] text-gray-400 mt-1">Every enterprise signature tool (Exclaimer, CodeTwo, …) works this way for OWA. Install once, works for every user in the tenant, no per-user setup.</p>
+                <p className="text-[11px] text-gray-400 mt-1">
+                  Every enterprise signature tool (Exclaimer, CodeTwo, …) works this way for OWA.
+                  Install once, works for every user in the tenant, no per-user setup.
+                  {' '}
+                  <a href="/docs/email-signatures-setup" className="text-cyan-400 hover:underline">Full setup guide with troubleshooting →</a>
+                </p>
               </div>
             </div>
             <ol className="text-xs text-gray-300 space-y-2 list-decimal ml-5 mt-3">
